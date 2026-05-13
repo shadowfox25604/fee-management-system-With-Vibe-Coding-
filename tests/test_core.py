@@ -9,7 +9,8 @@ from app.core.schema_migrations import (
     apply_sqlite_column_migrations,
     apply_sqlite_data_migrations,
 )
-from app.models import FeeHead, Invoice, Payment, Student, entities  # noqa: F401
+from app.models import ClassSchoolFee, FeeHead, Invoice, Payment, Student, entities  # noqa: F401
+from app.repositories.class_fee_repository import ClassFeeRepository
 from app.repositories.payment_repository import PaymentRepository
 
 
@@ -380,3 +381,85 @@ def test_parse_payment_date_accepts_slash_or_backslash():
 
     assert parse_payment_date_dmY("10/02/2026") == date(2026, 2, 10)
     assert parse_payment_date_dmY("10\\02\\2026") == date(2026, 2, 10)
+
+
+def test_class_fee_apply_updates_students_scales_tuition_leaves_transport_invoices():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.core.database import Base
+
+    mem = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=mem)
+    apply_sqlite_column_migrations(mem)
+    MemSession = sessionmaker(bind=mem, autoflush=False, autocommit=False)
+    s = MemSession()
+    try:
+        t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
+        tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
+        if t is None:
+            t = FeeHead(head_name="Tuition", frequency="monthly", default_amount=2000.0)
+            s.add(t)
+        if tr is None:
+            tr = FeeHead(head_name="Transport", frequency="monthly", default_amount=500.0)
+            s.add(tr)
+        s.flush()
+
+        sid = f"CF{uuid.uuid4().hex[:8].upper()}"
+        st = Student(
+            student_id=sid,
+            full_name="Class Fee Test",
+            class_name="5",
+            section="A",
+            phone=f"3{uuid.uuid4().int % 10**9:09d}",
+            guardian_name="G",
+            van_fees=3000.0,
+            school_fees=20000.0,
+        )
+        s.add(st)
+        s.commit()
+        s.refresh(st)
+
+        d = date(2026, 4, 1)
+        inv_s = Invoice(
+            student_id_fk=st.id,
+            fee_head_id=t.id,
+            period_label="2026-01",
+            due_date=d,
+            amount_due=10000.0,
+            amount_paid=0.0,
+        )
+        inv_v = Invoice(
+            student_id_fk=st.id,
+            fee_head_id=tr.id,
+            period_label="2026-01",
+            due_date=d,
+            amount_due=500.0,
+            amount_paid=0.0,
+        )
+        s.add(inv_s)
+        s.add(inv_v)
+        s.commit()
+
+        cfr = ClassFeeRepository(s)
+        n = cfr.apply_class_school_fee("5", 25000.0)
+        assert n == 1
+
+        st2 = s.get(Student, st.id)
+        assert float(st2.school_fees) == 25000.0
+        assert float(st2.van_fees) == 3000.0
+
+        s.refresh(inv_s)
+        s.refresh(inv_v)
+        assert float(inv_s.amount_due) == 12500.0
+        assert float(inv_v.amount_due) == 500.0
+
+        row = s.get(ClassSchoolFee, "5")
+        assert row is not None
+        assert float(row.amount) == 25000.0
+
+        pay_repo = PaymentRepository(s)
+        due = pay_repo.get_student_due_breakdown(st.id)
+        assert due["van_due"] == 3000.0
+    finally:
+        s.close()

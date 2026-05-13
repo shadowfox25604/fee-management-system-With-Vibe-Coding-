@@ -6,6 +6,18 @@ from sqlalchemy import inspect, text
 def apply_sqlite_column_migrations(engine) -> None:
     if engine.dialect.name != "sqlite":
         return
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS class_school_fees (
+                    class_key VARCHAR(30) NOT NULL PRIMARY KEY,
+                    amount REAL NOT NULL
+                )
+                """
+            )
+        )
+
     insp = inspect(engine)
     if not insp.has_table("students"):
         return

@@ -52,6 +52,11 @@ class Payment(Base):
     operator_name: Mapped[str] = mapped_column(String(60), default="admin")
     student = relationship("Student", back_populates="payments")
 
+class ClassSchoolFee(Base):
+    __tablename__ = "class_school_fees"
+    class_key: Mapped[str] = mapped_column(String(30), primary_key=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+
 class FeePlan(Base):
     __tablename__ = "fee_plans"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

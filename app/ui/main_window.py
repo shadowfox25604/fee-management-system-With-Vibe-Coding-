@@ -2,12 +2,36 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from PySide6.QtCore import QDate, Qt
-from PySide6.QtWidgets import QAbstractItemView, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QDateEdit,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 from sqlalchemy.exc import IntegrityError
+from app.core.fee_control_constants import FIXED_CLASS_KEYS, FIXED_SECTION_KEYS
 from app.models import Student
 from app.reports.excel_export import ExcelExporter
 from app.reports.pdf_export import PdfExporter
 from app.services.backup_service import BackupService
+from app.services.class_fee_service import ClassFeeService
 from app.services.payment_service import PaymentService
 from app.services.report_service import ReportService
 from app.services.student_service import StudentService
@@ -29,6 +53,7 @@ class MainWindow(QMainWindow):
         self.payment_service = PaymentService(session)
         self.report_service = ReportService(session)
         self.backup_service = BackupService()
+        self.class_fee_service = ClassFeeService(session)
         self.selected_student = None
         self._payment_panes: dict[str, PaymentLikePane] = {}
         self.setWindowTitle("Offline Fee Management")
@@ -40,6 +65,8 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_add_student_tab(), "Add Student")
         tabs.addTab(self._build_reports_tab(), "Reports")
         tabs.addTab(self._build_backup_tab(), "Backup")
+        self._fee_control_tab_index = tabs.addTab(self._build_fee_control_tab(), "Fee Control")
+        tabs.currentChanged.connect(self._on_main_tab_changed)
         self.setCentralWidget(tabs)
         self.perform_search()
     def _build_search_tab(self):
@@ -102,18 +129,26 @@ class MainWindow(QMainWindow):
     def _build_add_student_tab(self):
         w=QWidget(); layout=QFormLayout(w)
         self.add_student_id=QLineEdit(); self.add_student_name=QLineEdit()
-        self.add_student_class=QLineEdit(); self.add_student_section=QLineEdit()
+        self.add_student_class = QComboBox()
+        self.add_student_class.addItems(list(FIXED_CLASS_KEYS))
+        self.add_student_class.setCurrentIndex(3)
+        self.add_student_section = QComboBox()
+        self.add_student_section.addItems(list(FIXED_SECTION_KEYS))
         self.add_student_phone=QLineEdit(); self.add_student_village=QLineEdit()
         self.add_student_village.setPlaceholderText("Village")
         self.add_student_guardian=QLineEdit()
         self.add_student_van_fees = QLineEdit()
         self.add_student_van_fees.setPlaceholderText("0")
-        self.add_student_school_fees = QLineEdit()
-        self.add_student_school_fees.setPlaceholderText("20000")
-        self.add_student_school_fees.setText("20000")
         self.add_student_status=QComboBox(); self.add_student_status.addItems(["active","inactive"])
+        school_fee_hint = QLabel(
+            "School fees are set automatically from the student’s class (see Fee Control tab). "
+            "Classes outside the fixed list use the default amount until you set them in Fee Control. "
+            "Class and section are picked from lists to avoid typing mistakes."
+        )
+        school_fee_hint.setWordWrap(True)
+        school_fee_hint.setStyleSheet("color: #888;")
         b=QPushButton("Add Student"); b.clicked.connect(self.add_student)
-        layout.addRow("Student ID", self.add_student_id); layout.addRow("Name", self.add_student_name); layout.addRow("Class", self.add_student_class); layout.addRow("Section", self.add_student_section); layout.addRow("Phone", self.add_student_phone); layout.addRow("Village", self.add_student_village); layout.addRow("Guardian Name", self.add_student_guardian); layout.addRow("Van Fees", self.add_student_van_fees); layout.addRow("School Fees", self.add_student_school_fees); layout.addRow("Status", self.add_student_status); layout.addRow(b)
+        layout.addRow("Student ID", self.add_student_id); layout.addRow("Name", self.add_student_name); layout.addRow("Class", self.add_student_class); layout.addRow("Section", self.add_student_section); layout.addRow("Phone", self.add_student_phone); layout.addRow("Village", self.add_student_village); layout.addRow("Guardian Name", self.add_student_guardian); layout.addRow("Van Fees", self.add_student_van_fees); layout.addRow(school_fee_hint); layout.addRow("Status", self.add_student_status); layout.addRow(b)
         return w
     def _build_reports_tab(self):
         w=QWidget(); layout=QVBoxLayout(w); row=QHBoxLayout()
@@ -141,6 +176,89 @@ class MainWindow(QMainWindow):
         b=QPushButton("Restore Backup"); b.clicked.connect(self.restore_backup)
         self.backup_status=QLabel("No backup action performed yet.")
         layout.addWidget(a); layout.addWidget(b); layout.addWidget(self.backup_status); return w
+
+    def _build_fee_control_tab(self):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.addWidget(
+            QLabel(
+                "Set the school fee tariff for each class (fixed list). Class names on students are matched "
+                "case-insensitively. Apply updates all matching students’ school fees, adjusts tuition invoice "
+                "amounts only, and does not change van fees or transport invoices. A confirmation is required before saving."
+            )
+        )
+        self._fee_control_amount_edits = {}
+        tbl = QTableWidget(len(FIXED_CLASS_KEYS), 3)
+        tbl.setHorizontalHeaderLabels(["Class", "School fee (₹)", ""])
+        tbl.verticalHeader().setVisible(False)
+        for row, class_key in enumerate(FIXED_CLASS_KEYS):
+            tbl.setItem(row, 0, QTableWidgetItem(class_key))
+            amount_edit = QLineEdit()
+            amount_edit.setPlaceholderText("20000")
+            self._fee_control_amount_edits[class_key] = amount_edit
+            tbl.setCellWidget(row, 1, amount_edit)
+            apply_btn = QPushButton("Apply…")
+            apply_btn.clicked.connect(lambda _=False, ck=class_key: self._on_fee_control_apply_clicked(ck))
+            tbl.setCellWidget(row, 2, apply_btn)
+        tbl.resizeColumnsToContents()
+        layout.addWidget(tbl)
+        self._fee_control_table = tbl
+        self._refresh_fee_control_amounts()
+        return w
+
+    def _on_main_tab_changed(self, index: int):
+        if index == getattr(self, "_fee_control_tab_index", -1):
+            self._refresh_fee_control_amounts()
+
+    def _refresh_fee_control_amounts(self):
+        if not hasattr(self, "_fee_control_amount_edits"):
+            return
+        for class_key, edit in self._fee_control_amount_edits.items():
+            amt = self.class_fee_service.display_amount_for_class(class_key)
+            edit.setText(f"{amt:.2f}")
+
+    def _on_fee_control_apply_clicked(self, class_key: str):
+        edit = self._fee_control_amount_edits.get(class_key)
+        if edit is None:
+            return
+        raw = (edit.text() or "").strip()
+        try:
+            new_amt = float(raw) if raw else 0.0
+        except ValueError:
+            QMessageBox.warning(self, "Invalid amount", "Enter a valid number for the school fee.")
+            return
+        if new_amt < 0:
+            QMessageBox.warning(self, "Invalid amount", "School fee cannot be negative.")
+            return
+        n = self.class_fee_service.count_students_in_class(class_key)
+        reply = QMessageBox.question(
+            self,
+            "Confirm class fee update",
+            f"Set school fee for class “{class_key}” to {new_amt:.2f}?\n\n"
+            f"This will update {n} student(s) whose class matches (case-insensitive), set each student’s "
+            f"school_fees to this amount, scale tuition (non-transport) invoice amount_due values, and store "
+            f"this amount for the class. Van fees and transport invoices will not be changed.\n\n"
+            f"Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            updated = self.class_fee_service.apply_class_school_fee(class_key, new_amt)
+            QMessageBox.information(
+                self,
+                "Fee updated",
+                f"Class “{class_key}” school fee saved. {updated} student(s) updated.",
+            )
+            self._refresh_fee_control_amounts()
+            self.perform_search()
+            self._load_report_filter_values()
+            self._load_payment_student_options()
+        except Exception as e:
+            self.session.rollback()
+            QMessageBox.critical(self, "Fee update failed", str(e))
+
     def _load_payment_student_options(self):
         self._all_payment_students = self.student_service.list_students()
         for pid in list(self._payment_panes.keys()):
@@ -249,7 +367,7 @@ class MainWindow(QMainWindow):
 
         edit_student_id = edit_name = edit_class = edit_section = edit_phone = edit_village = edit_guardian = None
         edit_van_fees = None
-        edit_school_fees = None
+        lbl_school_fees_editable = None
         edit_status = None
         lbl_van_fees = None
         lbl_school_fees = None
@@ -264,7 +382,8 @@ class MainWindow(QMainWindow):
             edit_village = QLineEdit(str(getattr(student, "village", None) or ""))
             edit_guardian = QLineEdit(str(student.guardian_name or ""))
             edit_van_fees = QLineEdit(str(float(getattr(student, "van_fees", 0) or 0)))
-            edit_school_fees = QLineEdit(str(float(getattr(student, "school_fees", 0) or 0)))
+            lbl_school_fees_editable = QLabel(f"{float(getattr(student, 'school_fees', 0) or 0):.2f}")
+            lbl_school_fees_editable.setToolTip("School fee tariff is managed under Fee Control (by class).")
             edit_status = QComboBox()
             edit_status.addItems(["active", "inactive"])
             current_status = str(student.status or "active").lower()
@@ -281,7 +400,7 @@ class MainWindow(QMainWindow):
             details_layout.addRow("Village", edit_village)
             details_layout.addRow("Guardian Name", edit_guardian)
             details_layout.addRow("Van Fees", edit_van_fees)
-            details_layout.addRow("School Fees", edit_school_fees)
+            details_layout.addRow("School Fees (read-only)", lbl_school_fees_editable)
             details_layout.addRow("Status", edit_status)
         else:
             ro_student_id = QLabel(str(student.student_id or "-"))
@@ -385,7 +504,7 @@ class MainWindow(QMainWindow):
                     edit_guardian.text(),
                     edit_status.currentText(),
                     edit_van_fees.text(),
-                    edit_school_fees.text(),
+                    class_fee_service=self.class_fee_service,
                 )
                 self.selected_student = updated
                 self._load_payment_student_options()
@@ -394,7 +513,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Student updated", f"Student {updated.full_name} ({updated.student_id}) updated successfully.")
                 heading.setText(f"{updated.full_name} ({updated.student_id})")
                 edit_van_fees.setText(str(float(updated.van_fees)))
-                edit_school_fees.setText(str(float(updated.school_fees)))
+                if lbl_school_fees_editable is not None:
+                    lbl_school_fees_editable.setText(f"{float(updated.school_fees):.2f}")
                 if popup_out_van is not None and popup_out_school is not None and popup_out_total is not None:
                     d = self.payment_service.get_student_due_breakdown(updated.id)
                     popup_out_van.setText(f"{d['van_due']:.2f}")
@@ -554,16 +674,16 @@ class MainWindow(QMainWindow):
             st = self.student_service.create_student(
                 self.add_student_id.text(),
                 self.add_student_name.text(),
-                self.add_student_class.text(),
-                self.add_student_section.text(),
+                self.add_student_class.currentText(),
+                self.add_student_section.currentText(),
                 self.add_student_phone.text(),
                 self.add_student_village.text(),
                 self.add_student_guardian.text(),
                 self.add_student_status.currentText(),
                 self.add_student_van_fees.text(),
-                self.add_student_school_fees.text(),
+                class_fee_service=self.class_fee_service,
             )
-            self.add_student_id.clear(); self.add_student_name.clear(); self.add_student_class.clear(); self.add_student_section.clear(); self.add_student_phone.clear(); self.add_student_village.clear(); self.add_student_guardian.clear(); self.add_student_van_fees.clear(); self.add_student_school_fees.setText("20000"); self.add_student_status.setCurrentIndex(0)
+            self.add_student_id.clear(); self.add_student_name.clear(); self.add_student_class.setCurrentIndex(3); self.add_student_section.setCurrentIndex(0); self.add_student_phone.clear(); self.add_student_village.clear(); self.add_student_guardian.clear(); self.add_student_van_fees.clear(); self.add_student_status.setCurrentIndex(0)
             self._load_report_filter_values()
             self._load_payment_student_options()
             self.perform_search()

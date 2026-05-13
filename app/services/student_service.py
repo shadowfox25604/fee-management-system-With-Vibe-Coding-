@@ -26,21 +26,6 @@ class StudentService:
             raise ValueError(f"{field_name} cannot be negative")
         return v
 
-    @staticmethod
-    def _parse_school_fees(value) -> float:
-        if value is None or value == "":
-            return 20000.0
-        if isinstance(value, str):
-            s = value.strip()
-            if s == "":
-                return 20000.0
-            v = float(s)
-        else:
-            v = float(value)
-        if v < 0:
-            raise ValueError("School fees cannot be negative")
-        return v
-
     def create_student(
         self,
         student_id,
@@ -52,7 +37,7 @@ class StudentService:
         guardian_name="",
         status="active",
         van_fees=7000.0,
-        school_fees=20000.0,
+        class_fee_service=None,
     ):
         if not (student_id or "").strip():
             raise ValueError("Student ID is required")
@@ -67,7 +52,10 @@ class StudentService:
         if not (guardian_name or "").strip():
             raise ValueError("Guardian name is required")
         vf = self._parse_fee_amount(van_fees, "Van fees")
-        sf = self._parse_school_fees(school_fees)
+        if class_fee_service is not None:
+            sf = class_fee_service.school_fees_for_class_name(class_name)
+        else:
+            sf = 20000.0
         return self.repo.create_student(
             student_id, full_name, class_name, section, phone, village, guardian_name, status, vf, sf
         )
@@ -84,7 +72,7 @@ class StudentService:
         guardian_name="",
         status="active",
         van_fees=0.0,
-        school_fees=20000.0,
+        class_fee_service=None,
     ):
         if not student:
             raise ValueError("Student is required")
@@ -101,7 +89,10 @@ class StudentService:
         if not (guardian_name or "").strip():
             raise ValueError("Guardian name is required")
         vf = self._parse_fee_amount(van_fees, "Van fees")
-        sf = self._parse_school_fees(school_fees)
+        if class_fee_service is not None:
+            sf = class_fee_service.school_fees_for_student_update(student, class_name)
+        else:
+            sf = float(getattr(student, "school_fees", 0) or 0.0)
         return self.repo.update_student(
             student, student_id, full_name, class_name, section, phone, village, guardian_name, status, vf, sf
         )
