@@ -1,0 +1,9 @@
+pyside6
+sqlalchemy
+alembic
+pandas
+xlsxwriter
+reportlab
+pytest
+pyinstaller
+bcrypt
