@@ -11,6 +11,7 @@ from app.core.schema_migrations import (
 )
 from app.models import ClassSchoolFee, FeeHead, Invoice, Payment, Student, entities  # noqa: F401
 from app.repositories.class_fee_repository import ClassFeeRepository
+from app.core.payment_reference import REF_LEN, is_compact_payment_reference
 from app.repositories.payment_repository import PaymentRepository
 
 
@@ -97,11 +98,14 @@ def test_split_payment_top_up_when_invoices_smaller_than_tariff():
 
         payments = s.scalars(select(Payment).where(Payment.student_id_fk == st.id)).all()
         assert len(payments) == 1
+        assert payments[0].reference_no
+        assert is_compact_payment_reference(payments[0].reference_no)
+        assert len(payments[0].reference_no.strip()) == REF_LEN
     finally:
         s.close()
 
 
-def test_split_payment_with_discount_records_net_amount():
+def test_split_payment_with_discount_records_total_amount():
     Base.metadata.create_all(bind=engine)
     apply_sqlite_column_migrations(engine)
     apply_sqlite_data_migrations(engine)
@@ -165,11 +169,73 @@ def test_split_payment_with_discount_records_net_amount():
             discount_amount=500.0,
         )
         assert float(pay.discount_amount) == 500.0
-        assert float(pay.amount) == 2500.0
+        assert float(pay.amount) == 3500.0
         due_after = repo.get_student_due_breakdown(st.id)
         assert due_after["fee_due"] == 7500.0
         assert due_after["van_due"] == 4000.0
         assert due_after["total"] == 11500.0
+    finally:
+        s.close()
+
+
+def test_split_payment_school_fully_covered_by_discount_stores_sum_in_payment_amount():
+    """School + van + discount is stored on Payment.amount; invoices still allocate school and van lines."""
+    Base.metadata.create_all(bind=engine)
+    apply_sqlite_column_migrations(engine)
+    apply_sqlite_data_migrations(engine)
+    s = SessionLocal()
+    try:
+        t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
+        tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
+        if t is None:
+            t = FeeHead(head_name="Tuition", frequency="monthly", default_amount=2000.0)
+            s.add(t)
+        if tr is None:
+            tr = FeeHead(head_name="Transport", frequency="monthly", default_amount=500.0)
+            s.add(tr)
+        s.flush()
+
+        sid = f"Z0{uuid.uuid4().hex[:8].upper()}"
+        st = Student(
+            student_id=sid,
+            full_name="Zero Net Discount Test",
+            class_name="3",
+            section="A",
+            phone=f"4{uuid.uuid4().int % 10**9:09d}",
+            guardian_name="G",
+            van_fees=0.0,
+            school_fees=20000.0,
+        )
+        s.add(st)
+        s.commit()
+        s.refresh(st)
+
+        d = date(2026, 7, 1)
+        s.add(
+            Invoice(
+                student_id_fk=st.id,
+                fee_head_id=t.id,
+                period_label="2026-01",
+                due_date=d,
+                amount_due=20000.0,
+                amount_paid=0.0,
+            )
+        )
+        s.commit()
+
+        repo = PaymentRepository(s)
+        pay = repo.create_split_payment(
+            st,
+            van_amount=0.0,
+            school_amount=1000.0,
+            mode="cash",
+            operator_name="test",
+            discount_amount=1000.0,
+        )
+        assert float(pay.discount_amount) == 1000.0
+        assert float(pay.amount) == 2000.0
+        inv = s.scalars(select(Invoice).where(Invoice.student_id_fk == st.id)).first()
+        assert float(inv.amount_paid) == 1000.0
     finally:
         s.close()
 
@@ -239,6 +305,8 @@ def test_split_payment_stores_explicit_payment_date():
             payment_date=pay_day,
         )
         assert pay.payment_date == pay_day
+        assert float(pay.amount) == 300.0
+        assert float(pay.discount_amount) == 0.0
     finally:
         s.close()
 
@@ -461,5 +529,258 @@ def test_class_fee_apply_updates_students_scales_tuition_leaves_transport_invoic
         pay_repo = PaymentRepository(s)
         due = pay_repo.get_student_due_breakdown(st.id)
         assert due["van_due"] == 3000.0
+    finally:
+        s.close()
+
+
+def test_village_van_fee_apply_updates_students_scales_transport_leaves_tuition_invoices():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.core.database import Base
+    from app.models import VillageVanFee
+    from app.repositories.village_van_fee_repository import VillageVanFeeRepository
+
+    mem = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=mem)
+    apply_sqlite_column_migrations(mem)
+    MemSession = sessionmaker(bind=mem, autoflush=False, autocommit=False)
+    s = MemSession()
+    try:
+        t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
+        tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
+        if t is None:
+            t = FeeHead(head_name="Tuition", frequency="monthly", default_amount=2000.0)
+            s.add(t)
+        if tr is None:
+            tr = FeeHead(head_name="Transport", frequency="monthly", default_amount=500.0)
+            s.add(tr)
+        s.flush()
+
+        sid = f"VF{uuid.uuid4().hex[:8].upper()}"
+        st = Student(
+            student_id=sid,
+            full_name="Village Van Fee Test",
+            class_name="5",
+            section="A",
+            phone=f"2{uuid.uuid4().int % 10**9:09d}",
+            guardian_name="G",
+            village="Nagaram",
+            van_fees=3000.0,
+            school_fees=20000.0,
+        )
+        s.add(st)
+        s.commit()
+        s.refresh(st)
+
+        d = date(2026, 4, 1)
+        inv_s = Invoice(
+            student_id_fk=st.id,
+            fee_head_id=t.id,
+            period_label="2026-01",
+            due_date=d,
+            amount_due=10000.0,
+            amount_paid=0.0,
+        )
+        inv_v = Invoice(
+            student_id_fk=st.id,
+            fee_head_id=tr.id,
+            period_label="2026-01",
+            due_date=d,
+            amount_due=500.0,
+            amount_paid=0.0,
+        )
+        s.add(inv_s)
+        s.add(inv_v)
+        s.commit()
+
+        vfr = VillageVanFeeRepository(s)
+        n = vfr.apply_village_van_fee("Nagaram", 4500.0)
+        assert n == 1
+
+        st2 = s.get(Student, st.id)
+        assert float(st2.van_fees) == 4500.0
+        assert float(st2.school_fees) == 20000.0
+
+        s.refresh(inv_s)
+        s.refresh(inv_v)
+        assert float(inv_s.amount_due) == 10000.0
+        assert float(inv_v.amount_due) == 750.0
+
+        row = s.get(VillageVanFee, "Nagaram")
+        assert row is not None
+        assert float(row.amount) == 4500.0
+
+        pay_repo = PaymentRepository(s)
+        due = pay_repo.get_student_due_breakdown(st.id)
+        assert due["fee_due"] == 20000.0
+    finally:
+        s.close()
+
+
+def test_payment_receipt_pdf_writes_valid_pdf(tmp_path):
+    from datetime import datetime
+
+    from app.reports.payment_receipt_pdf import render_payment_receipt
+
+    out = tmp_path / "receipt.pdf"
+    render_payment_receipt(
+        out,
+        student_name="Receipt Student",
+        roll_number="STU9999",
+        class_name="6",
+        section="A",
+        guardian_name="Parent Name",
+        school_fees_paid=1000.0,
+        van_fees_paid=500.0,
+        discount=100.0,
+        total_fees_due=2500.0,
+        receipt_no="ABCD12345678",
+        generated_at=datetime(2026, 5, 14, 14, 30, 0),
+    )
+    assert out.is_file()
+    data = out.read_bytes()
+    assert data[:4] == b"%PDF"
+    assert len(data) > 2000
+
+
+def test_create_split_rejects_discount_greater_than_school_amount():
+    Base.metadata.create_all(bind=engine)
+    apply_sqlite_column_migrations(engine)
+    apply_sqlite_data_migrations(engine)
+    s = SessionLocal()
+    try:
+        t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
+        tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
+        if t is None:
+            t = FeeHead(head_name="Tuition", frequency="monthly", default_amount=2000.0)
+            s.add(t)
+        if tr is None:
+            tr = FeeHead(head_name="Transport", frequency="monthly", default_amount=500.0)
+            s.add(tr)
+        s.flush()
+
+        sid = f"DC{uuid.uuid4().hex[:8].upper()}"
+        st = Student(
+            student_id=sid,
+            full_name="Discount Cap Test",
+            class_name="2",
+            section="A",
+            phone=f"1{uuid.uuid4().int % 10**9:09d}",
+            guardian_name="G",
+            van_fees=1000.0,
+            school_fees=5000.0,
+        )
+        s.add(st)
+        s.commit()
+        s.refresh(st)
+
+        d = date(2026, 9, 1)
+        s.add(
+            Invoice(
+                student_id_fk=st.id,
+                fee_head_id=t.id,
+                period_label="2026-01",
+                due_date=d,
+                amount_due=5000.0,
+                amount_paid=0.0,
+            )
+        )
+        s.add(
+            Invoice(
+                student_id_fk=st.id,
+                fee_head_id=tr.id,
+                period_label="2026-01",
+                due_date=d,
+                amount_due=500.0,
+                amount_paid=0.0,
+            )
+        )
+        s.commit()
+
+        repo = PaymentRepository(s)
+        with pytest.raises(ValueError, match="Discount cannot exceed"):
+            repo.create_split_payment(
+                st,
+                van_amount=0.0,
+                school_amount=100.0,
+                mode="cash",
+                operator_name="test",
+                discount_amount=150.0,
+            )
+    finally:
+        s.close()
+
+
+def test_payment_service_collect_split_delegates_to_repo():
+    from app.services.payment_service import PaymentService
+
+    Base.metadata.create_all(bind=engine)
+    apply_sqlite_column_migrations(engine)
+    apply_sqlite_data_migrations(engine)
+    s = SessionLocal()
+    try:
+        t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
+        tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
+        if t is None:
+            t = FeeHead(head_name="Tuition", frequency="monthly", default_amount=2000.0)
+            s.add(t)
+        if tr is None:
+            tr = FeeHead(head_name="Transport", frequency="monthly", default_amount=500.0)
+            s.add(tr)
+        s.flush()
+
+        sid = f"PS{uuid.uuid4().hex[:8].upper()}"
+        st = Student(
+            student_id=sid,
+            full_name="Service Split Test",
+            class_name="7",
+            section="C",
+            phone=f"0{uuid.uuid4().int % 10**9:09d}",
+            guardian_name="G",
+            van_fees=500.0,
+            school_fees=3000.0,
+        )
+        s.add(st)
+        s.commit()
+        s.refresh(st)
+
+        d_inv = date(2026, 10, 1)
+        s.add(
+            Invoice(
+                student_id_fk=st.id,
+                fee_head_id=t.id,
+                period_label="2026-01",
+                due_date=d_inv,
+                amount_due=3000.0,
+                amount_paid=0.0,
+            )
+        )
+        s.add(
+            Invoice(
+                student_id_fk=st.id,
+                fee_head_id=tr.id,
+                period_label="2026-01",
+                due_date=d_inv,
+                amount_due=500.0,
+                amount_paid=0.0,
+            )
+        )
+        s.commit()
+
+        pay_day = date(2026, 1, 15)
+        svc = PaymentService(s)
+        pay = svc.collect_split_payment(
+            st,
+            van_amount=100.0,
+            school_amount=200.0,
+            mode="card",
+            operator_name="svc_op",
+            discount_amount=50.0,
+            payment_date=pay_day,
+        )
+        assert float(pay.amount) == 350.0
+        assert pay.mode == "card"
+        assert pay.operator_name == "svc_op"
     finally:
         s.close()

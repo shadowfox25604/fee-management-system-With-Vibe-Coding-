@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
@@ -26,12 +26,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from sqlalchemy.exc import IntegrityError
-from app.core.fee_control_constants import FIXED_CLASS_KEYS, FIXED_SECTION_KEYS
+from app.core.fee_control_constants import (
+    FIXED_CLASS_KEYS,
+    FIXED_SECTION_KEYS,
+    FIXED_VILLAGE_KEYS,
+    canonical_village_for_student_village,
+)
 from app.models import Student
 from app.reports.excel_export import ExcelExporter
+from app.reports.payment_receipt_pdf import render_payment_receipt
 from app.reports.pdf_export import PdfExporter
 from app.services.backup_service import BackupService
 from app.services.class_fee_service import ClassFeeService
+from app.services.village_van_fee_service import VillageVanFeeService
 from app.services.payment_service import PaymentService
 from app.services.report_service import ReportService
 from app.services.student_service import StudentService
@@ -54,6 +61,7 @@ class MainWindow(QMainWindow):
         self.report_service = ReportService(session)
         self.backup_service = BackupService()
         self.class_fee_service = ClassFeeService(session)
+        self.village_van_fee_service = VillageVanFeeService(session)
         self.selected_student = None
         self._payment_panes: dict[str, PaymentLikePane] = {}
         self.setWindowTitle("Offline Fee Management")
@@ -66,6 +74,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_reports_tab(), "Reports")
         tabs.addTab(self._build_backup_tab(), "Backup")
         self._fee_control_tab_index = tabs.addTab(self._build_fee_control_tab(), "Fee Control")
+        self._payment_history_tab_index = tabs.addTab(self._build_payment_history_tab(), "Payment History")
         tabs.currentChanged.connect(self._on_main_tab_changed)
         self.setCentralWidget(tabs)
         self.perform_search()
@@ -73,11 +82,11 @@ class MainWindow(QMainWindow):
         w=QWidget(); layout=QVBoxLayout(w); row=QHBoxLayout()
         self.search_by=QComboBox(); self.search_by.addItems(["Roll Number","Name"]); self.search_by.setCurrentIndex(1); self.search_by.currentIndexChanged.connect(self.on_student_search_basis_changed)
         self.search_input=QLineEdit(); self.search_input.textChanged.connect(lambda _: self.perform_search())
-        self.sort_by=QComboBox(); self.sort_by.addItems(["PK","Student ID","Name","Class","Section","Phone","Village","Status","Van Fees","Van Fees Paid","Van Fees Due","School Fees","School Fees Paid","Discount","School Fees Due","Total Fees","Total Fees Due"]); self.sort_by.currentIndexChanged.connect(self.perform_search)
+        self.sort_by=QComboBox(); self.sort_by.addItems(["PK","Student ID","Name","Class","Section","Phone","Guardian Name","Village","Status","Van Fees","Van Fees Paid","Van Fees Due","School Fees","School Fees Paid","Discount","School Fees Due","Total Fees","Total Fees Due"]); self.sort_by.currentIndexChanged.connect(self.perform_search)
         self.sort_order=QComboBox(); self.sort_order.addItems(["Ascending","Descending"]); self.sort_order.currentIndexChanged.connect(self.perform_search)
         btn=QPushButton("Search"); btn.clicked.connect(self.perform_search)
         row.addWidget(self.search_by); row.addWidget(self.search_input); row.addWidget(self.sort_by); row.addWidget(self.sort_order); row.addWidget(btn)
-        self.student_table=QTableWidget(0,17); self.student_table.setHorizontalHeaderLabels(["PK","Student ID","Name","Class","Section","Phone","Village","Status","Van Fees","Van Fees Paid","Van Fees Due","School Fees","School Fees Paid","Discount","School Fees Due","Total Fees","Total Fees Due"])
+        self.student_table=QTableWidget(0,18); self.student_table.setHorizontalHeaderLabels(["PK","Student ID","Name","Class","Section","Phone","Guardian Name","Village","Status","Van Fees","Van Fees Paid","Van Fees Due","School Fees","School Fees Paid","Discount","School Fees Due","Total Fees","Total Fees Due"])
         self.student_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.student_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.student_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -134,12 +143,12 @@ class MainWindow(QMainWindow):
         self.add_student_class.setCurrentIndex(3)
         self.add_student_section = QComboBox()
         self.add_student_section.addItems(list(FIXED_SECTION_KEYS))
-        self.add_student_phone=QLineEdit(); self.add_student_village=QLineEdit()
-        self.add_student_village.setPlaceholderText("Village")
-        self.add_student_guardian=QLineEdit()
-        self.add_student_van_fees = QLineEdit()
-        self.add_student_van_fees.setPlaceholderText("0")
-        self.add_student_status=QComboBox(); self.add_student_status.addItems(["active","inactive"])
+        self.add_student_phone = QLineEdit()
+        self.add_student_village = QComboBox()
+        self.add_student_village.addItems(list(FIXED_VILLAGE_KEYS))
+        self.add_student_guardian = QLineEdit()
+        self.add_student_status = QComboBox()
+        self.add_student_status.addItems(["active", "inactive"])
         school_fee_hint = QLabel(
             "School fees are set automatically from the student’s class (see Fee Control tab). "
             "Classes outside the fixed list use the default amount until you set them in Fee Control. "
@@ -147,8 +156,25 @@ class MainWindow(QMainWindow):
         )
         school_fee_hint.setWordWrap(True)
         school_fee_hint.setStyleSheet("color: #888;")
-        b=QPushButton("Add Student"); b.clicked.connect(self.add_student)
-        layout.addRow("Student ID", self.add_student_id); layout.addRow("Name", self.add_student_name); layout.addRow("Class", self.add_student_class); layout.addRow("Section", self.add_student_section); layout.addRow("Phone", self.add_student_phone); layout.addRow("Village", self.add_student_village); layout.addRow("Guardian Name", self.add_student_guardian); layout.addRow("Van Fees", self.add_student_van_fees); layout.addRow(school_fee_hint); layout.addRow("Status", self.add_student_status); layout.addRow(b)
+        van_fee_hint = QLabel(
+            "Van fees are set automatically from the student’s village (see Fee Control tab). "
+            "Only the listed villages are available."
+        )
+        van_fee_hint.setWordWrap(True)
+        van_fee_hint.setStyleSheet("color: #888;")
+        b = QPushButton("Add Student")
+        b.clicked.connect(self.add_student)
+        layout.addRow("Student ID", self.add_student_id)
+        layout.addRow("Name", self.add_student_name)
+        layout.addRow("Class", self.add_student_class)
+        layout.addRow("Section", self.add_student_section)
+        layout.addRow("Phone", self.add_student_phone)
+        layout.addRow("Village", self.add_student_village)
+        layout.addRow("Guardian Name", self.add_student_guardian)
+        layout.addRow(van_fee_hint)
+        layout.addRow(school_fee_hint)
+        layout.addRow("Status", self.add_student_status)
+        layout.addRow(b)
         return w
     def _build_reports_tab(self):
         w=QWidget(); layout=QVBoxLayout(w); row=QHBoxLayout()
@@ -180,41 +206,133 @@ class MainWindow(QMainWindow):
     def _build_fee_control_tab(self):
         w = QWidget()
         layout = QVBoxLayout(w)
-        layout.addWidget(
-            QLabel(
-                "Set the school fee tariff for each class (fixed list). Class names on students are matched "
-                "case-insensitively. Apply updates all matching students’ school fees, adjusts tuition invoice "
-                "amounts only, and does not change van fees or transport invoices. A confirmation is required before saving."
-            )
+        school_lbl = QLabel(
+            "School fees: set the tariff for each class (fixed list). Class names on students are matched "
+            "case-insensitively. Apply updates all matching students’ school fees, adjusts tuition invoice "
+            "amounts only, and does not change van fees or transport invoices."
         )
+        school_lbl.setWordWrap(True)
+        van_lbl = QLabel(
+            "Van fees: set the tariff for each village (fixed list). Village on students is matched "
+            "case-insensitively. Apply updates all matching students’ van fees, adjusts transport/van invoice "
+            "amounts only, and does not change tuition invoices."
+        )
+        van_lbl.setWordWrap(True)
+        confirm_lbl = QLabel("A confirmation is required before saving each row.")
+        confirm_lbl.setWordWrap(True)
+        layout.addWidget(school_lbl)
+        layout.addWidget(van_lbl)
+        layout.addWidget(confirm_lbl)
+
+        tables_row = QHBoxLayout()
         self._fee_control_amount_edits = {}
-        tbl = QTableWidget(len(FIXED_CLASS_KEYS), 3)
-        tbl.setHorizontalHeaderLabels(["Class", "School fee (₹)", ""])
-        tbl.verticalHeader().setVisible(False)
+        tbl_school = QTableWidget(len(FIXED_CLASS_KEYS), 3)
+        tbl_school.setHorizontalHeaderLabels(["Class", "School fee (₹)", ""])
+        tbl_school.verticalHeader().setVisible(False)
         for row, class_key in enumerate(FIXED_CLASS_KEYS):
-            tbl.setItem(row, 0, QTableWidgetItem(class_key))
+            tbl_school.setItem(row, 0, QTableWidgetItem(class_key))
             amount_edit = QLineEdit()
             amount_edit.setPlaceholderText("20000")
             self._fee_control_amount_edits[class_key] = amount_edit
-            tbl.setCellWidget(row, 1, amount_edit)
+            tbl_school.setCellWidget(row, 1, amount_edit)
             apply_btn = QPushButton("Apply…")
             apply_btn.clicked.connect(lambda _=False, ck=class_key: self._on_fee_control_apply_clicked(ck))
-            tbl.setCellWidget(row, 2, apply_btn)
-        tbl.resizeColumnsToContents()
-        layout.addWidget(tbl)
-        self._fee_control_table = tbl
+            tbl_school.setCellWidget(row, 2, apply_btn)
+        tbl_school.resizeColumnsToContents()
+
+        self._van_fee_control_amount_edits = {}
+        tbl_van = QTableWidget(len(FIXED_VILLAGE_KEYS), 3)
+        tbl_van.setHorizontalHeaderLabels(["Village", "Van fee (₹)", ""])
+        tbl_van.verticalHeader().setVisible(False)
+        for row, village_key in enumerate(FIXED_VILLAGE_KEYS):
+            tbl_van.setItem(row, 0, QTableWidgetItem(village_key))
+            v_edit = QLineEdit()
+            v_edit.setPlaceholderText("0")
+            self._van_fee_control_amount_edits[village_key] = v_edit
+            tbl_van.setCellWidget(row, 1, v_edit)
+            v_apply = QPushButton("Apply…")
+            v_apply.clicked.connect(lambda _=False, vk=village_key: self._on_van_fee_control_apply_clicked(vk))
+            tbl_van.setCellWidget(row, 2, v_apply)
+        tbl_van.resizeColumnsToContents()
+
+        tables_row.addWidget(tbl_school, 1)
+        tables_row.addWidget(tbl_van, 1)
+        layout.addLayout(tables_row)
+        self._fee_control_table = tbl_school
+        self._van_fee_control_table = tbl_van
         self._refresh_fee_control_amounts()
+        self._refresh_van_fee_control_amounts()
         return w
 
     def _on_main_tab_changed(self, index: int):
         if index == getattr(self, "_fee_control_tab_index", -1):
             self._refresh_fee_control_amounts()
+            self._refresh_van_fee_control_amounts()
+        if index == getattr(self, "_payment_history_tab_index", -1):
+            self._refresh_payment_history_table()
+
+    def _build_payment_history_tab(self):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        hint = QLabel(
+            "Recorded payments (newest first). Each payment has a 12-character reference (letters A-Z and digits 0-9). "
+            "Use the filter to search by reference, student ID, or name. Collected (₹) is school + van + discount for that payment; discount applies to school fee due only."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #555;")
+        row = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self._refresh_payment_history_table)
+        row.addWidget(refresh_btn)
+        row.addWidget(QLabel("Filter:"))
+        self._payment_history_filter = QLineEdit()
+        self._payment_history_filter.setPlaceholderText("Reference, student ID, or name...")
+        self._payment_history_filter.textChanged.connect(lambda _: self._refresh_payment_history_table())
+        row.addWidget(self._payment_history_filter, 1)
+        self._payment_history_table = QTableWidget(0, 8)
+        self._payment_history_table.setHorizontalHeaderLabels(
+            ["Date", "Reference", "Student ID", "Name", "Total (₹)", "Discount (₹)", "Mode", "Operator"]
+        )
+        self._payment_history_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._payment_history_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._payment_history_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        layout.addWidget(hint)
+        layout.addLayout(row)
+        layout.addWidget(self._payment_history_table)
+        return w
+
+    def _refresh_payment_history_table(self):
+        if not hasattr(self, "_payment_history_table"):
+            return
+        search = self._payment_history_filter.text() if hasattr(self, "_payment_history_filter") else ""
+        rows = self.payment_service.list_payment_history(limit=5000, search=search)
+        tbl = self._payment_history_table
+        tbl.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            d = r["payment_date"]
+            date_s = f"{d.day:02d}/{d.month:02d}/{d.year}" if d else ""
+            tbl.setItem(i, 0, QTableWidgetItem(date_s))
+            tbl.setItem(i, 1, QTableWidgetItem(str(r["reference_no"])))
+            tbl.setItem(i, 2, QTableWidgetItem(str(r["student_roll"])))
+            tbl.setItem(i, 3, QTableWidgetItem(str(r["student_name"])))
+            tbl.setItem(i, 4, QTableWidgetItem(f"{float(r['amount']):.2f}"))
+            tbl.setItem(i, 5, QTableWidgetItem(f"{float(r['discount']):.2f}"))
+            tbl.setItem(i, 6, QTableWidgetItem(str(r["mode"])))
+            tbl.setItem(i, 7, QTableWidgetItem(str(r["operator"])))
+        tbl.resizeColumnsToContents()
 
     def _refresh_fee_control_amounts(self):
         if not hasattr(self, "_fee_control_amount_edits"):
             return
         for class_key, edit in self._fee_control_amount_edits.items():
             amt = self.class_fee_service.display_amount_for_class(class_key)
+            edit.setText(f"{amt:.2f}")
+
+    def _refresh_van_fee_control_amounts(self):
+        if not hasattr(self, "_van_fee_control_amount_edits"):
+            return
+        for village_key, edit in self._van_fee_control_amount_edits.items():
+            amt = self.village_van_fee_service.display_amount_for_village(village_key)
             edit.setText(f"{amt:.2f}")
 
     def _on_fee_control_apply_clicked(self, class_key: str):
@@ -258,6 +376,48 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.session.rollback()
             QMessageBox.critical(self, "Fee update failed", str(e))
+
+    def _on_van_fee_control_apply_clicked(self, village_key: str):
+        edit = self._van_fee_control_amount_edits.get(village_key)
+        if edit is None:
+            return
+        raw = (edit.text() or "").strip()
+        try:
+            new_amt = float(raw) if raw else 0.0
+        except ValueError:
+            QMessageBox.warning(self, "Invalid amount", "Enter a valid number for the van fee.")
+            return
+        if new_amt < 0:
+            QMessageBox.warning(self, "Invalid amount", "Van fee cannot be negative.")
+            return
+        n = self.village_van_fee_service.count_students_in_village(village_key)
+        reply = QMessageBox.question(
+            self,
+            "Confirm village van fee update",
+            f"Set van fee for village “{village_key}” to {new_amt:.2f}?\n\n"
+            f"This will update {n} student(s) whose village matches (case-insensitive), set each student’s "
+            f"van_fees to this amount, scale transport/van invoice amount_due values, and store "
+            f"this amount for the village. Tuition invoices will not be changed.\n\n"
+            f"Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            updated = self.village_van_fee_service.apply_village_van_fee(village_key, new_amt)
+            QMessageBox.information(
+                self,
+                "Fee updated",
+                f"Village “{village_key}” van fee saved. {updated} student(s) updated.",
+            )
+            self._refresh_van_fee_control_amounts()
+            self.perform_search()
+            self._load_report_filter_values()
+            self._load_payment_student_options()
+        except Exception as e:
+            self.session.rollback()
+            QMessageBox.critical(self, "Van fee update failed", str(e))
 
     def _load_payment_student_options(self):
         self._all_payment_students = self.student_service.list_students()
@@ -365,9 +525,10 @@ class MainWindow(QMainWindow):
         lbl_pk = QLabel(str(student.id))
         lbl_created = QLabel(str(student.created_at or "-"))
 
-        edit_student_id = edit_name = edit_class = edit_section = edit_phone = edit_village = edit_guardian = None
-        edit_van_fees = None
+        edit_student_id = edit_name = edit_class = edit_section = edit_phone = edit_guardian = None
+        edit_village = None
         lbl_school_fees_editable = None
+        lbl_van_fees_editable = None
         edit_status = None
         lbl_van_fees = None
         lbl_school_fees = None
@@ -379,9 +540,16 @@ class MainWindow(QMainWindow):
             edit_class = QLineEdit(str(student.class_name or ""))
             edit_section = QLineEdit(str(student.section or ""))
             edit_phone = QLineEdit(str(student.phone or ""))
-            edit_village = QLineEdit(str(getattr(student, "village", None) or ""))
+            edit_village = QComboBox()
+            edit_village.addItems(list(FIXED_VILLAGE_KEYS))
+            key = canonical_village_for_student_village(getattr(student, "village", None))
+            if key:
+                vidx = edit_village.findText(key, Qt.MatchFixedString)
+                if vidx >= 0:
+                    edit_village.setCurrentIndex(vidx)
             edit_guardian = QLineEdit(str(student.guardian_name or ""))
-            edit_van_fees = QLineEdit(str(float(getattr(student, "van_fees", 0) or 0)))
+            lbl_van_fees_editable = QLabel(f"{float(getattr(student, 'van_fees', 0) or 0):.2f}")
+            lbl_van_fees_editable.setToolTip("Van fee tariff is managed under Fee Control (by village).")
             lbl_school_fees_editable = QLabel(f"{float(getattr(student, 'school_fees', 0) or 0):.2f}")
             lbl_school_fees_editable.setToolTip("School fee tariff is managed under Fee Control (by class).")
             edit_status = QComboBox()
@@ -399,7 +567,7 @@ class MainWindow(QMainWindow):
             details_layout.addRow("Phone", edit_phone)
             details_layout.addRow("Village", edit_village)
             details_layout.addRow("Guardian Name", edit_guardian)
-            details_layout.addRow("Van Fees", edit_van_fees)
+            details_layout.addRow("Van Fees (read-only)", lbl_van_fees_editable)
             details_layout.addRow("School Fees (read-only)", lbl_school_fees_editable)
             details_layout.addRow("Status", edit_status)
         else:
@@ -457,16 +625,29 @@ class MainWindow(QMainWindow):
             payment_layout.addRow("Mode", popup_mode)
             layout.addWidget(payment_box)
 
-        if student_fields_editable:
-            buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Close)
-        else:
-            buttons = QDialogButtonBox(QDialogButtonBox.Close)
         collect_btn = None
+        print_receipt_btn = None
         if show_payment_ui:
             collect_btn = QPushButton("Collect Payment")
-            buttons.addButton(collect_btn, QDialogButtonBox.ActionRole)
-        layout.addWidget(buttons)
-        buttons.rejected.connect(dialog.reject)
+            print_receipt_btn = QPushButton("Print Receipt")
+            close_pay_btn = QPushButton("Close")
+            pay_row = QHBoxLayout()
+            pay_row.addStretch(1)
+            pay_row.addWidget(collect_btn)
+            pay_row.addWidget(print_receipt_btn)
+            pay_row.addWidget(close_pay_btn)
+            pay_footer = QWidget()
+            pay_footer.setLayout(pay_row)
+            layout.addWidget(pay_footer)
+            close_pay_btn.clicked.connect(dialog.reject)
+        else:
+            buttons = QDialogButtonBox(
+                QDialogButtonBox.Save | QDialogButtonBox.Close
+                if student_fields_editable
+                else QDialogButtonBox.Close
+            )
+            layout.addWidget(buttons)
+            buttons.rejected.connect(dialog.reject)
 
         def _refresh_read_only_student_widgets(s):
             if not student_fields_editable and s is not None:
@@ -500,10 +681,10 @@ class MainWindow(QMainWindow):
                     edit_class.text(),
                     edit_section.text(),
                     edit_phone.text(),
-                    edit_village.text(),
+                    edit_village.currentText(),
                     edit_guardian.text(),
                     edit_status.currentText(),
-                    edit_van_fees.text(),
+                    village_fee_service=self.village_van_fee_service,
                     class_fee_service=self.class_fee_service,
                 )
                 self.selected_student = updated
@@ -512,7 +693,7 @@ class MainWindow(QMainWindow):
                 self._load_report_filter_values()
                 QMessageBox.information(self, "Student updated", f"Student {updated.full_name} ({updated.student_id}) updated successfully.")
                 heading.setText(f"{updated.full_name} ({updated.student_id})")
-                edit_van_fees.setText(str(float(updated.van_fees)))
+                lbl_van_fees_editable.setText(f"{float(updated.van_fees):.2f}")
                 if lbl_school_fees_editable is not None:
                     lbl_school_fees_editable.setText(f"{float(updated.school_fees):.2f}")
                 if popup_out_van is not None and popup_out_school is not None and popup_out_total is not None:
@@ -527,16 +708,35 @@ class MainWindow(QMainWindow):
                 self.session.rollback()
                 QMessageBox.critical(dialog, "Update error", str(e))
 
+        def _parse_split_payment_form():
+            school_txt = (popup_school_pay.text() or "").strip()
+            van_txt = (popup_van_pay.text() or "").strip()
+            disc_txt = (popup_discount.text() or "").strip()
+            school_amt = float(school_txt) if school_txt else 0.0
+            van_amt = float(van_txt) if van_txt else 0.0
+            disc_amt = float(disc_txt) if disc_txt else 0.0
+            qd = popup_payment_date.date()
+            pay_date = date(qd.year(), qd.month(), qd.day())
+            return school_amt, van_amt, disc_amt, pay_date
+
+        def _finalize_after_payment_saved():
+            self.session.refresh(student)
+            d = self.payment_service.get_student_due_breakdown(student.id)
+            popup_out_van.setText(f"{d['van_due']:.2f}")
+            popup_out_school.setText(f"{d['fee_due']:.2f}")
+            popup_out_total.setText(f"{d['total']:.2f}")
+            _refresh_read_only_student_widgets(student)
+            popup_school_pay.clear()
+            popup_van_pay.clear()
+            popup_discount.clear()
+            popup_payment_date.setDate(QDate.currentDate())
+            self.perform_search()
+            self._load_payment_student_options()
+            self._refresh_payment_history_table()
+
         def on_collect_payment():
             try:
-                school_txt = (popup_school_pay.text() or "").strip()
-                van_txt = (popup_van_pay.text() or "").strip()
-                disc_txt = (popup_discount.text() or "").strip()
-                school_amt = float(school_txt) if school_txt else 0.0
-                van_amt = float(van_txt) if van_txt else 0.0
-                disc_amt = float(disc_txt) if disc_txt else 0.0
-                qd = popup_payment_date.date()
-                pay_date = date(qd.year(), qd.month(), qd.day())
+                school_amt, van_amt, disc_amt, pay_date = _parse_split_payment_form()
                 payment = self.payment_service.collect_split_payment(
                     student,
                     van_amt,
@@ -546,26 +746,78 @@ class MainWindow(QMainWindow):
                     disc_amt,
                     pay_date,
                 )
-                QMessageBox.information(dialog, "Payment saved", f"Receipt generated: {payment.receipt_no}")
-                self.session.refresh(student)
-                d = self.payment_service.get_student_due_breakdown(student.id)
-                popup_out_van.setText(f"{d['van_due']:.2f}")
-                popup_out_school.setText(f"{d['fee_due']:.2f}")
-                popup_out_total.setText(f"{d['total']:.2f}")
-                _refresh_read_only_student_widgets(student)
-                popup_school_pay.clear()
-                popup_van_pay.clear()
-                popup_discount.clear()
-                popup_payment_date.setDate(QDate.currentDate())
-                self.perform_search()
-                self._load_payment_student_options()
+                QMessageBox.information(dialog, "Payment saved", f"Reference: {payment.reference_no}")
+                _finalize_after_payment_saved()
             except Exception as e:
                 QMessageBox.critical(dialog, "Payment error", str(e))
 
-        if student_fields_editable:
+        def on_print_receipt():
+            try:
+                school_amt, van_amt, disc_amt, pay_date = _parse_split_payment_form()
+                payment = self.payment_service.collect_split_payment(
+                    student,
+                    van_amt,
+                    school_amt,
+                    popup_mode.text() or "cash",
+                    "desktop_user",
+                    disc_amt,
+                    pay_date,
+                )
+            except Exception as e:
+                QMessageBox.critical(dialog, "Payment error", str(e))
+                return
+
+            due_after = self.payment_service.get_student_due_breakdown(student.id)
+            total_fees_due = float(due_after.get("total", 0.0) or 0.0)
+
+            default_name = f"Receipt_{student.student_id}_{payment.reference_no}.pdf"
+            path, _ = QFileDialog.getSaveFileName(
+                dialog, "Save receipt", str(Path.home() / default_name), "PDF (*.pdf)"
+            )
+            pdf_note = ""
+            if path:
+                if not str(path).lower().endswith(".pdf"):
+                    path = f"{path}.pdf"
+                try:
+                    render_payment_receipt(
+                        Path(path),
+                        student_name=student.full_name or "",
+                        roll_number=str(student.student_id or ""),
+                        class_name=str(student.class_name or ""),
+                        section=str(student.section or ""),
+                        guardian_name=str(student.guardian_name or ""),
+                        school_fees_paid=school_amt,
+                        van_fees_paid=van_amt,
+                        discount=disc_amt,
+                        total_fees_due=total_fees_due,
+                        receipt_no=payment.reference_no,
+                        generated_at=datetime.now(),
+                    )
+                    pdf_note = f"\n\nReceipt saved to:\n{path}"
+                except Exception as e:
+                    QMessageBox.warning(
+                        dialog,
+                        "Receipt file error",
+                        f"Payment was saved (Reference: {payment.reference_no}) but the PDF could not be written:\n{e}",
+                    )
+                    _finalize_after_payment_saved()
+                    return
+            else:
+                pdf_note = "\n\nNo PDF was saved (save dialog cancelled)."
+
+            QMessageBox.information(
+                dialog,
+                "Payment saved",
+                f"Reference: {payment.reference_no}{pdf_note}",
+            )
+            _finalize_after_payment_saved()
+
+        if not show_payment_ui and student_fields_editable:
             buttons.accepted.connect(on_save)
         if collect_btn is not None:
             collect_btn.clicked.connect(on_collect_payment)
+        if print_receipt_btn is not None:
+            print_receipt_btn.clicked.connect(on_print_receipt)
         dialog.exec()
     def _class_sort_value(self, class_name):
         cls = str(class_name or "").strip()
@@ -614,6 +866,8 @@ class MainWindow(QMainWindow):
                 return (student.section or "").lower()
             if sort_field == "Phone":
                 return (student.phone or "").lower()
+            if sort_field == "Guardian Name":
+                return (getattr(student, "guardian_name", None) or "").lower()
             if sort_field == "Village":
                 return (getattr(student, "village", None) or "").lower()
             if sort_field == "Status":
@@ -645,23 +899,25 @@ class MainWindow(QMainWindow):
             due = due_map.get(s.id, {"van_due": 0.0, "fee_due": 0.0, "total": 0.0})
             disc = float(discount_map.get(s.id, 0.0) or 0.0)
             v_text = str(getattr(s, "village", None) or "")
+            g_text = str(getattr(s, "guardian_name", None) or "")
             self.student_table.setItem(i, 0, QTableWidgetItem(str(s.id)))
             self.student_table.setItem(i, 1, QTableWidgetItem(s.student_id))
             self.student_table.setItem(i, 2, QTableWidgetItem(s.full_name))
             self.student_table.setItem(i, 3, QTableWidgetItem(str(s.class_name)))
             self.student_table.setItem(i, 4, QTableWidgetItem(str(s.section)))
             self.student_table.setItem(i, 5, QTableWidgetItem(s.phone))
-            self.student_table.setItem(i, 6, QTableWidgetItem(v_text))
-            self.student_table.setItem(i, 7, QTableWidgetItem(s.status))
-            self.student_table.setItem(i, 8, QTableWidgetItem(f"{float(getattr(s, 'van_fees', 0) or 0):.2f}"))
-            self.student_table.setItem(i, 9, QTableWidgetItem(f"{van_s['van_paid']:.2f}"))
-            self.student_table.setItem(i, 10, QTableWidgetItem(f"{due['van_due']:.2f}"))
-            self.student_table.setItem(i, 11, QTableWidgetItem(f"{float(getattr(s, 'school_fees', 0) or 0):.2f}"))
-            self.student_table.setItem(i, 12, QTableWidgetItem(f"{summary['fee_paid']:.2f}"))
-            self.student_table.setItem(i, 13, QTableWidgetItem(f"{disc:.2f}"))
-            self.student_table.setItem(i, 14, QTableWidgetItem(f"{due['fee_due']:.2f}"))
-            self.student_table.setItem(i, 15, QTableWidgetItem(f"{summary['total_fees']:.2f}"))
-            self.student_table.setItem(i, 16, QTableWidgetItem(f"{due['total']:.2f}"))
+            self.student_table.setItem(i, 6, QTableWidgetItem(g_text))
+            self.student_table.setItem(i, 7, QTableWidgetItem(v_text))
+            self.student_table.setItem(i, 8, QTableWidgetItem(s.status))
+            self.student_table.setItem(i, 9, QTableWidgetItem(f"{float(getattr(s, 'van_fees', 0) or 0):.2f}"))
+            self.student_table.setItem(i, 10, QTableWidgetItem(f"{van_s['van_paid']:.2f}"))
+            self.student_table.setItem(i, 11, QTableWidgetItem(f"{due['van_due']:.2f}"))
+            self.student_table.setItem(i, 12, QTableWidgetItem(f"{float(getattr(s, 'school_fees', 0) or 0):.2f}"))
+            self.student_table.setItem(i, 13, QTableWidgetItem(f"{summary['fee_paid']:.2f}"))
+            self.student_table.setItem(i, 14, QTableWidgetItem(f"{disc:.2f}"))
+            self.student_table.setItem(i, 15, QTableWidgetItem(f"{due['fee_due']:.2f}"))
+            self.student_table.setItem(i, 16, QTableWidgetItem(f"{summary['total_fees']:.2f}"))
+            self.student_table.setItem(i, 17, QTableWidgetItem(f"{due['total']:.2f}"))
     def on_student_selected(self,row,_):
         item=self.student_table.item(row,0)
         if not item: return
@@ -677,13 +933,20 @@ class MainWindow(QMainWindow):
                 self.add_student_class.currentText(),
                 self.add_student_section.currentText(),
                 self.add_student_phone.text(),
-                self.add_student_village.text(),
+                self.add_student_village.currentText(),
                 self.add_student_guardian.text(),
                 self.add_student_status.currentText(),
-                self.add_student_van_fees.text(),
+                village_fee_service=self.village_van_fee_service,
                 class_fee_service=self.class_fee_service,
             )
-            self.add_student_id.clear(); self.add_student_name.clear(); self.add_student_class.setCurrentIndex(3); self.add_student_section.setCurrentIndex(0); self.add_student_phone.clear(); self.add_student_village.clear(); self.add_student_guardian.clear(); self.add_student_van_fees.clear(); self.add_student_status.setCurrentIndex(0)
+            self.add_student_id.clear()
+            self.add_student_name.clear()
+            self.add_student_class.setCurrentIndex(3)
+            self.add_student_section.setCurrentIndex(0)
+            self.add_student_phone.clear()
+            self.add_student_village.setCurrentIndex(0)
+            self.add_student_guardian.clear()
+            self.add_student_status.setCurrentIndex(0)
             self._load_report_filter_values()
             self._load_payment_student_options()
             self.perform_search()

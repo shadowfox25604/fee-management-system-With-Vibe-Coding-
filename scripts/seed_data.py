@@ -2,6 +2,7 @@ from datetime import date, timedelta
 import random
 from app.core.database import SessionLocal, engine
 from app.core.schema_migrations import apply_sqlite_column_migrations, apply_sqlite_data_migrations
+from app.core.fee_control_constants import FIXED_VILLAGE_KEYS
 from app.core.security import hash_password
 from app.models import FeeHead, FeePlan, Invoice, Student, User
 
@@ -20,12 +21,7 @@ GUARDIAN_FIRST_NAMES = [
     "Deepak", "Manish", "Seema", "Rekha", "Mukesh", "Nitin", "Farah", "Ayesha", "Harish", "Ravi",
 ]
 
-VILLAGES = [
-    "Rampur", "Bisrakh", "Dadri", "Muradnagar", "Modinagar", "Hapur", "Garhmukteshwar",
-    "Simbhawali", "Baraut", "Baghpat", "Sardhana", "Daurala", "Partapur", "Khekra", "Loni", "Ghaziabad",
-]
-
-
+VILLAGES = list(FIXED_VILLAGE_KEYS)
 def _unique_student_values(idx, used_ids, used_phones):
     student_id = f"STU{idx:04d}"
     while student_id in used_ids:

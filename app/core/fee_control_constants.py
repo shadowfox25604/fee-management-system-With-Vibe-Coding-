@@ -35,3 +35,37 @@ def canonical_class_for_student_class(class_name: str | None) -> str | None:
         if normalize_class_name(key) == n:
             return key
     return None
+
+
+FIXED_VILLAGE_KEYS: tuple[str, ...] = (
+    "Nagaram",
+    "Kamalapur",
+    "Dharmapuri",
+    "Thimmapur",
+    "Thummenala",
+    "Rayapatnam",
+    "Rajaram",
+    "Damannapet",
+    "Jaina",
+    "Edapelly",
+    "Ramaiahpally",
+    "Burugupally",
+    "LN Colony",
+    "Thenuguwada",
+    "ARR Colony",
+)
+
+
+def normalize_village_name(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def canonical_village_for_student_village(village: str | None) -> str | None:
+    """Return fixed-list key if student village matches any entry (case-insensitive)."""
+    n = normalize_village_name(village)
+    if not n:
+        return None
+    for key in FIXED_VILLAGE_KEYS:
+        if normalize_village_name(key) == n:
+            return key
+    return None

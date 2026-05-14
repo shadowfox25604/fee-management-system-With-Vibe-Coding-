@@ -48,7 +48,7 @@ class Payment(Base):
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     discount_amount: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     mode: Mapped[str] = mapped_column(String(20), default="cash")
-    receipt_no: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
+    reference_no: Mapped[str] = mapped_column(String(16), unique=True, nullable=False)
     operator_name: Mapped[str] = mapped_column(String(60), default="admin")
     student = relationship("Student", back_populates="payments")
 
@@ -56,6 +56,13 @@ class ClassSchoolFee(Base):
     __tablename__ = "class_school_fees"
     class_key: Mapped[str] = mapped_column(String(30), primary_key=True)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class VillageVanFee(Base):
+    __tablename__ = "village_van_fees"
+    village_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+
 
 class FeePlan(Base):
     __tablename__ = "fee_plans"

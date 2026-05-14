@@ -56,3 +56,6 @@ class PaymentService:
         if due["total"] <= 0:
             raise ValueError("No outstanding amount for this student")
         return self.repo.create_split_payment(student, va, sa, mode, operator_name, disc, payment_date)
+
+    def list_payment_history(self, limit: int = 2000, search: str | None = None):
+        return self.repo.list_recent_payments_with_students(limit, search=search)

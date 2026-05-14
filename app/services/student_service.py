@@ -36,7 +36,8 @@ class StudentService:
         village="",
         guardian_name="",
         status="active",
-        van_fees=7000.0,
+        van_fees=None,
+        village_fee_service=None,
         class_fee_service=None,
     ):
         if not (student_id or "").strip():
@@ -51,7 +52,12 @@ class StudentService:
             raise ValueError("Phone is required")
         if not (guardian_name or "").strip():
             raise ValueError("Guardian name is required")
-        vf = self._parse_fee_amount(van_fees, "Van fees")
+        if village_fee_service is not None:
+            vf = float(village_fee_service.van_fees_for_village_name(village))
+        elif van_fees is not None and van_fees != "":
+            vf = self._parse_fee_amount(van_fees, "Van fees")
+        else:
+            vf = 0.0
         if class_fee_service is not None:
             sf = class_fee_service.school_fees_for_class_name(class_name)
         else:
@@ -71,7 +77,8 @@ class StudentService:
         village="",
         guardian_name="",
         status="active",
-        van_fees=0.0,
+        van_fees=None,
+        village_fee_service=None,
         class_fee_service=None,
     ):
         if not student:
@@ -88,7 +95,12 @@ class StudentService:
             raise ValueError("Phone is required")
         if not (guardian_name or "").strip():
             raise ValueError("Guardian name is required")
-        vf = self._parse_fee_amount(van_fees, "Van fees")
+        if village_fee_service is not None:
+            vf = float(village_fee_service.van_fees_for_student_update(student, village))
+        elif van_fees is not None and van_fees != "":
+            vf = self._parse_fee_amount(van_fees, "Van fees")
+        else:
+            vf = float(getattr(student, "van_fees", 0) or 0.0)
         if class_fee_service is not None:
             sf = class_fee_service.school_fees_for_student_update(student, class_name)
         else:
