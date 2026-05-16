@@ -13,13 +13,18 @@ from app.models import FeePlan, Invoice, Payment, PaymentAllocation, Student
 # Exact full_name strings used in tests/test_core.py only
 TEST_STUDENT_FULL_NAMES = (
     "Test User",
+    "Own Transport Test",
+    "Van Transport Test",
     "Split Pay Test",
     "Discount Pay Test",
+    "Zero Net Discount Test",
     "Payment Date Test",
     "Future Date Test",
     "Due Merge Test",
     "Class Fee Test",
     "Village Van Fee Test",
+    "Discount Cap Test",
+    "Service Split Test",
 )
 
 

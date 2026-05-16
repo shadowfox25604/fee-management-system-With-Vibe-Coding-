@@ -27,6 +27,59 @@ def test_schema_and_student_creation():
         assert float(st.van_fees) == 0.0
         assert float(st.school_fees) == 20000.0
         assert getattr(st, "village", None) == ""
+        assert (getattr(st, "transport_mode", None) or "van") == "van"
+    finally:
+        s.close()
+
+
+def test_create_student_own_transport_zeros_van_fee():
+    Base.metadata.create_all(bind=engine)
+    apply_sqlite_column_migrations(engine)
+    apply_sqlite_data_migrations(engine)
+    s = SessionLocal()
+    try:
+        from app.repositories.village_van_fee_repository import VillageVanFeeRepository
+        from app.services.student_service import StudentService
+        from app.services.village_van_fee_service import VillageVanFeeService
+
+        VillageVanFeeRepository(s).upsert_stored_amount("Nagaram", 4500.0)
+        s.commit()
+
+        ss = StudentService(s)
+        vfs = VillageVanFeeService(s)
+        sid = f"OWN{uuid.uuid4().hex[:8].upper()}"
+        st = ss.create_student(
+            sid,
+            "Own Transport Test",
+            "5",
+            "A",
+            f"8{uuid.uuid4().int % 10**9:09d}",
+            village="Nagaram",
+            guardian_name="G Name",
+            status="active",
+            transport_mode="own",
+            village_fee_service=vfs,
+            class_fee_service=None,
+        )
+        assert st.transport_mode == "own"
+        assert float(st.van_fees) == 0.0
+
+        sid2 = f"VAN{uuid.uuid4().hex[:8].upper()}"
+        st2 = ss.create_student(
+            sid2,
+            "Van Transport Test",
+            "5",
+            "A",
+            f"7{uuid.uuid4().int % 10**9:09d}",
+            village="Nagaram",
+            guardian_name="G Name",
+            status="active",
+            transport_mode="van",
+            village_fee_service=vfs,
+            class_fee_service=None,
+        )
+        assert st2.transport_mode == "van"
+        assert float(st2.van_fees) == 4500.0
     finally:
         s.close()
 
@@ -634,7 +687,6 @@ def test_payment_receipt_pdf_writes_valid_pdf(tmp_path):
         school_fees_paid=1000.0,
         van_fees_paid=500.0,
         discount=100.0,
-        total_fees_due=2500.0,
         receipt_no="ABCD12345678",
         generated_at=datetime(2026, 5, 14, 14, 30, 0),
     )

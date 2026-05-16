@@ -14,6 +14,7 @@ class Student(Base):
     village: Mapped[str] = mapped_column(String(80), default="", nullable=False)
     guardian_name: Mapped[str] = mapped_column(String(120), default="")
     status: Mapped[str] = mapped_column(String(20), default="active")
+    transport_mode: Mapped[str] = mapped_column(String(20), default="van", nullable=False)
     van_fees: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     school_fees: Mapped[float] = mapped_column(Float, default=20000.0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -26,6 +26,13 @@ class StudentService:
             raise ValueError(f"{field_name} cannot be negative")
         return v
 
+    @staticmethod
+    def _normalize_transport_mode(mode: str | None) -> str:
+        m = (mode or "van").strip().lower()
+        if m not in ("van", "own"):
+            raise ValueError("Transport must be van transport or own transport")
+        return m
+
     def create_student(
         self,
         student_id,
@@ -36,6 +43,7 @@ class StudentService:
         village="",
         guardian_name="",
         status="active",
+        transport_mode="van",
         van_fees=None,
         village_fee_service=None,
         class_fee_service=None,
@@ -52,7 +60,10 @@ class StudentService:
             raise ValueError("Phone is required")
         if not (guardian_name or "").strip():
             raise ValueError("Guardian name is required")
-        if village_fee_service is not None:
+        tm = self._normalize_transport_mode(transport_mode)
+        if tm == "own":
+            vf = 0.0
+        elif village_fee_service is not None:
             vf = float(village_fee_service.van_fees_for_village_name(village))
         elif van_fees is not None and van_fees != "":
             vf = self._parse_fee_amount(van_fees, "Van fees")
@@ -63,7 +74,17 @@ class StudentService:
         else:
             sf = 20000.0
         return self.repo.create_student(
-            student_id, full_name, class_name, section, phone, village, guardian_name, status, vf, sf
+            student_id,
+            full_name,
+            class_name,
+            section,
+            phone,
+            village,
+            guardian_name,
+            status,
+            vf,
+            sf,
+            transport_mode=tm,
         )
 
     def update_student(
@@ -77,6 +98,7 @@ class StudentService:
         village="",
         guardian_name="",
         status="active",
+        transport_mode="van",
         van_fees=None,
         village_fee_service=None,
         class_fee_service=None,
@@ -95,8 +117,15 @@ class StudentService:
             raise ValueError("Phone is required")
         if not (guardian_name or "").strip():
             raise ValueError("Guardian name is required")
-        if village_fee_service is not None:
-            vf = float(village_fee_service.van_fees_for_student_update(student, village))
+        tm = self._normalize_transport_mode(transport_mode)
+        old_tm = (getattr(student, "transport_mode", None) or "van").strip().lower()
+        if tm == "own":
+            vf = 0.0
+        elif village_fee_service is not None:
+            if old_tm == "own" and tm == "van":
+                vf = float(village_fee_service.van_fees_for_village_name(village))
+            else:
+                vf = float(village_fee_service.van_fees_for_student_update(student, village))
         elif van_fees is not None and van_fees != "":
             vf = self._parse_fee_amount(van_fees, "Van fees")
         else:
@@ -106,5 +135,16 @@ class StudentService:
         else:
             sf = float(getattr(student, "school_fees", 0) or 0.0)
         return self.repo.update_student(
-            student, student_id, full_name, class_name, section, phone, village, guardian_name, status, vf, sf
+            student,
+            student_id,
+            full_name,
+            class_name,
+            section,
+            phone,
+            village,
+            guardian_name,
+            status,
+            vf,
+            sf,
+            transport_mode=tm,
         )

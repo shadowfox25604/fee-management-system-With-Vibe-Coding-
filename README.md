@@ -99,9 +99,11 @@ set PYTHONPATH=. && uv run pytest -q
 
 ### Remove leftover test students from the database
 
-Running the test suite (`pytest`) creates real rows in `data/fee_management.db`: students with fixed names such as `Split Pay Test`, `Class Fee Test`, and `Test User`, plus their invoices, fee plans, and payments. Those rows then appear in the app (for example under **Student Details** and **Collect Payment**).
+Integration tests that use the real `data/fee_management.db` file **clean up automatically**: after each run they delete any student created in that test (and related invoices, payments, allocations, fee plans).
 
-To delete **only** those pytest-created students (matched by exact `full_name`) and their related records, from the project folder run:
+The helper lives in `tests/db_cleanup.py` (`cleanup_test_students`).
+
+If older runs left rows before this behavior existed, delete them **once** by exact `full_name` with:
 
 ```cmd
 set PYTHONPATH=. && uv run python -m scripts.remove_test_students
@@ -111,7 +113,7 @@ If you use an activated virtual environment without `uv`:
 
 ```cmd
 set PYTHONPATH=.
-python -m scripts.remove_test_students
+`python -m scripts.remove_test_students`
 ```
 
 This script does **not** remove normal demo/seed students created by `scripts/seed_data.py` (typically `STU…` IDs with random names), unless a row happens to use one of the same test-only full names.

@@ -1,0 +1,10 @@
+for building exe
+    - pyinstaller
+for database
+    - postgresql
+for shipping
+    - docker
+    - docker compose
+
+
+APP -> Postgresql

@@ -29,8 +29,6 @@ from sqlalchemy.exc import IntegrityError
 from app.core.fee_control_constants import (
     FIXED_CLASS_KEYS,
     FIXED_SECTION_KEYS,
-    FIXED_VILLAGE_KEYS,
-    canonical_village_for_student_village,
 )
 from app.models import Student
 from app.reports.excel_export import ExcelExporter
@@ -145,7 +143,11 @@ class MainWindow(QMainWindow):
         self.add_student_section.addItems(list(FIXED_SECTION_KEYS))
         self.add_student_phone = QLineEdit()
         self.add_student_village = QComboBox()
-        self.add_student_village.addItems(list(FIXED_VILLAGE_KEYS))
+        self._populate_village_combo(self.add_student_village)
+        self.add_student_transport = QComboBox()
+        self.add_student_transport.addItem("Van transport", "van")
+        self.add_student_transport.addItem("Own transport", "own")
+        self.add_student_transport.setCurrentIndex(0)
         self.add_student_guardian = QLineEdit()
         self.add_student_status = QComboBox()
         self.add_student_status.addItems(["active", "inactive"])
@@ -157,8 +159,9 @@ class MainWindow(QMainWindow):
         school_fee_hint.setWordWrap(True)
         school_fee_hint.setStyleSheet("color: #888;")
         van_fee_hint = QLabel(
-            "Van fees are set automatically from the student’s village (see Fee Control tab). "
-            "Only the listed villages are available."
+            "Choose Van transport to apply the village van fee from Fee Control, or Own transport to set van fees to zero "
+            "(village is still stored for your records). The village list includes all villages from Fee Control "
+            "(built-in list plus any you add with “Add village” on the Van fees panel)."
         )
         van_fee_hint.setWordWrap(True)
         van_fee_hint.setStyleSheet("color: #888;")
@@ -170,12 +173,19 @@ class MainWindow(QMainWindow):
         layout.addRow("Section", self.add_student_section)
         layout.addRow("Phone", self.add_student_phone)
         layout.addRow("Village", self.add_student_village)
+        layout.addRow("Transport", self.add_student_transport)
         layout.addRow("Guardian Name", self.add_student_guardian)
         layout.addRow(van_fee_hint)
         layout.addRow(school_fee_hint)
         layout.addRow("Status", self.add_student_status)
         layout.addRow(b)
         return w
+
+    def _populate_village_combo(self, combo: QComboBox) -> None:
+        combo.clear()
+        for k in self.village_van_fee_service.list_village_keys_for_fee_control():
+            combo.addItem(k)
+
     def _build_reports_tab(self):
         w=QWidget(); layout=QVBoxLayout(w); row=QHBoxLayout()
         self.report_student_input=QLineEdit(); self.report_student_input.setPlaceholderText("Student ID / Name")
@@ -213,9 +223,10 @@ class MainWindow(QMainWindow):
         )
         school_lbl.setWordWrap(True)
         van_lbl = QLabel(
-            "Van fees: set the tariff for each village (fixed list). Village on students is matched "
-            "case-insensitively. Apply updates all matching students’ van fees, adjusts transport/van invoice "
-            "amounts only, and does not change tuition invoices."
+            "Van fees: set the tariff for each village. Built-in villages are listed first; use “Add village” to "
+            "register more. Village on students is matched case-insensitively. Apply updates all van-transport "
+            "students in that village (own transport is skipped), adjusts transport/van invoice amounts only, and "
+            "does not change tuition invoices."
         )
         van_lbl.setWordWrap(True)
         confirm_lbl = QLabel("A confirmation is required before saving each row.")
@@ -240,31 +251,93 @@ class MainWindow(QMainWindow):
             tbl_school.setCellWidget(row, 2, apply_btn)
         tbl_school.resizeColumnsToContents()
 
-        self._van_fee_control_amount_edits = {}
-        tbl_van = QTableWidget(len(FIXED_VILLAGE_KEYS), 3)
-        tbl_van.setHorizontalHeaderLabels(["Village", "Van fee (₹)", ""])
-        tbl_van.verticalHeader().setVisible(False)
-        for row, village_key in enumerate(FIXED_VILLAGE_KEYS):
-            tbl_van.setItem(row, 0, QTableWidgetItem(village_key))
-            v_edit = QLineEdit()
-            v_edit.setPlaceholderText("0")
-            self._van_fee_control_amount_edits[village_key] = v_edit
-            tbl_van.setCellWidget(row, 1, v_edit)
-            v_apply = QPushButton("Apply…")
-            v_apply.clicked.connect(lambda _=False, vk=village_key: self._on_van_fee_control_apply_clicked(vk))
-            tbl_van.setCellWidget(row, 2, v_apply)
-        tbl_van.resizeColumnsToContents()
+        self._van_fee_control_panel = QWidget()
+        van_panel_layout = QVBoxLayout(self._van_fee_control_panel)
+        self._van_fee_control_table = self._create_van_fee_control_table()
+        van_panel_layout.addWidget(self._van_fee_control_table)
+        add_village_btn = QPushButton("Add village")
+        add_village_btn.clicked.connect(self._on_add_village_fee_clicked)
+        van_panel_layout.addWidget(add_village_btn)
 
         tables_row.addWidget(tbl_school, 1)
-        tables_row.addWidget(tbl_van, 1)
+        tables_row.addWidget(self._van_fee_control_panel, 1)
         layout.addLayout(tables_row)
         self._fee_control_table = tbl_school
-        self._van_fee_control_table = tbl_van
         self._refresh_fee_control_amounts()
         self._refresh_van_fee_control_amounts()
         return w
 
+    def _create_van_fee_control_table(self) -> QTableWidget:
+        self._van_fee_control_amount_edits = {}
+        keys = self.village_van_fee_service.list_village_keys_for_fee_control()
+        tbl = QTableWidget(len(keys), 3)
+        tbl.setHorizontalHeaderLabels(["Village", "Van fee (₹)", ""])
+        tbl.verticalHeader().setVisible(False)
+        for row, village_key in enumerate(keys):
+            tbl.setItem(row, 0, QTableWidgetItem(village_key))
+            v_edit = QLineEdit()
+            v_edit.setPlaceholderText("0")
+            self._van_fee_control_amount_edits[village_key] = v_edit
+            tbl.setCellWidget(row, 1, v_edit)
+            v_apply = QPushButton("Apply…")
+            v_apply.clicked.connect(lambda _=False, vk=village_key: self._on_van_fee_control_apply_clicked(vk))
+            tbl.setCellWidget(row, 2, v_apply)
+        tbl.resizeColumnsToContents()
+        return tbl
+
+    def _rebuild_van_fee_control_table(self) -> None:
+        panel = getattr(self, "_van_fee_control_panel", None)
+        if panel is None:
+            return
+        lay = panel.layout()
+        if lay is None or lay.count() < 1:
+            return
+        old_tbl = lay.itemAt(0).widget()
+        new_tbl = self._create_van_fee_control_table()
+        lay.replaceWidget(old_tbl, new_tbl)
+        old_tbl.deleteLater()
+        self._van_fee_control_table = new_tbl
+        self._refresh_van_fee_control_amounts()
+
+    def _on_add_village_fee_clicked(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Add village")
+        form = QFormLayout(dlg)
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText("Village name")
+        fee_edit = QLineEdit()
+        fee_edit.setPlaceholderText("0.00")
+        form.addRow("Village name", name_edit)
+        form.addRow("Van fee (₹)", fee_edit)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        form.addRow(buttons)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        raw_fee = (fee_edit.text() or "").strip()
+        try:
+            fee = float(raw_fee) if raw_fee else 0.0
+        except ValueError:
+            QMessageBox.warning(self, "Invalid amount", "Enter a valid number for the van fee.")
+            return
+        try:
+            stored = self.village_van_fee_service.register_new_village(name_edit.text(), fee)
+        except Exception as e:
+            QMessageBox.critical(self, "Add village failed", str(e))
+            return
+        self._rebuild_van_fee_control_table()
+        self._populate_village_combo(self.add_student_village)
+        QMessageBox.information(
+            self,
+            "Village added",
+            f"Village “{stored}” was added with van fee {fee:.2f}.",
+        )
+
     def _on_main_tab_changed(self, index: int):
+        cw = self.centralWidget()
+        if isinstance(cw, QTabWidget) and cw.tabText(index) == "Add Student":
+            self._populate_village_combo(self.add_student_village)
         if index == getattr(self, "_fee_control_tab_index", -1):
             self._refresh_fee_control_amounts()
             self._refresh_van_fee_control_amounts()
@@ -390,14 +463,15 @@ class MainWindow(QMainWindow):
         if new_amt < 0:
             QMessageBox.warning(self, "Invalid amount", "Van fee cannot be negative.")
             return
-        n = self.village_van_fee_service.count_students_in_village(village_key)
+        n = self.village_van_fee_service.count_students_on_van_transport_in_village(village_key)
         reply = QMessageBox.question(
             self,
             "Confirm village van fee update",
             f"Set van fee for village “{village_key}” to {new_amt:.2f}?\n\n"
-            f"This will update {n} student(s) whose village matches (case-insensitive), set each student’s "
-            f"van_fees to this amount, scale transport/van invoice amount_due values, and store "
-            f"this amount for the village. Tuition invoices will not be changed.\n\n"
+            f"This will update {n} student(s) on van transport whose village matches (case-insensitive); "
+            f"students on own transport are skipped. Each updated student’s van_fees will be set to this amount, "
+            f"transport/van invoice amount_due values will be scaled, and this amount will be stored for the village. "
+            f"Tuition invoices will not be changed.\n\n"
             f"Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -526,13 +600,13 @@ class MainWindow(QMainWindow):
         lbl_created = QLabel(str(student.created_at or "-"))
 
         edit_student_id = edit_name = edit_class = edit_section = edit_phone = edit_guardian = None
-        edit_village = None
+        edit_village = edit_transport = None
         lbl_school_fees_editable = None
         lbl_van_fees_editable = None
         edit_status = None
         lbl_van_fees = None
         lbl_school_fees = None
-        ro_student_id = ro_name = ro_class = ro_section = ro_phone = ro_village = ro_guardian = ro_status = None
+        ro_student_id = ro_name = ro_class = ro_section = ro_phone = ro_village = ro_transport = ro_guardian = ro_status = None
 
         if student_fields_editable:
             edit_student_id = QLineEdit(str(student.student_id or ""))
@@ -541,12 +615,24 @@ class MainWindow(QMainWindow):
             edit_section = QLineEdit(str(student.section or ""))
             edit_phone = QLineEdit(str(student.phone or ""))
             edit_village = QComboBox()
-            edit_village.addItems(list(FIXED_VILLAGE_KEYS))
-            key = canonical_village_for_student_village(getattr(student, "village", None))
+            self._populate_village_combo(edit_village)
+            key = self.village_van_fee_service.resolve_village_key(getattr(student, "village", None))
+            raw = (getattr(student, "village", None) or "").strip()
             if key:
                 vidx = edit_village.findText(key, Qt.MatchFixedString)
                 if vidx >= 0:
                     edit_village.setCurrentIndex(vidx)
+            elif raw:
+                if edit_village.findText(raw) < 0:
+                    edit_village.addItem(raw)
+                vidx = edit_village.findText(raw, Qt.MatchFixedString)
+                if vidx >= 0:
+                    edit_village.setCurrentIndex(vidx)
+            edit_transport = QComboBox()
+            edit_transport.addItem("Van transport", "van")
+            edit_transport.addItem("Own transport", "own")
+            tm = (getattr(student, "transport_mode", None) or "van").strip().lower()
+            edit_transport.setCurrentIndex(1 if tm == "own" else 0)
             edit_guardian = QLineEdit(str(student.guardian_name or ""))
             lbl_van_fees_editable = QLabel(f"{float(getattr(student, 'van_fees', 0) or 0):.2f}")
             lbl_van_fees_editable.setToolTip("Van fee tariff is managed under Fee Control (by village).")
@@ -566,6 +652,7 @@ class MainWindow(QMainWindow):
             details_layout.addRow("Section", edit_section)
             details_layout.addRow("Phone", edit_phone)
             details_layout.addRow("Village", edit_village)
+            details_layout.addRow("Transport", edit_transport)
             details_layout.addRow("Guardian Name", edit_guardian)
             details_layout.addRow("Van Fees (read-only)", lbl_van_fees_editable)
             details_layout.addRow("School Fees (read-only)", lbl_school_fees_editable)
@@ -577,6 +664,8 @@ class MainWindow(QMainWindow):
             ro_section = QLabel(str(student.section or "-"))
             ro_phone = QLabel(str(student.phone or "-"))
             ro_village = QLabel(str(getattr(student, "village", None) or "-"))
+            tm_ro = (getattr(student, "transport_mode", None) or "van").strip().lower()
+            ro_transport = QLabel("Own transport" if tm_ro == "own" else "Van transport")
             ro_guardian = QLabel(str(student.guardian_name or "-"))
             ro_status = QLabel(str(student.status or "-"))
             lbl_van_fees = QLabel(f"{float(getattr(student, 'van_fees', 0) or 0):.2f}")
@@ -589,6 +678,7 @@ class MainWindow(QMainWindow):
             details_layout.addRow("Section", ro_section)
             details_layout.addRow("Phone", ro_phone)
             details_layout.addRow("Village", ro_village)
+            details_layout.addRow("Transport", ro_transport)
             details_layout.addRow("Guardian Name", ro_guardian)
             details_layout.addRow("Van Fees", lbl_van_fees)
             details_layout.addRow("School Fees", lbl_school_fees)
@@ -658,6 +748,9 @@ class MainWindow(QMainWindow):
                 ro_section.setText(str(s.section or "-"))
                 ro_phone.setText(str(s.phone or "-"))
                 ro_village.setText(str(getattr(s, "village", None) or "-"))
+                if ro_transport is not None:
+                    tm2 = (getattr(s, "transport_mode", None) or "van").strip().lower()
+                    ro_transport.setText("Own transport" if tm2 == "own" else "Van transport")
                 ro_guardian.setText(str(s.guardian_name or "-"))
                 ro_status.setText(str(s.status or "-"))
                 if lbl_van_fees is not None:
@@ -684,6 +777,7 @@ class MainWindow(QMainWindow):
                     edit_village.currentText(),
                     edit_guardian.text(),
                     edit_status.currentText(),
+                    transport_mode=edit_transport.currentData() or "van",
                     village_fee_service=self.village_van_fee_service,
                     class_fee_service=self.class_fee_service,
                 )
@@ -767,9 +861,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(dialog, "Payment error", str(e))
                 return
 
-            due_after = self.payment_service.get_student_due_breakdown(student.id)
-            total_fees_due = float(due_after.get("total", 0.0) or 0.0)
-
             default_name = f"Receipt_{student.student_id}_{payment.reference_no}.pdf"
             path, _ = QFileDialog.getSaveFileName(
                 dialog, "Save receipt", str(Path.home() / default_name), "PDF (*.pdf)"
@@ -789,7 +880,6 @@ class MainWindow(QMainWindow):
                         school_fees_paid=school_amt,
                         van_fees_paid=van_amt,
                         discount=disc_amt,
-                        total_fees_due=total_fees_due,
                         receipt_no=payment.reference_no,
                         generated_at=datetime.now(),
                     )
@@ -936,6 +1026,7 @@ class MainWindow(QMainWindow):
                 self.add_student_village.currentText(),
                 self.add_student_guardian.text(),
                 self.add_student_status.currentText(),
+                transport_mode=self.add_student_transport.currentData() or "van",
                 village_fee_service=self.village_van_fee_service,
                 class_fee_service=self.class_fee_service,
             )
@@ -945,6 +1036,7 @@ class MainWindow(QMainWindow):
             self.add_student_section.setCurrentIndex(0)
             self.add_student_phone.clear()
             self.add_student_village.setCurrentIndex(0)
+            self.add_student_transport.setCurrentIndex(0)
             self.add_student_guardian.clear()
             self.add_student_status.setCurrentIndex(0)
             self._load_report_filter_values()

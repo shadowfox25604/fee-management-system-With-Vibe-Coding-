@@ -47,6 +47,13 @@ def apply_sqlite_column_migrations(engine) -> None:
             conn.execute(
                 text("ALTER TABLE students ADD COLUMN village VARCHAR(80) NOT NULL DEFAULT ''")
             )
+        col_names2 = {c["name"] for c in inspect(engine).get_columns("students")}
+        if "transport_mode" not in col_names2:
+            conn.execute(
+                text(
+                    "ALTER TABLE students ADD COLUMN transport_mode VARCHAR(20) NOT NULL DEFAULT 'van'"
+                )
+            )
 
     if insp.has_table("payments"):
         pay_cols = {c["name"] for c in insp.get_columns("payments")}

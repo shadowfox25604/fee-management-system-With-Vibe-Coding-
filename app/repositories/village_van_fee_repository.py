@@ -40,6 +40,7 @@ class VillageVanFeeRepository:
         rows = self.session.execute(
             select(Student.van_fees).where(
                 func.lower(func.trim(Student.village)) == n,
+                Student.transport_mode != "own",
             )
         ).all()
         if not rows:
@@ -126,15 +127,33 @@ class VillageVanFeeRepository:
 
         self.session.flush()
 
+    def list_village_keys_in_database(self) -> list[str]:
+        rows = self.session.scalars(select(VillageVanFee.village_key).order_by(VillageVanFee.village_key)).all()
+        return [str(r) for r in rows if r]
+
+    def list_village_keys_for_fee_control(self) -> list[str]:
+        """Built-in villages first (fixed order), then any extra keys from ``village_van_fees`` (A–Z)."""
+        fixed_set = set(FIXED_VILLAGE_KEYS)
+        fixed_order = list(FIXED_VILLAGE_KEYS)
+        extra = sorted(
+            (k for k in self.list_village_keys_in_database() if k not in fixed_set),
+            key=lambda x: str(x).lower(),
+        )
+        return fixed_order + extra
+
     def apply_village_van_fee(self, village_key: str, new_amount: float) -> int:
-        if village_key not in FIXED_VILLAGE_KEYS:
-            raise ValueError("Invalid village key.")
+        vk = (village_key or "").strip()
+        if not vk:
+            raise ValueError("Village name is required.")
+        if len(vk) > 80:
+            raise ValueError("Village name is too long (max 80 characters).")
         new_amount = float(new_amount)
         if new_amount < 0:
             raise ValueError("Van fee amount cannot be negative.")
 
-        students = self.students_in_fixed_village(village_key)
-        for st in students:
+        students = self.students_in_fixed_village(vk)
+        van_students = [st for st in students if (getattr(st, "transport_mode", None) or "van") != "own"]
+        for st in van_students:
             paid = self._total_van_paid(st.id)
             if new_amount + 1e-6 < paid:
                 raise ValueError(
@@ -142,11 +161,11 @@ class VillageVanFeeRepository:
                     f"invoice payments ({paid:.2f}). Lower collected amounts or raise the village van fee."
                 )
 
-        for st in students:
+        for st in van_students:
             old_tariff = float(st.van_fees or 0.0)
             self._adjust_van_invoices(st, old_tariff, new_amount)
             st.van_fees = new_amount
 
-        self.upsert_stored_amount(village_key, new_amount)
+        self.upsert_stored_amount(vk, new_amount)
         self.session.commit()
-        return len(students)
+        return len(van_students)

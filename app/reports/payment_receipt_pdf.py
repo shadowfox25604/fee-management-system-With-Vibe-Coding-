@@ -47,7 +47,6 @@ def render_payment_receipt(
     school_fees_paid: float,
     van_fees_paid: float,
     discount: float,
-    total_fees_due: float,
     receipt_no: str,
     generated_at: datetime,
     school_name: str = SCHOOL_DISPLAY_NAME,
@@ -198,9 +197,8 @@ def render_payment_receipt(
     story.append(info_tbl)
     story.append(Spacer(1, 0.55 * cm))
 
-    # --- Fee table (print only): amount paid = school + van; total fees due = app breakdown after payment ---
+    # --- Fee table (print only): amount paid = school + van ---
     amount_paid = float(school_fees_paid or 0.0) + float(van_fees_paid or 0.0)
-    due_after = float(total_fees_due or 0.0)
 
     fee_data = [
         [
@@ -211,10 +209,6 @@ def render_payment_receipt(
             Paragraph("Amount paid", body),
             Paragraph(_money(amount_paid), cell_r),
         ],
-        [
-            Paragraph("<b>Total fees due</b>", body_bold),
-            Paragraph(f"<b>{_money(due_after)}</b>", ParagraphStyle("totR", parent=body_bold, alignment=TA_RIGHT)),
-        ],
     ]
     fee_tbl = Table(fee_data, colWidths=[usable_w * 0.64, usable_w * 0.36])
     fee_tbl.setStyle(
@@ -223,7 +217,6 @@ def render_payment_receipt(
                 ("BACKGROUND", (0, 0), (-1, 0), _SURFACE),
                 ("TEXTCOLOR", (0, 0), (-1, 0), _PRIMARY),
                 ("LINEBELOW", (0, 0), (-1, 0), 1, _PRIMARY),
-                ("LINEBELOW", (0, 1), (-1, -2), 0.4, _LINE),
                 ("LINEBELOW", (0, -1), (-1, -1), 1.5, _ACCENT),
                 ("TOPPADDING", (0, 0), (-1, -1), 9),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
