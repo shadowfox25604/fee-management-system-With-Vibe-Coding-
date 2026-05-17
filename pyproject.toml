@@ -14,3 +14,8 @@ dependencies = [
   "pyinstaller",
   "bcrypt",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+# Never run tests against data/fee_management.db — see tests/conftest.py
+addopts = ["-q"]

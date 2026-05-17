@@ -1,1 +1,1 @@
-pyinstaller --onefile --noconsole --name fee-manager app/main.py
+pyinstaller --onefile --noconsole --name fee-manager frontend/main.py

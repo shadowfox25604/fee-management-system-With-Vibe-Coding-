@@ -1,0 +1,345 @@
+import uuid
+from datetime import date, datetime
+
+import pytest
+from sqlalchemy import func, select
+
+import backend.core.database as db
+from backend.models import FeeHead, Invoice, Student, entities  # noqa: F401
+from backend.repositories.academic_year_repository import AcademicYearRepository
+from backend.repositories.payment_repository import PaymentRepository
+from backend.repositories.student_year_fee_repository import StudentYearFeeRepository
+from backend.services.academic_year_service import AcademicYearService
+from backend.services.fee_balance_service import FeeBalanceService
+
+
+def _set_joining_date(student: Student, d: date) -> None:
+    student.created_at = datetime(d.year, d.month, d.day, 10, 0, 0)
+
+
+def _fee_heads(session):
+    t = session.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
+    tr = session.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
+    if t is None:
+        t = FeeHead(head_name="Tuition", frequency="monthly", default_amount=2000.0)
+        session.add(t)
+    if tr is None:
+        tr = FeeHead(head_name="Transport", frequency="monthly", default_amount=500.0)
+        session.add(tr)
+    session.flush()
+    return t, tr
+
+
+def test_academic_year_persists_after_new_session(db_session):
+    """Year must be on disk before student provisioning finishes (survives app restart)."""
+    from backend.services.academic_year_service import AcademicYearService
+
+    ay_repo = AcademicYearRepository(db_session)
+    for row in ay_repo.list_all():
+        db_session.delete(row)
+    db_session.commit()
+
+    svc = AcademicYearService(db_session)
+    y = svc.create_year(
+        date(2024, 5, 17),
+        date(2025, 4, 18),
+        "2024-25",
+        provision_students=False,
+    )
+    assert y.id is not None
+    db_session.close()
+
+    s2 = db.SessionLocal()
+    try:
+        labels = [r.label for r in AcademicYearRepository(s2).list_all()]
+        assert "2024-25" in labels
+    finally:
+        s2.close()
+
+
+def test_academic_year_overlap_rejected(db_session):
+    repo = AcademicYearRepository(db_session)
+    for row in repo.list_all():
+        db_session.delete(row)
+    db_session.commit()
+    repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
+    db_session.commit()
+    with pytest.raises(ValueError, match="overlap"):
+        repo.create(date(2026, 1, 1), date(2026, 12, 31), "bad")
+
+
+def test_payment_applies_to_pending_year_first(db_session):
+    t, tr = _fee_heads(db_session)
+    ay_repo = AcademicYearRepository(db_session)
+    for row in ay_repo.list_all():
+        db_session.delete(row)
+    db_session.commit()
+    y1 = ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
+    y2 = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
+    db_session.commit()
+
+    sid = f"AY{uuid.uuid4().hex[:6].upper()}"
+    st = Student(
+        student_id=sid,
+        full_name="Year Order",
+        class_name="5",
+        section="A",
+        phone=f"9{uuid.uuid4().int % 10**9:09d}",
+        guardian_name="G",
+        van_fees=1000.0,
+        school_fees=5000.0,
+    )
+    db_session.add(st)
+    db_session.commit()
+    _set_joining_date(st, date(2024, 6, 1))
+    sy = StudentYearFeeRepository(db_session)
+    sy.get_or_create(st, y1.id, school_fees=5000.0, van_fees=1000.0)
+    sy.get_or_create(st, y2.id, school_fees=5000.0, van_fees=1000.0)
+    db_session.commit()
+
+    db_session.add(
+        Invoice(
+            student_id_fk=st.id,
+            academic_year_id=y1.id,
+            fee_head_id=t.id,
+            period_label="y1",
+            due_date=date(2025, 3, 1),
+            amount_due=5000.0,
+            amount_paid=0.0,
+        )
+    )
+    db_session.add(
+        Invoice(
+            student_id_fk=st.id,
+            academic_year_id=y2.id,
+            fee_head_id=t.id,
+            period_label="y2",
+            due_date=date(2026, 1, 1),
+            amount_due=5000.0,
+            amount_paid=0.0,
+        )
+    )
+    db_session.commit()
+
+    balance = FeeBalanceService(db_session)
+    due = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    assert due["school_pending"] >= 5000.0 - 1e-6
+    assert due["school_current"] >= 5000.0 - 1e-6
+
+    pay_repo = PaymentRepository(db_session)
+    pay_repo.create_split_payment(st, 0.0, 2000.0, "cash", "test", 0.0, date(2025, 6, 1))
+    inv_old = db_session.scalars(
+        select(Invoice).where(Invoice.student_id_fk == st.id, Invoice.academic_year_id == y1.id)
+    ).first()
+    inv_new = db_session.scalars(
+        select(Invoice).where(Invoice.student_id_fk == st.id, Invoice.academic_year_id == y2.id)
+    ).first()
+    assert float(inv_old.amount_paid) == 2000.0
+    assert float(inv_new.amount_paid) == 0.0
+
+
+def test_tariff_only_pending_cleared_before_current_year(db_session):
+    """Prior-year debt with no invoices: payment must reduce school_pending before school_current."""
+    t, _tr = _fee_heads(db_session)
+    ay_repo = AcademicYearRepository(db_session)
+    for row in ay_repo.list_all():
+        db_session.delete(row)
+    db_session.commit()
+    y_old = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
+    y_cur = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
+    db_session.commit()
+
+    st = Student(
+        student_id=f"TP{uuid.uuid4().hex[:4].upper()}",
+        full_name="Tariff Pending",
+        class_name="2",
+        section="B",
+        phone=f"5{uuid.uuid4().int % 10**9:09d}",
+        guardian_name="G",
+        van_fees=0.0,
+        school_fees=10000.0,
+    )
+    db_session.add(st)
+    db_session.commit()
+    _set_joining_date(st, date(2023, 6, 1))
+    sy = StudentYearFeeRepository(db_session)
+    sy.get_or_create(st, y_old.id, school_fees=8000.0, van_fees=0.0)
+    sy.get_or_create(st, y_cur.id, school_fees=10000.0, van_fees=0.0)
+    db_session.commit()
+    # Only current year has an invoice (legacy-style data).
+    db_session.add(
+        Invoice(
+            student_id_fk=st.id,
+            academic_year_id=y_cur.id,
+            fee_head_id=t.id,
+            period_label="cur-only",
+            due_date=date(2026, 1, 1),
+            amount_due=10000.0,
+            amount_paid=0.0,
+        )
+    )
+    db_session.commit()
+
+    balance = FeeBalanceService(db_session)
+    pay_repo = PaymentRepository(db_session)
+    before = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    assert before["school_pending"] == pytest.approx(8000.0, abs=0.02)
+    assert before["school_current"] == pytest.approx(10000.0, abs=0.02)
+
+    pay_repo.create_split_payment(st, 0.0, 5000.0, "cash", "test", 0.0, date(2025, 6, 1))
+    after = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    assert after["school_pending"] == pytest.approx(3000.0, abs=0.02)
+    assert after["school_current"] == pytest.approx(10000.0, abs=0.02)
+
+
+def test_due_breakdown_splits_pending_and_current(db_session):
+    t, tr = _fee_heads(db_session)
+    ay_repo = AcademicYearRepository(db_session)
+    for row in ay_repo.list_all():
+        db_session.delete(row)
+    db_session.commit()
+    y_prev = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
+    y_cur = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
+    db_session.commit()
+
+    st = Student(
+        student_id=f"AY2{uuid.uuid4().hex[:4].upper()}",
+        full_name="Due Split",
+        class_name="3",
+        section="B",
+        phone=f"8{uuid.uuid4().int % 10**9:09d}",
+        guardian_name="G",
+        van_fees=500.0,
+        school_fees=3000.0,
+    )
+    db_session.add(st)
+    db_session.commit()
+    _set_joining_date(st, date(2023, 6, 1))
+    sy = StudentYearFeeRepository(db_session)
+    sy.get_or_create(st, y_prev.id, school_fees=3000.0, van_fees=500.0)
+    sy.get_or_create(st, y_cur.id, school_fees=4000.0, van_fees=600.0)
+    db_session.commit()
+
+    balance = FeeBalanceService(db_session)
+    due = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    assert due["school_pending"] == pytest.approx(3000.0, abs=0.01)
+    assert due["school_current"] == pytest.approx(4000.0, abs=0.01)
+    assert due["van_pending"] == pytest.approx(500.0, abs=0.01)
+    assert due["van_current"] == pytest.approx(600.0, abs=0.01)
+
+
+def test_new_student_has_no_pending_from_older_years(db_session):
+    """Student joining in the current year must not inherit tariffs from prior academic years."""
+    _fee_heads(db_session)
+    ay_repo = AcademicYearRepository(db_session)
+    for row in ay_repo.list_all():
+        db_session.delete(row)
+    db_session.commit()
+    ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
+    ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
+    y_cur = ay_repo.create(date(2026, 5, 17), date(2027, 4, 18), "2026-27")
+    db_session.commit()
+
+    st = Student(
+        student_id=f"NEW{uuid.uuid4().hex[:4].upper()}",
+        full_name="GOUTHAM",
+        class_name="2",
+        section="B",
+        phone=f"9{uuid.uuid4().int % 10**9:09d}",
+        guardian_name="Guardian",
+        van_fees=4500.0,
+        school_fees=19870.18,
+    )
+    db_session.add(st)
+    db_session.commit()
+    StudentYearFeeRepository(db_session).sync_student_to_current_year(st)
+    db_session.commit()
+
+    due = FeeBalanceService(db_session).get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    assert due["school_pending"] == pytest.approx(0.0, abs=0.01)
+    assert due["van_pending"] == pytest.approx(0.0, abs=0.01)
+    assert due["fee_due"] == pytest.approx(19870.18, abs=0.01)
+    assert due["van_due"] == pytest.approx(4500.0, abs=0.01)
+    assert due["school_payable"] == pytest.approx(19870.18, abs=0.01)
+    assert due["van_payable"] == pytest.approx(4500.0, abs=0.01)
+    assert due["total"] == pytest.approx(24370.18, abs=0.01)
+
+
+def test_school_payment_clears_pending_before_current_year(db_session):
+    t, _tr = _fee_heads(db_session)
+    ay_repo = AcademicYearRepository(db_session)
+    for row in ay_repo.list_all():
+        db_session.delete(row)
+    db_session.commit()
+    y_old = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
+    y_cur = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
+    db_session.commit()
+
+    st = Student(
+        student_id=f"SP{uuid.uuid4().hex[:4].upper()}",
+        full_name="School Pay Order",
+        class_name="4",
+        section="A",
+        phone=f"7{uuid.uuid4().int % 10**9:09d}",
+        guardian_name="G",
+        van_fees=0.0,
+        school_fees=6000.0,
+    )
+    db_session.add(st)
+    db_session.commit()
+    _set_joining_date(st, date(2023, 6, 1))
+    sy = StudentYearFeeRepository(db_session)
+    sy.get_or_create(st, y_old.id, school_fees=2000.0, van_fees=0.0)
+    sy.get_or_create(st, y_cur.id, school_fees=6000.0, van_fees=0.0)
+    db_session.commit()
+
+    balance = FeeBalanceService(db_session)
+    pay_repo = PaymentRepository(db_session)
+    before = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    assert before["school_pending"] == pytest.approx(2000.0, abs=0.02)
+    assert before["fee_due"] == pytest.approx(6000.0, abs=0.02)
+
+    pay_repo.create_split_payment(st, 0.0, 2500.0, "cash", "test", 0.0, date(2025, 6, 1))
+    after = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    assert after["school_pending"] == pytest.approx(0.0, abs=0.02)
+    assert after["fee_due"] == pytest.approx(5500.0, abs=0.02)
+
+
+def test_van_payment_clears_pending_before_current_year(db_session):
+    _t, tr = _fee_heads(db_session)
+    ay_repo = AcademicYearRepository(db_session)
+    for row in ay_repo.list_all():
+        db_session.delete(row)
+    db_session.commit()
+    y_old = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
+    y_cur = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
+    db_session.commit()
+
+    st = Student(
+        student_id=f"VP{uuid.uuid4().hex[:4].upper()}",
+        full_name="Van Pay Order",
+        class_name="4",
+        section="A",
+        phone=f"6{uuid.uuid4().int % 10**9:09d}",
+        guardian_name="G",
+        van_fees=800.0,
+        school_fees=0.0,
+    )
+    db_session.add(st)
+    db_session.commit()
+    _set_joining_date(st, date(2023, 6, 1))
+    sy = StudentYearFeeRepository(db_session)
+    sy.get_or_create(st, y_old.id, school_fees=0.0, van_fees=300.0)
+    sy.get_or_create(st, y_cur.id, school_fees=0.0, van_fees=800.0)
+    db_session.commit()
+
+    balance = FeeBalanceService(db_session)
+    pay_repo = PaymentRepository(db_session)
+    before = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    assert before["van_pending"] == pytest.approx(300.0, abs=0.02)
+    assert before["van_due"] == pytest.approx(800.0, abs=0.02)
+
+    pay_repo.create_split_payment(st, 500.0, 0.0, "cash", "test", 0.0, date(2025, 6, 1))
+    after = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    assert after["van_pending"] == pytest.approx(0.0, abs=0.02)
+    assert after["van_due"] == pytest.approx(600.0, abs=0.02)

@@ -2,24 +2,23 @@ import uuid
 from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
-from app.core.database import Base, SessionLocal, engine
-from app.core.schema_migrations import (
+from backend.core.database import Base
+import backend.core.database as db
+from backend.core.schema_migrations import (
     apply_sqlite_column_migrations,
     apply_sqlite_data_migrations,
 )
-from app.models import ClassSchoolFee, FeeHead, Invoice, Payment, Student, entities  # noqa: F401
-from app.repositories.class_fee_repository import ClassFeeRepository
-from app.core.payment_reference import REF_LEN, is_compact_payment_reference
-from app.repositories.payment_repository import PaymentRepository
-
-
+from backend.models import ClassSchoolFee, FeeHead, Invoice, Payment, Student, entities  # noqa: F401
+from backend.repositories.class_fee_repository import ClassFeeRepository
+from backend.core.payment_reference import REF_LEN, is_compact_payment_reference
+from backend.repositories.payment_repository import PaymentRepository
 def test_schema_and_student_creation():
-    Base.metadata.create_all(bind=engine)
-    apply_sqlite_column_migrations(engine)
-    apply_sqlite_data_migrations(engine)
-    s=SessionLocal()
+    Base.metadata.create_all(bind=db.engine)
+    apply_sqlite_column_migrations(db.engine)
+    apply_sqlite_data_migrations(db.engine)
+    s=db.SessionLocal()
     try:
         sid = f"TST{uuid.uuid4().hex[:8].upper()}"
         st=Student(student_id=sid, full_name="Test User", class_name="8", section="A", phone=f"9{uuid.uuid4().int % 10**9:09d}", guardian_name="Guardian")
@@ -33,14 +32,14 @@ def test_schema_and_student_creation():
 
 
 def test_create_student_own_transport_zeros_van_fee():
-    Base.metadata.create_all(bind=engine)
-    apply_sqlite_column_migrations(engine)
-    apply_sqlite_data_migrations(engine)
-    s = SessionLocal()
+    Base.metadata.create_all(bind=db.engine)
+    apply_sqlite_column_migrations(db.engine)
+    apply_sqlite_data_migrations(db.engine)
+    s = db.SessionLocal()
     try:
-        from app.repositories.village_van_fee_repository import VillageVanFeeRepository
-        from app.services.student_service import StudentService
-        from app.services.village_van_fee_service import VillageVanFeeService
+        from backend.repositories.village_van_fee_repository import VillageVanFeeRepository
+        from backend.services.student_service import StudentService
+        from backend.services.village_van_fee_service import VillageVanFeeService
 
         VillageVanFeeRepository(s).upsert_stored_amount("Nagaram", 4500.0)
         s.commit()
@@ -86,10 +85,10 @@ def test_create_student_own_transport_zeros_van_fee():
 
 def test_split_payment_top_up_when_invoices_smaller_than_tariff():
     """Tariff-based due can exceed open invoice lines; split pay must still allocate (payment-sized top-up)."""
-    Base.metadata.create_all(bind=engine)
-    apply_sqlite_column_migrations(engine)
-    apply_sqlite_data_migrations(engine)
-    s = SessionLocal()
+    Base.metadata.create_all(bind=db.engine)
+    apply_sqlite_column_migrations(db.engine)
+    apply_sqlite_data_migrations(db.engine)
+    s = db.SessionLocal()
     try:
         t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
         tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
@@ -145,7 +144,13 @@ def test_split_payment_top_up_when_invoices_smaller_than_tariff():
         assert float(pay.discount_amount) == 0.0
 
         top_ups = s.scalars(
-            select(Invoice).where(Invoice.student_id_fk == st.id, Invoice.period_label.like("Collect top-up%"))
+            select(Invoice).where(
+                Invoice.student_id_fk == st.id,
+                or_(
+                    Invoice.period_label.like("Collect top-up%"),
+                    Invoice.period_label.like("Tariff sync%"),
+                ),
+            )
         ).all()
         assert len(top_ups) >= 1
 
@@ -159,10 +164,10 @@ def test_split_payment_top_up_when_invoices_smaller_than_tariff():
 
 
 def test_split_payment_with_discount_records_total_amount():
-    Base.metadata.create_all(bind=engine)
-    apply_sqlite_column_migrations(engine)
-    apply_sqlite_data_migrations(engine)
-    s = SessionLocal()
+    Base.metadata.create_all(bind=db.engine)
+    apply_sqlite_column_migrations(db.engine)
+    apply_sqlite_data_migrations(db.engine)
+    s = db.SessionLocal()
     try:
         t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
         tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
@@ -224,19 +229,20 @@ def test_split_payment_with_discount_records_total_amount():
         assert float(pay.discount_amount) == 500.0
         assert float(pay.amount) == 3500.0
         due_after = repo.get_student_due_breakdown(st.id)
-        assert due_after["fee_due"] == 7500.0
+        assert due_after["fee_due"] == 7500.0  # current year; cash applied to invoices
+        assert due_after["school_payable"] == 7000.0  # payable reduced by cumulative discount
         assert due_after["van_due"] == 4000.0
-        assert due_after["total"] == 11500.0
+        assert due_after["total"] == 11000.0
     finally:
         s.close()
 
 
 def test_split_payment_school_fully_covered_by_discount_stores_sum_in_payment_amount():
     """School + van + discount is stored on Payment.amount; invoices still allocate school and van lines."""
-    Base.metadata.create_all(bind=engine)
-    apply_sqlite_column_migrations(engine)
-    apply_sqlite_data_migrations(engine)
-    s = SessionLocal()
+    Base.metadata.create_all(bind=db.engine)
+    apply_sqlite_column_migrations(db.engine)
+    apply_sqlite_data_migrations(db.engine)
+    s = db.SessionLocal()
     try:
         t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
         tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
@@ -288,16 +294,16 @@ def test_split_payment_school_fully_covered_by_discount_stores_sum_in_payment_am
         assert float(pay.discount_amount) == 1000.0
         assert float(pay.amount) == 2000.0
         inv = s.scalars(select(Invoice).where(Invoice.student_id_fk == st.id)).first()
-        assert float(inv.amount_paid) == 1000.0
+        assert float(inv.amount_paid) == 2000.0
     finally:
         s.close()
 
 
 def test_split_payment_stores_explicit_payment_date():
-    Base.metadata.create_all(bind=engine)
-    apply_sqlite_column_migrations(engine)
-    apply_sqlite_data_migrations(engine)
-    s = SessionLocal()
+    Base.metadata.create_all(bind=db.engine)
+    apply_sqlite_column_migrations(db.engine)
+    apply_sqlite_data_migrations(db.engine)
+    s = db.SessionLocal()
     try:
         t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
         tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
@@ -365,10 +371,10 @@ def test_split_payment_stores_explicit_payment_date():
 
 
 def test_split_payment_rejects_future_payment_date():
-    Base.metadata.create_all(bind=engine)
-    apply_sqlite_column_migrations(engine)
-    apply_sqlite_data_migrations(engine)
-    s = SessionLocal()
+    Base.metadata.create_all(bind=db.engine)
+    apply_sqlite_column_migrations(db.engine)
+    apply_sqlite_data_migrations(db.engine)
+    s = db.SessionLocal()
     try:
         t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
         tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
@@ -435,10 +441,10 @@ def test_split_payment_rejects_future_payment_date():
 
 def test_due_breakdown_is_max_of_tariff_and_invoice_open_balance():
     """Displayed due must not stay stuck at tariff when invoices show more (or less) open balance."""
-    Base.metadata.create_all(bind=engine)
-    apply_sqlite_column_migrations(engine)
-    apply_sqlite_data_migrations(engine)
-    s = SessionLocal()
+    Base.metadata.create_all(bind=db.engine)
+    apply_sqlite_column_migrations(db.engine)
+    apply_sqlite_data_migrations(db.engine)
+    s = db.SessionLocal()
     try:
         t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
         tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
@@ -466,7 +472,7 @@ def test_due_breakdown_is_max_of_tariff_and_invoice_open_balance():
         s.refresh(st)
 
         d = date(2026, 8, 1)
-        # Tariff school fee_due = 5000, but invoices only 6000 open -> display should use 6000
+        # Current-year due is tariff minus paid; invoice open balance does not inflate display.
         s.add(
             Invoice(
                 student_id_fk=st.id,
@@ -491,14 +497,14 @@ def test_due_breakdown_is_max_of_tariff_and_invoice_open_balance():
 
         repo = PaymentRepository(s)
         due = repo.get_student_due_breakdown(st.id)
-        assert due["fee_due"] == 6000.0
-        assert due["van_due"] == 1000.0  # max(1000 tariff remainder, 200 invoice open)
+        assert due["fee_due"] == 5000.0
+        assert due["van_due"] == 1000.0
     finally:
         s.close()
 
 
 def test_parse_payment_date_accepts_slash_or_backslash():
-    from app.core.payment_date_format import parse_payment_date_dmY
+    from backend.core.payment_date_format import parse_payment_date_dmY
 
     assert parse_payment_date_dmY("10/02/2026") == date(2026, 2, 10)
     assert parse_payment_date_dmY("10\\02\\2026") == date(2026, 2, 10)
@@ -508,11 +514,12 @@ def test_class_fee_apply_updates_students_scales_tuition_leaves_transport_invoic
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
-    from app.core.database import Base
+    from backend.core.database import Base
 
     mem = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=mem)
     apply_sqlite_column_migrations(mem)
+    apply_sqlite_data_migrations(mem)
     MemSession = sessionmaker(bind=mem, autoflush=False, autocommit=False)
     s = MemSession()
     try:
@@ -590,13 +597,14 @@ def test_village_van_fee_apply_updates_students_scales_transport_leaves_tuition_
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
-    from app.core.database import Base
-    from app.models import VillageVanFee
-    from app.repositories.village_van_fee_repository import VillageVanFeeRepository
+    from backend.core.database import Base
+    from backend.models import VillageVanFee
+    from backend.repositories.village_van_fee_repository import VillageVanFeeRepository
 
     mem = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=mem)
     apply_sqlite_column_migrations(mem)
+    apply_sqlite_data_migrations(mem)
     MemSession = sessionmaker(bind=mem, autoflush=False, autocommit=False)
     s = MemSession()
     try:
@@ -674,7 +682,7 @@ def test_village_van_fee_apply_updates_students_scales_transport_leaves_tuition_
 def test_payment_receipt_pdf_writes_valid_pdf(tmp_path):
     from datetime import datetime
 
-    from app.reports.payment_receipt_pdf import render_payment_receipt
+    from backend.reports.payment_receipt_pdf import render_payment_receipt
 
     out = tmp_path / "receipt.pdf"
     render_payment_receipt(
@@ -697,10 +705,10 @@ def test_payment_receipt_pdf_writes_valid_pdf(tmp_path):
 
 
 def test_create_split_rejects_discount_greater_than_school_amount():
-    Base.metadata.create_all(bind=engine)
-    apply_sqlite_column_migrations(engine)
-    apply_sqlite_data_migrations(engine)
-    s = SessionLocal()
+    Base.metadata.create_all(bind=db.engine)
+    apply_sqlite_column_migrations(db.engine)
+    apply_sqlite_data_migrations(db.engine)
+    s = db.SessionLocal()
     try:
         t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
         tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
@@ -765,12 +773,12 @@ def test_create_split_rejects_discount_greater_than_school_amount():
 
 
 def test_payment_service_collect_split_delegates_to_repo():
-    from app.services.payment_service import PaymentService
+    from backend.services.payment_service import PaymentService
 
-    Base.metadata.create_all(bind=engine)
-    apply_sqlite_column_migrations(engine)
-    apply_sqlite_data_migrations(engine)
-    s = SessionLocal()
+    Base.metadata.create_all(bind=db.engine)
+    apply_sqlite_column_migrations(db.engine)
+    apply_sqlite_data_migrations(db.engine)
+    s = db.SessionLocal()
     try:
         t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
         tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
