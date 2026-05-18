@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
 from backend.core.academic_year_dates import format_academic_year_range
 from backend.services.academic_year_errors import AcademicYearProvisionError
 from backend.services.academic_year_service import AcademicYearService
+from frontend.ui import theme
+from frontend.ui.table_style import configure_data_table
 
 
 class AcademicYearDialog(QDialog):
@@ -30,6 +32,7 @@ class AcademicYearDialog(QDialog):
         self.village_fee_service = village_fee_service
         self.setWindowTitle("Manage academic years")
         self.resize(720, 420)
+        theme.apply_dialog_theme(self)
         layout = QVBoxLayout(self)
         hint = QLabel(
             "Each academic year is a date range (DD/MM/YYYY). Ranges must not overlap. "
@@ -37,6 +40,7 @@ class AcademicYearDialog(QDialog):
             "Adding a year creates fee records for all students using class and village tariffs."
         )
         hint.setWordWrap(True)
+        hint.setProperty("role", "muted")
         layout.addWidget(hint)
         self._current_lbl = QLabel()
         layout.addWidget(self._current_lbl)
@@ -44,8 +48,7 @@ class AcademicYearDialog(QDialog):
         self.table.setHorizontalHeaderLabels(["Label", "Start", "End"])
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.verticalHeader().setVisible(False)
+        configure_data_table(self.table)
         layout.addWidget(self.table, 1)
         btn_row = QHBoxLayout()
         add_btn = QPushButton("Add year…")
@@ -91,6 +94,7 @@ class AcademicYearDialog(QDialog):
     def _year_form_dialog(self, title: str, start: date | None = None, end: date | None = None, label: str = ""):
         dlg = QDialog(self)
         dlg.setWindowTitle(title)
+        theme.apply_dialog_theme(dlg)
         form = QFormLayout(dlg)
         label_edit = QLineEdit(label)
         label_edit.setPlaceholderText("Optional, e.g. 2025-26")

@@ -31,8 +31,9 @@ class PaginationBar(QWidget):
         row.setContentsMargins(0, 6, 0, 0)
         row.addStretch(1)
         self.status_label = QLabel("Page 1 of 1")
-        self.prev_btn = QPushButton("Previous page")
-        self.next_btn = QPushButton("Next page")
+        self.status_label.setProperty("role", "muted")
+        self.prev_btn = QPushButton("← Previous")
+        self.next_btn = QPushButton("Next →")
         # clicked emits a bool; swallow it so callers are not passed checked=False as pane_id etc.
         self.prev_btn.clicked.connect(lambda *_: self._on_previous())
         self.next_btn.clicked.connect(lambda *_: self._on_next())

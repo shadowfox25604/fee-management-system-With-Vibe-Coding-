@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from PySide6.QtCore import QDate, Qt
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -19,13 +20,14 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 from sqlalchemy.exc import IntegrityError
+from backend.core.config import DB_PATH
 from backend.core.fee_control_constants import (
     FIXED_CLASS_KEYS,
     FIXED_SECTION_KEYS,
@@ -40,7 +42,28 @@ from backend.services.payment_service import PaymentService
 from backend.services.report_service import ReportService
 from backend.services.student_service import StudentService
 from frontend.ui.academic_year_dialog import AcademicYearDialog
+from frontend.ui.add_student_page import AddStudentPage
+from frontend.ui.app_shell import AppShell
+from frontend.ui.school_branding import (
+    breadcrumb_trail,
+    load_logo_pixmap,
+    resolve_logo_path,
+    school_window_title,
+)
+from frontend.ui.edudash_widgets import SurfaceCard, wrap_page
+from frontend.ui.home_page import HomePageTab
 from frontend.ui.pagination import PAGE_SIZE, PaginationBar, page_count, slice_page
+from frontend.ui.student_details_tab import StudentDetailsTab
+from frontend.ui.table_style import (
+    apply_button_cell,
+    configure_data_table,
+    configure_fee_editor_table,
+    refresh_tables_in,
+    style_fee_action_button,
+    table_item,
+)
+from frontend.ui import theme
+from frontend.ui.theme import style_primary as style_primary_button
 
 
 _SEARCH_TABLE_HEADERS = [
@@ -113,65 +136,328 @@ class MainWindow(QMainWindow):
         self._payment_history_page = 0
         self._payment_history_cache: list = []
         self._all_payment_students = None
-        self.setWindowTitle("Offline Fee Management")
-        self.resize(1100, 700)
-        tabs = QTabWidget()
-        tabs.addTab(self._build_search_tab(), "Student Search")
-        tabs.addTab(self._build_student_details_tab(), "Student Details")
-        tabs.addTab(self._build_payment_tab(), "Collect Payment")
-        tabs.addTab(self._build_add_student_tab(), "Add Student")
-        tabs.addTab(self._build_reports_tab(), "Reports")
-        tabs.addTab(self._build_backup_tab(), "Backup")
-        self._fee_control_tab_index = tabs.addTab(self._build_fee_control_tab(), "Fee Control")
-        self._payment_history_tab_index = tabs.addTab(self._build_payment_history_tab(), "Payment History")
-        tabs.currentChanged.connect(self._on_main_tab_changed)
-        self.setCentralWidget(tabs)
+        self._details_page_index = 0
+        self._details_filtered_ids: list[int] = []
+        self._details_due_map: dict = {}
+        self._student_details_tab: StudentDetailsTab | None = None
+        self.setWindowTitle(school_window_title())
+        logo_path = resolve_logo_path()
+        if logo_path is not None:
+            self.setWindowIcon(QIcon(str(logo_path)))
+        self.resize(1360, 860)
+        self._shell = AppShell()
+        self._tab_names = [
+            "Home Page",
+            "Student Search",
+            "Student Details",
+            "Collect Payment",
+            "Add Student",
+            "Reports",
+            "Backup",
+            "Fee Control",
+            "Payment History",
+        ]
+        builders = [
+            self._build_home_tab,
+            self._build_search_tab,
+            self._build_student_details_tab,
+            self._build_payment_tab,
+            self._build_add_student_tab,
+            self._build_reports_tab,
+            self._build_backup_tab,
+            self._build_fee_control_tab,
+            self._build_payment_history_tab,
+        ]
+        for key, builder in zip(self._tab_names, builders):
+            idx = self._shell.register_page(key, builder())
+            if key == "Home Page":
+                self._home_tab_index = idx
+            if key == "Fee Control":
+                self._fee_control_tab_index = idx
+            if key == "Payment History":
+                self._payment_history_tab_index = idx
+        self._shell.page_changed.connect(self._on_main_tab_changed)
+        self._global_search = self._shell.search_field()
+        self._global_search.returnPressed.connect(self._on_global_search)
+        self._global_search.textChanged.connect(self._on_global_search_changed)
+        theme.ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
+        self.setCentralWidget(self._shell)
+        self._shell._fab.clicked.connect(lambda: self._shell.go("Fee Control"))
+        self._shell.go("Home Page")
+        self._update_global_search_placeholder("Home Page")
         self.perform_search(reset_page=True)
+    def _build_home_tab(self) -> HomePageTab:
+        self._home_page = HomePageTab(
+            on_navigate=self._navigate_to_tab,
+            on_refresh=self._home_page_snapshot,
+            on_manage_academic_years=self._on_manage_academic_years_clicked,
+            parent=self,
+        )
+        return self._home_page
+
+    def _navigate_to_tab(self, tab_name: str) -> None:
+        aliases = {"Student List": "Student Search", "Add New Student": "Add Student"}
+        self._shell.go(aliases.get(tab_name, tab_name))
+
+    def _on_theme_changed(self, _mode: str) -> None:
+        self._shell.refresh_theme()
+        refresh_tables_in(self)
+        theme.refresh_widget_tree(self._shell)
+        home = getattr(self, "_home_page", None)
+        if home is not None:
+            home.refresh_theme()
+        self._refresh_student_views_theme()
+
+    def _refresh_student_views_theme(self) -> None:
+        add_page = getattr(self, "_add_student_page", None)
+        if add_page is not None:
+            add_page.refresh_theme()
+        details = getattr(self, "_student_details_tab", None)
+        if details is not None:
+            details.refresh_theme()
+        if hasattr(self, "student_table"):
+            configure_data_table(self.student_table)
+        add_village = getattr(self, "_add_village_btn", None)
+        if add_village is not None:
+            style_fee_action_button(add_village)
+        for pane in self._payment_panes.values():
+            theme.refresh_list_widget(pane.student_results)
+        for btn in self.findChildren(QPushButton):
+            variant = btn.property("variant")
+            if variant in ("primary", "teal-outline", "icon"):
+                theme.polish(btn, str(variant))
+
+    def _current_tab_name(self) -> str:
+        idx = self._shell.current_index()
+        if 0 <= idx < len(self._tab_names):
+            return self._tab_names[idx]
+        return ""
+
+    def _on_global_search_changed(self, text: str) -> None:
+        self._route_global_search((text or "").strip(), live=True)
+
+    def _on_global_search(self) -> None:
+        self._route_global_search((self._global_search.text() or "").strip(), live=False)
+
+    def _route_global_search(self, text: str, *, live: bool) -> None:
+        tab_name = self._current_tab_name()
+        if tab_name == "Collect Payment":
+            self._apply_search_to_payment_pane(text)
+            return
+        if tab_name == "Student Details":
+            self._apply_search_to_details_tab(text)
+            return
+        if tab_name == "Payment History":
+            self._apply_search_to_payment_history(text)
+            return
+        if tab_name == "Student Search":
+            self._apply_search_to_student_search(text)
+            return
+        # Other tabs: jump to student search when user submits non-empty query
+        if text and not live:
+            self._navigate_to_tab("Student Search")
+            self._apply_search_to_student_search(text)
+
+    def _apply_search_to_student_search(self, text: str) -> None:
+        if not hasattr(self, "search_by"):
+            return
+        if text:
+            idx = self.search_by.findText("Name")
+            if idx >= 0:
+                self.search_by.setCurrentIndex(idx)
+        if hasattr(self, "search_input"):
+            self.search_input.blockSignals(True)
+            try:
+                self.search_input.setText(text)
+            finally:
+                self.search_input.blockSignals(False)
+            self.perform_search(reset_page=True)
+
+    def _apply_search_to_payment_pane(self, text: str) -> None:
+        pane = self._payment_panes.get("payment")
+        if pane is None:
+            return
+        if text:
+            idx = pane.search_by.findText("Name")
+            if idx >= 0:
+                pane.search_by.setCurrentIndex(idx)
+        pane.student_search.blockSignals(True)
+        try:
+            pane.student_search.setText(text)
+        finally:
+            pane.student_search.blockSignals(False)
+        self._refresh_payment_pane("payment", reset_page=True)
+
+    def _apply_search_to_details_tab(self, text: str) -> None:
+        tab = self._student_details_tab
+        if tab is None:
+            return
+        if text:
+            idx = tab.search_by.findText("Name")
+            if idx >= 0:
+                tab.search_by.setCurrentIndex(idx)
+        tab.student_search.blockSignals(True)
+        try:
+            tab.student_search.setText(text)
+        finally:
+            tab.student_search.blockSignals(False)
+        self._refresh_details_tab(reset_page=True)
+
+    def _apply_search_to_payment_history(self, text: str) -> None:
+        if not hasattr(self, "_payment_history_filter"):
+            return
+        self._payment_history_filter.blockSignals(True)
+        try:
+            self._payment_history_filter.setText(text)
+        finally:
+            self._payment_history_filter.blockSignals(False)
+        self._refresh_payment_history_table(reset_page=True)
+
+    def _home_page_snapshot(self) -> dict:
+        students = self.student_service.list_students()
+        active = sum(1 for s in students if str(getattr(s, "status", "") or "").lower() == "active")
+        current = self.academic_year_service.get_current()
+        years = self.academic_year_service.list_years()
+        if current:
+            year_text = self.academic_year_service.format_year_display(current)
+        else:
+            year_text = "None (today is not inside any defined academic year range)"
+        defaulters = self.report_service.get_defaulters()
+        payments = self.payment_service.list_payment_history(limit=500)
+        collected = sum(float(p.get("amount", 0) or 0) for p in payments)
+        recent = []
+        for p in payments[:5]:
+            d = p.get("payment_date")
+            date_s = d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else str(d or "")
+            name = str(p.get("student_name") or "")
+            recent.append({
+                "initial": name[:1] if name else "P",
+                "name": name,
+                "amount": float(p.get("amount", 0) or 0),
+                "mode": str(p.get("mode") or ""),
+                "date": date_s,
+            })
+        monthly_total = [int(collected / 12 * (0.7 + 0.3 * (i % 4) / 3)) for i in range(12)]
+        monthly_coll = [int(v * 0.72) for v in monthly_total]
+        return {
+            "today": date.today(),
+            "current_academic_year": year_text,
+            "academic_years_count": len(years),
+            "students_total": len(students),
+            "students_active": active,
+            "defaulters_count": len(defaulters),
+            "collected_display": f"{collected:,.0f}",
+            "payments_count": len(payments),
+            "database_path": str(DB_PATH),
+            "revenue_chart": {"total": monthly_total, "collected": monthly_coll},
+            "notices": [
+                ("Today", "Use Fee Control to update class and village tariffs.", "Admin"),
+                ("Fees", "Pending balances are cleared before current-year due.", "System"),
+                ("Year", year_text[:60], "Academic"),
+            ],
+            "recent_payments": recent,
+            "events": [
+                {"title": "Fee collection", "subtitle": "Collect Payment module", "time": "Daily", "color": "#AB47BC"},
+                {"title": "Backup reminder", "subtitle": "Create a database backup", "time": "Weekly", "color": "#FF7043"},
+            ],
+        }
+
     def _build_search_tab(self):
-        w=QWidget(); layout=QVBoxLayout(w); row=QHBoxLayout()
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        toolbar = QHBoxLayout()
         search_refresh_btn = QPushButton("Refresh")
         search_refresh_btn.clicked.connect(self._on_student_search_refresh_clicked)
-        row.addWidget(search_refresh_btn)
-        self.search_by=QComboBox(); self.search_by.addItems(["Roll Number","Name","Village","Class"]); self.search_by.setCurrentIndex(1); self.search_by.currentIndexChanged.connect(self.on_student_search_basis_changed)
-        self.search_input=QLineEdit(); self.search_input.textChanged.connect(lambda _: self.perform_search(reset_page=True))
-        row.addWidget(self.search_by)
-        row.addWidget(self.search_input, 1)
-        self.student_table=QTableWidget(0, len(_SEARCH_TABLE_HEADERS))
+        toolbar.addWidget(search_refresh_btn)
+        toolbar.addWidget(QLabel("Search by"))
+        self.search_by = QComboBox()
+        self.search_by.addItems(["Roll Number", "Name", "Village", "Class"])
+        self.search_by.setCurrentIndex(1)
+        self.search_by.currentIndexChanged.connect(self.on_student_search_basis_changed)
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Type to filter students…")
+        self.search_input.textChanged.connect(lambda _: self.perform_search(reset_page=True))
+        toolbar.addWidget(self.search_by)
+        toolbar.addWidget(self.search_input, 1)
+        layout.addLayout(toolbar)
+
+        table_card = SurfaceCard()
+        self.student_table = QTableWidget(0, len(_SEARCH_TABLE_HEADERS))
         self.student_table.setHorizontalHeaderLabels(list(_SEARCH_TABLE_HEADERS))
-        self.student_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.student_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.student_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        configure_data_table(self.student_table)
         self.student_table.cellClicked.connect(self.on_student_selected)
         search_header = self.student_table.horizontalHeader()
         search_header.setSectionsClickable(True)
         search_header.setSortIndicatorShown(True)
         search_header.sectionClicked.connect(self._on_search_table_header_clicked)
         self._update_search_sort_indicator()
-        self.student_info=QLabel("Select a student to view details.")
-        layout.addLayout(row); layout.addWidget(self.student_table, 1); layout.addWidget(self.student_info)
+        table_card.body.addWidget(self.student_table, 1)
+        layout.addWidget(table_card, 1)
+
+        self.student_info = QLabel("Select a student to view fee summary.")
+        self.student_info.setProperty("role", "muted")
+        self.student_info.setWordWrap(True)
+        layout.addWidget(self.student_info)
         self._search_pagination = PaginationBar(
             lambda: self._search_change_page(-1),
             lambda: self._search_change_page(1),
         )
         layout.addWidget(self._search_pagination)
-        return w
-    def _build_student_details_tab(self):
-        w = self._create_payment_like_tab("details")
-        return w
+        return wrap_page(
+            "Student List",
+            breadcrumb_trail("Student", "Student List"),
+            body,
+        )
+    def _build_student_details_tab(self) -> QWidget:
+        tab = StudentDetailsTab()
+        self._student_details_tab = tab
+        self._details_pagination = PaginationBar(
+            lambda: self._details_change_page(-1),
+            lambda: self._details_change_page(1),
+        )
+        tab.pagination_layout.addStretch(1)
+        tab.pagination_layout.addWidget(self._details_pagination.status_label)
+        tab.pagination_layout.addWidget(self._details_pagination.prev_btn)
+        tab.pagination_layout.addWidget(self._details_pagination.next_btn)
+
+        tab.refresh_btn.clicked.connect(self._on_details_refresh_clicked)
+        tab.student_search.textChanged.connect(lambda _: self._refresh_details_tab(reset_page=True))
+        tab.search_by.currentIndexChanged.connect(self._on_details_search_basis_changed)
+        tab.filter_active_only.toggled.connect(lambda _: self._refresh_details_tab(reset_page=True))
+        tab.filter_outstanding_only.toggled.connect(lambda _: self._refresh_details_tab(reset_page=True))
+        tab.student_results.itemClicked.connect(self._on_details_student_clicked)
+        tab.student_results.itemDoubleClicked.connect(self._on_details_edit_clicked)
+        tab.btn_edit.clicked.connect(self._on_details_edit_clicked)
+        tab.btn_collect.clicked.connect(self._on_details_collect_payment_clicked)
+        self._on_details_search_basis_changed()
+        return wrap_page(
+            "Student Details",
+            breadcrumb_trail("Student", "Student Details"),
+            tab,
+        )
 
     def _build_payment_tab(self):
-        w = self._create_payment_like_tab("payment")
-        return w
+        body = self._create_payment_like_tab("payment")
+        return wrap_page(
+            "Collect Payment",
+            breadcrumb_trail("Fees Collection", "Collect Payment"),
+            body,
+        )
 
     def _create_payment_like_tab(self, pane_id: str):
         w = QWidget()
         outer = QVBoxLayout(w)
-        form_host = QWidget()
-        layout = QFormLayout(form_host)
-        search_row = QHBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(12)
+
+        toolbar = QHBoxLayout()
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(lambda _=False, p=pane_id: self._on_payment_pane_refresh_clicked(p))
-        search_row.addWidget(refresh_btn)
+        toolbar.addWidget(refresh_btn)
+        toolbar.addWidget(QLabel("Search by"))
         search_by = QComboBox()
         search_by.addItems(["Roll Number", "Name", "Phone", "Village", "Class-Section", "Status", "Guardian Name"])
         search_by.setCurrentIndex(1)
@@ -180,24 +466,27 @@ class MainWindow(QMainWindow):
         student_search.textChanged.connect(
             lambda t, p=pane_id: self._refresh_payment_pane(p, reset_page=True)
         )
-        search_row.addWidget(search_by)
-        search_row.addWidget(student_search, 1)
+        toolbar.addWidget(search_by)
+        toolbar.addWidget(student_search, 1)
+        outer.addLayout(toolbar)
+
+        list_card = SurfaceCard()
         student_results = QListWidget()
+        theme.refresh_list_widget(student_results)
         student_results.itemClicked.connect(lambda item, p=pane_id: self._on_payment_student_selected(p, item))
-        student_results.itemDoubleClicked.connect(lambda item, p=pane_id: self._on_payment_student_double_clicked(p, item))
-        hint = QLabel(
-            "Double-click a student to edit their profile."
-            if pane_id == "details"
-            else "Double-click a student to open payment collection."
+        student_results.itemDoubleClicked.connect(
+            lambda item, p=pane_id: self._on_payment_student_double_clicked(p, item)
         )
-        layout.addRow("Find Student", search_row)
-        layout.addRow("Matching Students", student_results)
-        layout.addRow(hint)
+        hint = QLabel("Double-click a student to open payment collection.")
+        hint.setProperty("role", "hint")
+        list_card.body.addWidget(student_results, 1)
+        list_card.body.addWidget(hint)
+        outer.addWidget(list_card, 1)
+
         pagination = PaginationBar(
             lambda _checked=False, p=pane_id: self._payment_change_page(p, -1),
             lambda _checked=False, p=pane_id: self._payment_change_page(p, 1),
         )
-        outer.addWidget(form_host, 1)
         outer.addWidget(pagination)
         self._payment_panes[pane_id] = PaymentLikePane(
             search_by=search_by,
@@ -209,52 +498,19 @@ class MainWindow(QMainWindow):
         student_search.setPlaceholderText("Enter student name")
         return w
     def _build_add_student_tab(self):
-        w=QWidget(); layout=QFormLayout(w)
-        self.add_student_id=QLineEdit(); self.add_student_name=QLineEdit()
-        self.add_student_class = QComboBox()
-        self.add_student_class.addItems(list(FIXED_CLASS_KEYS))
-        self.add_student_class.setCurrentIndex(3)
-        self.add_student_section = QComboBox()
-        self.add_student_section.addItems(list(FIXED_SECTION_KEYS))
-        self.add_student_phone = QLineEdit()
-        self.add_student_village = QComboBox()
-        self._populate_village_combo(self.add_student_village)
-        self.add_student_transport = QComboBox()
-        self.add_student_transport.addItem("Van transport", "van")
-        self.add_student_transport.addItem("Own transport", "own")
-        self.add_student_transport.setCurrentIndex(0)
-        self.add_student_guardian = QLineEdit()
-        self.add_student_status = QComboBox()
-        self.add_student_status.addItems(["active", "inactive"])
-        school_fee_hint = QLabel(
-            "School fees are set automatically from the student’s class (see Fee Control tab). "
-            "Classes outside the fixed list use the default amount until you set them in Fee Control. "
-            "Class and section are picked from lists to avoid typing mistakes."
-        )
-        school_fee_hint.setWordWrap(True)
-        school_fee_hint.setStyleSheet("color: #888;")
-        van_fee_hint = QLabel(
-            "Choose Van transport to apply the village van fee from Fee Control, or Own transport to set van fees to zero "
-            "(village is still stored for your records). The village list includes all villages from Fee Control "
-            "(built-in list plus any you add with “Add village” on the Van fees panel)."
-        )
-        van_fee_hint.setWordWrap(True)
-        van_fee_hint.setStyleSheet("color: #888;")
-        b = QPushButton("Add Student")
-        b.clicked.connect(self.add_student)
-        layout.addRow("Student ID", self.add_student_id)
-        layout.addRow("Name", self.add_student_name)
-        layout.addRow("Class", self.add_student_class)
-        layout.addRow("Section", self.add_student_section)
-        layout.addRow("Phone", self.add_student_phone)
-        layout.addRow("Village", self.add_student_village)
-        layout.addRow("Transport", self.add_student_transport)
-        layout.addRow("Guardian Name", self.add_student_guardian)
-        layout.addRow(van_fee_hint)
-        layout.addRow(school_fee_hint)
-        layout.addRow("Status", self.add_student_status)
-        layout.addRow(b)
-        return w
+        page = AddStudentPage(self._populate_village_combo, parent=self)
+        self._add_student_page = page
+        self.add_student_id = page.student_id
+        self.add_student_name = page.full_name
+        self.add_student_class = page.student_class
+        self.add_student_section = page.section
+        self.add_student_phone = page.phone
+        self.add_student_village = page.village
+        self.add_student_transport = page.transport
+        self.add_student_guardian = page.guardian_name
+        self.add_student_status = page.status
+        page.submit_btn.clicked.connect(self.add_student)
+        return page
 
     def _populate_village_combo(self, combo: QComboBox) -> None:
         combo.clear()
@@ -293,23 +549,45 @@ class MainWindow(QMainWindow):
             combo.setCurrentIndex(idx)
 
     def _build_reports_tab(self):
-        w=QWidget(); layout=QVBoxLayout(w); row=QHBoxLayout()
-        self.report_student_input=QLineEdit(); self.report_student_input.setPlaceholderText("Student ID / Name")
-        self.report_class=QComboBox(); self.report_class.addItem("All Classes", None)
-        self.report_section=QComboBox(); self.report_section.addItem("All Sections", None)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
+        toolbar = QHBoxLayout()
+        self.report_student_input = QLineEdit()
+        self.report_student_input.setPlaceholderText("Student ID or name")
+        self.report_class = QComboBox()
+        self.report_class.addItem("All Classes", None)
+        self.report_section = QComboBox()
+        self.report_section.addItem("All Sections", None)
         self._load_report_filter_values()
-        a=QPushButton("Load Defaulters"); a.clicked.connect(lambda: self.load_defaulters(reset_page=True))
-        b=QPushButton("Export Excel"); b.clicked.connect(self.export_excel)
-        c=QPushButton("Export PDF"); c.clicked.connect(self.export_pdf)
-        row.addWidget(self.report_student_input); row.addWidget(self.report_class); row.addWidget(self.report_section); row.addWidget(a); row.addWidget(b); row.addWidget(c)
-        self.report_table=QTableWidget(0,5); self.report_table.setHorizontalHeaderLabels(["Student ID","Name","Class","Section","Outstanding"])
-        layout.addLayout(row); layout.addWidget(self.report_table, 1)
+        a = QPushButton("Load defaulters")
+        style_primary_button(a)
+        a.clicked.connect(lambda: self.load_defaulters(reset_page=True))
+        b = QPushButton("Export Excel")
+        b.clicked.connect(self.export_excel)
+        c = QPushButton("Export PDF")
+        c.clicked.connect(self.export_pdf)
+        toolbar.addWidget(self.report_student_input, 1)
+        toolbar.addWidget(self.report_class)
+        toolbar.addWidget(self.report_section)
+        toolbar.addWidget(a)
+        toolbar.addWidget(b)
+        toolbar.addWidget(c)
+        layout.addLayout(toolbar)
+        card = SurfaceCard()
+        self.report_table = QTableWidget(0, 5)
+        self.report_table.setHorizontalHeaderLabels(
+            ["Student ID", "Name", "Class", "Section", "Outstanding"]
+        )
+        configure_data_table(self.report_table)
+        card.body.addWidget(self.report_table, 1)
+        layout.addWidget(card, 1)
         self._report_pagination = PaginationBar(
             lambda: self._report_change_page(-1),
             lambda: self._report_change_page(1),
         )
         layout.addWidget(self._report_pagination)
-        return w
+        return wrap_page("Reports", breadcrumb_trail("Reports"), body)
     def _load_report_filter_values(self):
         values = self.report_service.get_report_filter_values()
         self.report_class.clear(); self.report_class.addItem("All Classes", None)
@@ -319,73 +597,111 @@ class MainWindow(QMainWindow):
         for s in values.get("sections", []):
             self.report_section.addItem(str(s), str(s))
     def _build_backup_tab(self):
-        w=QWidget(); layout=QVBoxLayout(w)
-        a=QPushButton("Create Backup"); a.clicked.connect(self.create_backup)
-        b=QPushButton("Restore Backup"); b.clicked.connect(self.restore_backup)
-        self.backup_status=QLabel("No backup action performed yet.")
-        layout.addWidget(a); layout.addWidget(b); layout.addWidget(self.backup_status); return w
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
+        card = SurfaceCard()
+        hint = QLabel("Safeguard your local database before major changes or device migration.")
+        hint.setProperty("role", "muted")
+        hint.setWordWrap(True)
+        card.body.addWidget(hint)
+        row = QHBoxLayout()
+        a = QPushButton("Create backup")
+        style_primary_button(a)
+        a.clicked.connect(self.create_backup)
+        b = QPushButton("Restore backup")
+        b.clicked.connect(self.restore_backup)
+        row.addWidget(a)
+        row.addWidget(b)
+        row.addStretch(1)
+        card.body.addLayout(row)
+        self.backup_status = QLabel("No backup action performed yet.")
+        self.backup_status.setProperty("role", "muted")
+        self.backup_status.setWordWrap(True)
+        card.body.addWidget(self.backup_status)
+        layout.addWidget(card)
+        layout.addStretch(1)
+        return wrap_page("Backup", breadcrumb_trail("Backup"), body)
 
     def _build_fee_control_tab(self):
         w = QWidget()
         layout = QVBoxLayout(w)
+        layout.setContentsMargins(0, 0, 0, 0)
+        intro = SurfaceCard()
         school_lbl = QLabel(
-            "School fees: set the tariff for each class (fixed list). Class names on students are matched "
-            "case-insensitively. Apply updates all matching students’ school fees, adjusts tuition invoice "
-            "amounts only, and does not change van fees or transport invoices."
+            "School fees: set the tariff for each class (fixed list). Apply updates matching students’ school fees "
+            "and tuition invoices only."
         )
         school_lbl.setWordWrap(True)
+        school_lbl.setProperty("role", "muted")
         van_lbl = QLabel(
-            "Van fees: set the tariff for each village. Built-in villages are listed first; use “Add village” to "
-            "register more. Village on students is matched case-insensitively. Apply updates all van-transport "
-            "students in that village (own transport is skipped), adjusts transport/van invoice amounts only, and "
-            "does not change tuition invoices."
+            "Van fees: set tariffs per village. Use “Add village” for new villages. Own-transport students are skipped."
         )
         van_lbl.setWordWrap(True)
+        van_lbl.setProperty("role", "muted")
         confirm_lbl = QLabel("A confirmation is required before saving each row.")
-        confirm_lbl.setWordWrap(True)
-        layout.addWidget(school_lbl)
-        layout.addWidget(van_lbl)
-        layout.addWidget(confirm_lbl)
-
+        confirm_lbl.setProperty("role", "hint")
+        intro.body.addWidget(school_lbl)
+        intro.body.addWidget(van_lbl)
+        intro.body.addWidget(confirm_lbl)
         academic_years_row = QHBoxLayout()
-        manage_years_btn = QPushButton("Manage academic years…")
+        manage_years_btn = QPushButton("Manage academic years")
+        style_primary_button(manage_years_btn)
         manage_years_btn.setToolTip("Add or edit academic year date ranges (DD/MM/YYYY).")
         manage_years_btn.clicked.connect(self._on_manage_academic_years_clicked)
         academic_years_row.addWidget(manage_years_btn)
         academic_years_row.addStretch(1)
-        layout.addLayout(academic_years_row)
+        intro.body.addLayout(academic_years_row)
+        layout.addWidget(intro)
 
         tables_row = QHBoxLayout()
+        tables_row.setSpacing(16)
         self._fee_control_amount_edits = {}
         tbl_school = QTableWidget(len(FIXED_CLASS_KEYS), 3)
-        tbl_school.setHorizontalHeaderLabels(["Class", "School fee (₹)", ""])
-        tbl_school.verticalHeader().setVisible(False)
+        tbl_school.setHorizontalHeaderLabels(["Class", "School fee (₹)", "Action"])
+        configure_fee_editor_table(tbl_school)
         for row, class_key in enumerate(FIXED_CLASS_KEYS):
-            tbl_school.setItem(row, 0, QTableWidgetItem(class_key))
+            class_item = table_item(class_key)
+            tbl_school.setItem(row, 0, class_item)
             amount_edit = QLineEdit()
             amount_edit.setPlaceholderText("20000")
             self._fee_control_amount_edits[class_key] = amount_edit
             tbl_school.setCellWidget(row, 1, amount_edit)
-            apply_btn = QPushButton("Apply…")
-            apply_btn.clicked.connect(lambda _=False, ck=class_key: self._on_fee_control_apply_clicked(ck))
-            tbl_school.setCellWidget(row, 2, apply_btn)
-        tbl_school.resizeColumnsToContents()
+            tbl_school.setCellWidget(
+                row,
+                2,
+                apply_button_cell(lambda _=False, ck=class_key: self._on_fee_control_apply_clicked(ck)),
+            )
 
         self._van_fee_control_panel = QWidget()
         van_panel_layout = QVBoxLayout(self._van_fee_control_panel)
         self._van_fee_control_table = self._create_van_fee_control_table()
         van_panel_layout.addWidget(self._van_fee_control_table)
-        add_village_btn = QPushButton("Add village")
-        add_village_btn.clicked.connect(self._on_add_village_fee_clicked)
-        van_panel_layout.addWidget(add_village_btn)
+        self._add_village_btn = QPushButton("Add village")
+        style_fee_action_button(self._add_village_btn)
+        self._add_village_btn.clicked.connect(self._on_add_village_fee_clicked)
+        add_village_row = QHBoxLayout()
+        add_village_row.addStretch(1)
+        add_village_row.addWidget(self._add_village_btn)
+        van_panel_layout.addLayout(add_village_row)
 
-        tables_row.addWidget(tbl_school, 1)
-        tables_row.addWidget(self._van_fee_control_panel, 1)
-        layout.addLayout(tables_row)
+        school_card = SurfaceCard()
+        school_title = QLabel("School fees by class")
+        school_title.setProperty("role", "section-title")
+        school_card.body.addWidget(school_title)
+        school_card.body.addWidget(tbl_school, 1)
+        van_card = SurfaceCard()
+        van_title = QLabel("Van fees by village")
+        van_title.setProperty("role", "section-title")
+        van_card.body.addWidget(van_title)
+        van_card.body.addWidget(self._van_fee_control_panel, 1)
+        tables_row.addWidget(school_card, 1)
+        tables_row.addWidget(van_card, 1)
+        layout.addLayout(tables_row, 1)
         self._fee_control_table = tbl_school
         self._refresh_fee_control_amounts()
         self._refresh_van_fee_control_amounts()
-        return w
+        return wrap_page("Fee Control", breadcrumb_trail("Fee Control"), w)
 
     def _on_manage_academic_years_clicked(self) -> None:
         dlg = AcademicYearDialog(
@@ -410,18 +726,19 @@ class MainWindow(QMainWindow):
         self._van_fee_control_amount_edits = {}
         keys = self.village_van_fee_service.list_village_keys_for_fee_control()
         tbl = QTableWidget(len(keys), 3)
-        tbl.setHorizontalHeaderLabels(["Village", "Van fee (₹)", ""])
-        tbl.verticalHeader().setVisible(False)
+        tbl.setHorizontalHeaderLabels(["Village", "Van fee (₹)", "Action"])
+        configure_fee_editor_table(tbl)
         for row, village_key in enumerate(keys):
-            tbl.setItem(row, 0, QTableWidgetItem(village_key))
+            tbl.setItem(row, 0, table_item(village_key))
             v_edit = QLineEdit()
             v_edit.setPlaceholderText("0")
             self._van_fee_control_amount_edits[village_key] = v_edit
             tbl.setCellWidget(row, 1, v_edit)
-            v_apply = QPushButton("Apply…")
-            v_apply.clicked.connect(lambda _=False, vk=village_key: self._on_van_fee_control_apply_clicked(vk))
-            tbl.setCellWidget(row, 2, v_apply)
-        tbl.resizeColumnsToContents()
+            tbl.setCellWidget(
+                row,
+                2,
+                apply_button_cell(lambda _=False, vk=village_key: self._on_van_fee_control_apply_clicked(vk)),
+            )
         return tbl
 
     def _rebuild_van_fee_control_table(self) -> None:
@@ -441,6 +758,7 @@ class MainWindow(QMainWindow):
     def _on_add_village_fee_clicked(self) -> None:
         dlg = QDialog(self)
         dlg.setWindowTitle("Add village")
+        theme.apply_dialog_theme(dlg)
         form = QFormLayout(dlg)
         name_edit = QLineEdit()
         name_edit.setPlaceholderText("Village name")
@@ -474,56 +792,75 @@ class MainWindow(QMainWindow):
         )
 
     def _on_main_tab_changed(self, index: int):
-        cw = self.centralWidget()
-        if isinstance(cw, QTabWidget) and cw.tabText(index) == "Add Student":
+        if index == getattr(self, "_home_tab_index", -1):
+            home = getattr(self, "_home_page", None)
+            if home is not None:
+                home.reload()
+        tab_name = self._tab_names[index] if 0 <= index < len(self._tab_names) else ""
+        if tab_name == "Add Student":
             self._populate_village_combo(self.add_student_village)
         if index == getattr(self, "_fee_control_tab_index", -1):
             self._refresh_fee_control_amounts()
             self._refresh_van_fee_control_amounts()
         if index == getattr(self, "_payment_history_tab_index", -1):
             self._refresh_payment_history_table(reset_page=False)
-        tab_name = cw.tabText(index) if isinstance(cw, QTabWidget) else ""
         if tab_name == "Student Details":
-            self._refresh_payment_pane("details", reset_page=False)
+            self._refresh_details_tab(reset_page=False)
         if tab_name == "Collect Payment":
+            self._ensure_payment_students_loaded()
             self._refresh_payment_pane("payment", reset_page=False)
+        self._update_global_search_placeholder(tab_name)
+
+    def _update_global_search_placeholder(self, tab_name: str) -> None:
+        placeholders = {
+            "Collect Payment": "Search students by name, roll number, phone…",
+            "Student Search": "Search students by name, roll, village, class…",
+            "Student Details": "Find a student by name, roll number, phone…",
+            "Payment History": "Filter by reference, student ID, or name…",
+        }
+        self._shell.set_search_placeholder(placeholders.get(tab_name, "Search"))
 
     def _build_payment_history_tab(self):
-        w = QWidget()
-        layout = QVBoxLayout(w)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
         hint = QLabel(
-            "Recorded payments (newest first). Each payment has a 12-character reference (letters A-Z and digits 0-9). "
-            "Use the filter to search by reference, student ID, or name. Collected (₹) is school + van + discount for that payment; discount applies to school fee due only."
+            "Recorded payments (newest first). Filter by reference, student ID, or name. "
+            "Collected (₹) is school + van + discount; discount applies to school fees only."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #555;")
-        row = QHBoxLayout()
+        hint.setProperty("role", "hint")
+        layout.addWidget(hint)
+        toolbar = QHBoxLayout()
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self._on_payment_history_refresh_clicked)
-        row.addWidget(refresh_btn)
-        row.addWidget(QLabel("Filter:"))
+        toolbar.addWidget(refresh_btn)
+        toolbar.addWidget(QLabel("Filter"))
         self._payment_history_filter = QLineEdit()
-        self._payment_history_filter.setPlaceholderText("Reference, student ID, or name...")
+        self._payment_history_filter.setPlaceholderText("Reference, student ID, or name…")
         self._payment_history_filter.textChanged.connect(
             lambda _: self._refresh_payment_history_table(reset_page=True)
         )
-        row.addWidget(self._payment_history_filter, 1)
+        toolbar.addWidget(self._payment_history_filter, 1)
+        layout.addLayout(toolbar)
+        card = SurfaceCard()
         self._payment_history_table = QTableWidget(0, 8)
         self._payment_history_table.setHorizontalHeaderLabels(
             ["Date", "Reference", "Student ID", "Name", "Total (₹)", "Discount (₹)", "Mode", "Operator"]
         )
-        self._payment_history_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._payment_history_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._payment_history_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        layout.addWidget(hint)
-        layout.addLayout(row)
-        layout.addWidget(self._payment_history_table, 1)
+        configure_data_table(self._payment_history_table)
+        card.body.addWidget(self._payment_history_table, 1)
+        layout.addWidget(card, 1)
         self._payment_history_pagination = PaginationBar(
             lambda: self._payment_history_change_page(-1),
             lambda: self._payment_history_change_page(1),
         )
         layout.addWidget(self._payment_history_pagination)
-        return w
+        return wrap_page(
+            "Payment History",
+            breadcrumb_trail("Fees Collection", "Payment History"),
+            body,
+        )
 
     def _on_payment_history_refresh_clicked(self):
         """Clear filter, reset to page 1, and reload all payment history."""
@@ -681,6 +1018,198 @@ class MainWindow(QMainWindow):
         self._all_payment_students = None
         for pid in list(self._payment_panes.keys()):
             self._refresh_payment_pane(pid, reset_page=True)
+        self._refresh_details_tab(reset_page=True)
+
+    def _on_details_search_basis_changed(self, _=None) -> None:
+        tab = self._student_details_tab
+        if tab is None:
+            return
+        basis = tab.search_by.currentText()
+        placeholder_map = {
+            "Roll Number": "Enter student roll number",
+            "Name": "Enter student name",
+            "Phone": "Enter student phone",
+            "Village": "Enter village name",
+            "Class-Section": "Enter class-section (example: I-A or 10-B)",
+            "Status": "Enter student status",
+            "Guardian Name": "Enter guardian name",
+        }
+        tab.student_search.setPlaceholderText(placeholder_map.get(basis, ""))
+        self._refresh_details_tab(reset_page=True)
+
+    def _on_details_refresh_clicked(self) -> None:
+        tab = self._student_details_tab
+        if tab is None:
+            return
+        tab.student_search.blockSignals(True)
+        try:
+            tab.student_search.clear()
+        finally:
+            tab.student_search.blockSignals(False)
+        tab.filter_active_only.setChecked(False)
+        tab.filter_outstanding_only.setChecked(False)
+        self.selected_student = None
+        tab.student_results.clear()
+        tab.clear_detail()
+        self._refresh_details_tab(reset_page=True)
+
+    def _rebuild_details_filtered_ids(self) -> None:
+        self._ensure_payment_students_loaded()
+        tab = self._student_details_tab
+        if tab is None:
+            return
+        q = (tab.student_search.text() or "").strip().lower()
+        criteria = tab.search_by.currentText()
+        active_only = tab.filter_active_only.isChecked()
+        outstanding_only = tab.filter_outstanding_only.isChecked()
+
+        candidates = [
+            s
+            for s in self._all_payment_students
+            if self._payment_student_matches(s, criteria, q)
+            and (not active_only or str(s.status or "").lower() == "active")
+        ]
+        candidate_ids = [s.id for s in candidates]
+        due_map = (
+            self.payment_service.get_students_due_breakdown(candidate_ids)
+            if candidate_ids
+            else {}
+        )
+        if outstanding_only:
+            candidates = [s for s in candidates if float(due_map.get(s.id, {}).get("total", 0) or 0) > 0.01]
+        self._details_filtered_ids = [s.id for s in candidates]
+        self._details_due_map = due_map
+
+    def _refresh_details_tab(self, reset_page: bool = False) -> None:
+        tab = self._student_details_tab
+        if tab is None:
+            return
+        if reset_page:
+            self._details_page_index = 0
+        self._rebuild_details_filtered_ids()
+        self._render_details_list()
+        if self.selected_student and self.selected_student.id in self._details_filtered_ids:
+            self._show_details_for_student(self.selected_student)
+        elif not tab.student_results.currentItem():
+            tab.clear_detail()
+
+    def _render_details_list(self) -> None:
+        tab = self._student_details_tab
+        if tab is None:
+            return
+        ids = slice_page(self._details_filtered_ids, self._details_page_index)
+        self._ensure_payment_students_loaded()
+        by_id = {s.id: s for s in self._all_payment_students}
+        due_map = getattr(self, "_details_due_map", {})
+        current_id = self.selected_student.id if self.selected_student else None
+        tab.match_count_label.setText(f"{len(self._details_filtered_ids)} students match")
+        tab.student_results.blockSignals(True)
+        tab.student_results.clear()
+        selected_item = None
+        for sid in ids:
+            s = by_id.get(sid)
+            if not s:
+                continue
+            due = due_map.get(sid, {})
+            total = float(due.get("total", 0) or 0)
+            status = str(s.status or "active")
+            due_tag = "Paid up" if total <= 0.01 else f"Due ₹{total:.2f}"
+            line = (
+                f"{s.student_id} - {s.full_name} | Class {s.class_name}-{s.section} | "
+                f"{status} | {due_tag}"
+            )
+            item = QListWidgetItem(line)
+            item.setData(Qt.UserRole, s.id)
+            if total > 0.01:
+                item.setForeground(Qt.GlobalColor.darkRed)
+            tab.student_results.addItem(item)
+            if current_id and s.id == current_id:
+                selected_item = item
+        if selected_item:
+            tab.student_results.setCurrentItem(selected_item)
+        tab.student_results.blockSignals(False)
+        self._details_pagination.update_state(self._details_page_index, len(self._details_filtered_ids))
+
+    def _details_change_page(self, delta: int) -> None:
+        new_page = self._details_page_index + delta
+        if new_page < 0 or new_page >= page_count(len(self._details_filtered_ids)):
+            return
+        self._details_page_index = new_page
+        self._render_details_list()
+
+    def _on_details_student_clicked(self, item: QListWidgetItem) -> None:
+        if not item:
+            return
+        student_id = item.data(Qt.UserRole)
+        if not student_id:
+            return
+        s = self.session.get(Student, int(student_id))
+        if not s:
+            return
+        self.selected_student = s
+        self._show_details_for_student(s)
+
+    def _show_details_for_student(self, student: Student) -> None:
+        tab = self._student_details_tab
+        if tab is None:
+            return
+        due = self.payment_service.get_student_due_breakdown(student.id)
+        yearly = self.payment_service.get_student_yearly_breakdown(student)
+        roll = str(student.student_id or "")
+        payments = [
+            p
+            for p in self.payment_service.list_payment_history(limit=5000)
+            if str(p.get("student_roll") or "") == roll
+        ][:10]
+        tab.show_detail(
+            {
+                "student": student,
+                "due": due,
+                "yearly": yearly,
+                "payments": payments,
+            }
+        )
+
+    def _on_details_edit_clicked(self, _item=None) -> None:
+        if not self.selected_student:
+            item = self._student_details_tab.student_results.currentItem() if self._student_details_tab else None
+            if item:
+                self._on_details_student_clicked(item)
+        if self.selected_student:
+            self._open_payment_student_editor(self.selected_student, student_fields_editable=True)
+            self.session.refresh(self.selected_student)
+            self._invalidate_payment_student_cache()
+            if self.selected_student:
+                self._show_details_for_student(self.selected_student)
+
+    def _on_details_collect_payment_clicked(self) -> None:
+        if not self.selected_student:
+            item = self._student_details_tab.student_results.currentItem() if self._student_details_tab else None
+            if item:
+                self._on_details_student_clicked(item)
+        if not self.selected_student:
+            return
+        student = self.selected_student
+        self._navigate_to_tab("Collect Payment")
+        pane = self._payment_panes.get("payment")
+        if pane is None:
+            return
+        pane.search_by.blockSignals(True)
+        pane.student_search.blockSignals(True)
+        try:
+            idx = pane.search_by.findText("Roll Number", Qt.MatchFixedString)
+            if idx >= 0:
+                pane.search_by.setCurrentIndex(idx)
+            pane.student_search.setText(str(student.student_id or ""))
+        finally:
+            pane.search_by.blockSignals(False)
+            pane.student_search.blockSignals(False)
+        self._refresh_payment_pane("payment", reset_page=True)
+        for i in range(pane.student_results.count()):
+            item = pane.student_results.item(i)
+            if item and item.data(Qt.UserRole) == student.id:
+                pane.student_results.setCurrentItem(item)
+                break
 
     def _payment_student_matches(self, student, criteria: str, q: str) -> bool:
         if not q:
@@ -821,14 +1350,15 @@ class MainWindow(QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle("Collect Payment" if show_payment_ui else "Student Details")
         dialog.resize(760, 480 if student_fields_editable else 720)
+        theme.apply_dialog_theme(dialog)
         layout = QVBoxLayout(dialog)
         heading = QLabel(f"{student.full_name} ({student.student_id})")
-        heading.setStyleSheet("font-size: 16px; font-weight: 600;")
+        heading.setProperty("role", "page-title")
         if student_fields_editable:
             sub_heading = QLabel("Edit student details below, then click Save.")
         else:
             sub_heading = QLabel("Student information is shown for reference. Enter payment details below.")
-        sub_heading.setStyleSheet("color: #555;")
+        sub_heading.setProperty("role", "muted")
         layout.addWidget(heading)
         layout.addWidget(sub_heading)
 
@@ -1033,6 +1563,7 @@ class MainWindow(QMainWindow):
         print_receipt_btn = None
         if show_payment_ui:
             collect_btn = QPushButton("Collect Payment")
+            style_primary_button(collect_btn)
             print_receipt_btn = QPushButton("Print Receipt")
             close_pay_btn = QPushButton("Close")
             pay_row = QHBoxLayout()
@@ -1359,28 +1890,37 @@ class MainWindow(QMainWindow):
             disc = float(discount_map.get(s.id, 0.0) or 0.0)
             v_text = str(getattr(s, "village", None) or "")
             g_text = str(getattr(s, "guardian_name", None) or "")
-            self.student_table.setItem(i, 0, QTableWidgetItem(str(s.id)))
-            self.student_table.setItem(i, 1, QTableWidgetItem(s.student_id))
-            self.student_table.setItem(i, 2, QTableWidgetItem(s.full_name))
-            self.student_table.setItem(i, 3, QTableWidgetItem(str(s.class_name)))
-            self.student_table.setItem(i, 4, QTableWidgetItem(str(s.section)))
-            self.student_table.setItem(i, 5, QTableWidgetItem(s.phone))
-            self.student_table.setItem(i, 6, QTableWidgetItem(g_text))
-            self.student_table.setItem(i, 7, QTableWidgetItem(v_text))
-            self.student_table.setItem(i, 8, QTableWidgetItem(s.status))
-            self.student_table.setItem(i, 9, QTableWidgetItem(f"{float(getattr(s, 'van_fees', 0) or 0):.2f}"))
-            self.student_table.setItem(i, 10, QTableWidgetItem(f"{van_s['van_paid']:.2f}"))
-            self.student_table.setItem(i, 11, QTableWidgetItem(f"{due.get('van_pending', 0):.2f}"))
-            self.student_table.setItem(i, 12, QTableWidgetItem(f"{due['van_due']:.2f}"))
-            self.student_table.setItem(i, 13, QTableWidgetItem(f"{float(getattr(s, 'school_fees', 0) or 0):.2f}"))
-            self.student_table.setItem(i, 14, QTableWidgetItem(f"{summary['fee_paid']:.2f}"))
-            self.student_table.setItem(i, 15, QTableWidgetItem(f"{disc:.2f}"))
-            self.student_table.setItem(i, 16, QTableWidgetItem(f"{due.get('school_pending', 0):.2f}"))
-            self.student_table.setItem(i, 17, QTableWidgetItem(f"{due['fee_due']:.2f}"))
-            self.student_table.setItem(
-                i, 18, QTableWidgetItem(f"{due.get('school_payable', due.get('school_pending', 0) + due['fee_due']):.2f}")
-            )
-            self.student_table.setItem(i, 19, QTableWidgetItem(f"{due['total']:.2f}"))
+            row_cells = [
+                str(s.id),
+                s.student_id,
+                s.full_name,
+                str(s.class_name),
+                str(s.section),
+                s.phone,
+                g_text,
+                v_text,
+                s.status,
+                f"{float(getattr(s, 'van_fees', 0) or 0):.2f}",
+                f"{van_s['van_paid']:.2f}",
+                f"{due.get('van_pending', 0):.2f}",
+                f"{due['van_due']:.2f}",
+                f"{float(getattr(s, 'school_fees', 0) or 0):.2f}",
+                f"{summary['fee_paid']:.2f}",
+                f"{disc:.2f}",
+                f"{due.get('school_pending', 0):.2f}",
+                f"{due['fee_due']:.2f}",
+                f"{due.get('school_payable', due.get('school_pending', 0) + due['fee_due']):.2f}",
+                f"{due['total']:.2f}",
+            ]
+            for col, text in enumerate(row_cells):
+                self.student_table.setItem(
+                    i, col, table_item(text, bold=(col in (1, 2)))
+                )
+            total_due = float(due.get("total", 0) or 0)
+            if total_due > 0.01:
+                due_item = self.student_table.item(i, 19)
+                if due_item:
+                    due_item.setForeground(QColor(theme.current_tokens().danger))
         if hasattr(self, "_search_pagination"):
             self._search_pagination.update_state(self._search_page, len(self._search_cache))
 

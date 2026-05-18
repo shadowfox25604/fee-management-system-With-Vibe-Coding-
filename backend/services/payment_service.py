@@ -13,6 +13,9 @@ class PaymentService:
     def get_student_due_breakdown(self, student_id_fk):
         return self.repo.get_student_due_breakdown(student_id_fk)
 
+    def get_student_yearly_breakdown(self, student):
+        return self.repo.get_student_yearly_breakdown(student)
+
     def get_students_due_breakdown(self, student_ids):
         return self.repo.get_students_due_breakdown(student_ids)
 

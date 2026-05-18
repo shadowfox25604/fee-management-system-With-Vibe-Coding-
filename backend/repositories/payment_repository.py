@@ -65,6 +65,9 @@ class PaymentRepository:
             sid, {"van_due": 0.0, "fee_due": 0.0, "total": 0.0}
         )
 
+    def get_student_yearly_breakdown(self, student: Student) -> list[dict]:
+        return self._balance.get_student_yearly_breakdown(student)
+
     def get_student_invoice_bucket_outstanding(self, student_id_fk):
         """Unpaid invoice totals split by van/transport fee heads vs all other heads (what split payments can clear)."""
         m = self.get_students_invoice_bucket_outstanding([int(student_id_fk)])

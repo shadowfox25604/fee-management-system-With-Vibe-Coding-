@@ -262,6 +262,42 @@ class FeeBalanceService:
             }
         return out
 
+    def get_student_yearly_breakdown(self, student: Student) -> list[dict]:
+        """Per enrolled academic year: tariffs, paid amounts, and remaining due."""
+        self.year_repo.ensure_bootstrap_year()
+        current = self.year_repo.get_current()
+        years = self.year_repo.list_all()
+        if not years:
+            return []
+        fallback_id = years[-1].id if years else None
+        current_id = current.id if current else fallback_id
+        sid = int(student.id)
+        paid_map = self._paid_by_year_bucket([sid], current, fallback_id).get(sid, {})
+        joining_date = self._student_joining_date(student)
+        rows = []
+        for yr in years:
+            if yr.end_date < joining_date:
+                continue
+            yid = yr.id
+            school_tariff, van_tariff = self._tariffs_for_enrolled_year(student, yr, joining_date)
+            paid_y = paid_map.get(yid, {"school": 0.0, "van": 0.0})
+            school_due = max(0.0, float(school_tariff) - float(paid_y["school"]))
+            van_due = max(0.0, float(van_tariff) - float(paid_y["van"]))
+            rows.append(
+                {
+                    "year_id": yid,
+                    "label": yr.label or "",
+                    "is_current": yid == current_id,
+                    "school_tariff": school_tariff,
+                    "school_paid": paid_y["school"],
+                    "school_due": school_due,
+                    "van_tariff": van_tariff,
+                    "van_paid": paid_y["van"],
+                    "van_due": van_due,
+                }
+            )
+        return rows
+
     def get_students_school_fee_summary(self, student_ids: list[int]) -> dict:
         """Totals for search table: current-year tariff and all-years school paid."""
         if not student_ids:
