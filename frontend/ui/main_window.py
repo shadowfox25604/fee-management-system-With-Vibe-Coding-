@@ -1,7 +1,7 @@
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -184,16 +184,32 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self._shell)
         self._shell._fab.clicked.connect(lambda: self._shell.go("Fee Control"))
         self._shell.go("Home Page")
-        self._update_global_search_placeholder("Home Page")
         self.perform_search(reset_page=True)
     def _build_home_tab(self) -> HomePageTab:
         self._home_page = HomePageTab(
             on_navigate=self._navigate_to_tab,
             on_refresh=self._home_page_snapshot,
+            on_chart_data=self._home_page_chart_data,
             on_manage_academic_years=self._on_manage_academic_years_clicked,
             parent=self,
         )
         return self._home_page
+
+    def _home_page_chart_data(self, year: int, month: int) -> dict:
+        """Daily collected amounts for a calendar month (from payments table)."""
+        return self.payment_service.daily_cash_collected_for_month(year, month)
+
+    def _refresh_dashboard(self, chart_date: date | None = None) -> None:
+        """Reload dashboard metrics, chart, and payment list from the database."""
+        self.session.expire_all()
+
+        def _do_reload() -> None:
+            home = getattr(self, "_home_page", None)
+            if home is not None:
+                home.reload(chart_date=chart_date)
+
+        # Defer until after the payment dialog closes so the chart repaints reliably.
+        QTimer.singleShot(0, _do_reload)
 
     def _navigate_to_tab(self, tab_name: str) -> None:
         aliases = {"Student List": "Student Search", "Add New Student": "Add Student"}
@@ -206,6 +222,7 @@ class MainWindow(QMainWindow):
         home = getattr(self, "_home_page", None)
         if home is not None:
             home.refresh_theme()
+            home.reload()
         self._refresh_student_views_theme()
 
     def _refresh_student_views_theme(self) -> None:
@@ -241,6 +258,8 @@ class MainWindow(QMainWindow):
 
     def _route_global_search(self, text: str, *, live: bool) -> None:
         tab_name = self._current_tab_name()
+        if tab_name in ("Home Page", "Add Student"):
+            return
         if tab_name == "Collect Payment":
             self._apply_search_to_payment_pane(text)
             return
@@ -313,20 +332,35 @@ class MainWindow(QMainWindow):
             self._payment_history_filter.blockSignals(False)
         self._refresh_payment_history_table(reset_page=True)
 
+    @staticmethod
+    def _payment_record_date(value) -> date | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        return None
+
     def _home_page_snapshot(self) -> dict:
-        students = self.student_service.list_students()
-        active = sum(1 for s in students if str(getattr(s, "status", "") or "").lower() == "active")
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+        active, inactive = self.student_service.count_active_inactive()
+        total_students = active + inactive
         current = self.academic_year_service.get_current()
         years = self.academic_year_service.list_years()
         if current:
             year_text = self.academic_year_service.format_year_display(current)
         else:
             year_text = "None (today is not inside any defined academic year range)"
-        defaulters = self.report_service.get_defaulters()
+        period = self.payment_service.dashboard_period_stats(week_start, today)
+        collected_week = float(period["collected_week"])
+        payments_week = int(period["payments_week"])
+        payments_today = int(period["payments_today"])
         payments = self.payment_service.list_payment_history(limit=500)
         collected = sum(float(p.get("amount", 0) or 0) for p in payments)
         recent = []
-        for p in payments[:5]:
+        for p in payments[:12]:
             d = p.get("payment_date")
             date_s = d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else str(d or "")
             name = str(p.get("student_name") or "")
@@ -337,29 +371,32 @@ class MainWindow(QMainWindow):
                 "mode": str(p.get("mode") or ""),
                 "date": date_s,
             })
-        monthly_total = [int(collected / 12 * (0.7 + 0.3 * (i % 4) / 3)) for i in range(12)]
-        monthly_coll = [int(v * 0.72) for v in monthly_total]
+        daily_revenue = self.payment_service.daily_cash_collected_for_month(today.year, today.month)
+        week_range = (
+            f"{week_start.strftime('%d %b')} – {today.strftime('%d %b %Y')}"
+            if week_start != today
+            else today.strftime("%d %b %Y")
+        )
         return {
-            "today": date.today(),
+            "today": today,
             "current_academic_year": year_text,
             "academic_years_count": len(years),
-            "students_total": len(students),
             "students_active": active,
-            "defaulters_count": len(defaulters),
+            "students_inactive": inactive,
+            "students_total": total_students,
+            "collected_week": collected_week,
+            "collected_week_display": f"{collected_week:,.0f}",
+            "payments_week": payments_week,
+            "payments_today": payments_today,
+            "week_range": week_range,
             "collected_display": f"{collected:,.0f}",
             "payments_count": len(payments),
             "database_path": str(DB_PATH),
-            "revenue_chart": {"total": monthly_total, "collected": monthly_coll},
-            "notices": [
-                ("Today", "Use Fee Control to update class and village tariffs.", "Admin"),
-                ("Fees", "Pending balances are cleared before current-year due.", "System"),
-                ("Year", year_text[:60], "Academic"),
-            ],
+            "revenue_chart": {
+                "amounts": daily_revenue["amounts"],
+                "month_label": daily_revenue["month_label"],
+            },
             "recent_payments": recent,
-            "events": [
-                {"title": "Fee collection", "subtitle": "Collect Payment module", "time": "Daily", "color": "#AB47BC"},
-                {"title": "Backup reminder", "subtitle": "Create a database backup", "time": "Weekly", "color": "#FF7043"},
-            ],
         }
 
     def _build_search_tab(self):
@@ -1652,7 +1689,7 @@ class MainWindow(QMainWindow):
             pay_date = date(qd.year(), qd.month(), qd.day())
             return school_amt, van_amt, disc_amt, pay_date
 
-        def _finalize_after_payment_saved():
+        def _finalize_after_payment_saved(pay_date: date | None = None):
             self.session.refresh(student)
             d = self.payment_service.get_student_due_breakdown(student.id)
             _apply_due_breakdown(d, student)
@@ -1664,6 +1701,7 @@ class MainWindow(QMainWindow):
             self.perform_search(reset_page=False)
             self._invalidate_payment_student_cache()
             self._refresh_payment_history_table(reset_page=False)
+            self._refresh_dashboard(chart_date=pay_date)
 
         def on_collect_payment():
             try:
@@ -1678,7 +1716,7 @@ class MainWindow(QMainWindow):
                     pay_date,
                 )
                 QMessageBox.information(dialog, "Payment saved", f"Reference: {payment.reference_no}")
-                _finalize_after_payment_saved()
+                _finalize_after_payment_saved(pay_date)
             except Exception as e:
                 QMessageBox.critical(dialog, "Payment error", str(e))
 
@@ -1729,7 +1767,7 @@ class MainWindow(QMainWindow):
                         "Receipt file error",
                         f"Payment was saved (Reference: {payment.reference_no}) but the PDF could not be written:\n{e}",
                     )
-                    _finalize_after_payment_saved()
+                    _finalize_after_payment_saved(pay_date)
                     return
             else:
                 pdf_note = "\n\nNo PDF was saved (save dialog cancelled)."
@@ -1739,7 +1777,7 @@ class MainWindow(QMainWindow):
                 "Payment saved",
                 f"Reference: {payment.reference_no}{pdf_note}",
             )
-            _finalize_after_payment_saved()
+            _finalize_after_payment_saved(pay_date)
 
         if not show_payment_ui and student_fields_editable:
             buttons.accepted.connect(on_save)

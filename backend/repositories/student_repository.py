@@ -1,4 +1,4 @@
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from backend.models import Student
 
@@ -95,3 +95,17 @@ class StudentRepository:
 
     def list_students(self):
         return self.session.scalars(select(Student).order_by(Student.student_id.asc())).all()
+
+    def count_active_inactive(self) -> tuple[int, int]:
+        """Return (active_count, inactive_count) using case-insensitive status."""
+        active = self.session.scalar(
+            select(func.count())
+            .select_from(Student)
+            .where(func.lower(Student.status) == "active")
+        ) or 0
+        inactive = self.session.scalar(
+            select(func.count())
+            .select_from(Student)
+            .where(func.lower(Student.status) != "active")
+        ) or 0
+        return int(active), int(inactive)

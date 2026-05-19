@@ -844,3 +844,90 @@ def test_payment_service_collect_split_delegates_to_repo():
         assert pay.operator_name == "svc_op"
     finally:
         s.close()
+
+
+def test_dashboard_period_stats_match_sql():
+  """Dashboard tiles use SQL aggregates (not limited payment list scans)."""
+  Base.metadata.create_all(bind=db.engine)
+  apply_sqlite_column_migrations(db.engine)
+  apply_sqlite_data_migrations(db.engine)
+  s = db.SessionLocal()
+  try:
+    from backend.services.payment_service import PaymentService
+    from backend.services.student_service import StudentService
+
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+    active, inactive = StudentService(s).count_active_inactive()
+    period = PaymentService(s).dashboard_period_stats(week_start, today)
+
+    active_db = s.scalar(
+      select(func.count()).select_from(Student).where(func.lower(Student.status) == "active")
+    ) or 0
+    inactive_db = s.scalar(
+      select(func.count()).select_from(Student).where(func.lower(Student.status) != "active")
+    ) or 0
+    collected_db = float(
+      s.scalar(
+        select(func.coalesce(func.sum(Payment.amount - Payment.discount_amount), 0.0)).where(
+          Payment.payment_date >= week_start,
+          Payment.payment_date <= today,
+        )
+      )
+      or 0.0
+    )
+    week_count_db = s.scalar(
+      select(func.count())
+      .select_from(Payment)
+      .where(Payment.payment_date >= week_start, Payment.payment_date <= today)
+    ) or 0
+    today_count_db = s.scalar(
+      select(func.count()).select_from(Payment).where(Payment.payment_date == today)
+    ) or 0
+
+    assert active == active_db
+    assert inactive == inactive_db
+    assert period["collected_week"] == collected_db
+    assert period["payments_week"] == week_count_db
+    assert period["payments_today"] == today_count_db
+  finally:
+    s.close()
+
+
+def test_daily_cash_collected_for_month_excludes_discount():
+  Base.metadata.create_all(bind=db.engine)
+  apply_sqlite_column_migrations(db.engine)
+  apply_sqlite_data_migrations(db.engine)
+  s = db.SessionLocal()
+  try:
+    from backend.services.payment_service import PaymentService
+
+    sid = f"CHT{uuid.uuid4().hex[:8].upper()}"
+    st = Student(
+      student_id=sid,
+      full_name="Chart Student",
+      class_name="5",
+      section="A",
+      phone=f"6{uuid.uuid4().int % 10**9:09d}",
+      guardian_name="Guardian",
+    )
+    s.add(st)
+    s.commit()
+    pay_day = date(2026, 5, 15)
+    s.add(
+      Payment(
+        student_id_fk=st.id,
+        payment_date=pay_day,
+        amount=350.0,
+        discount_amount=50.0,
+        mode="cash",
+        reference_no=PaymentRepository(s).new_payment_reference(),
+      )
+    )
+    s.commit()
+    daily = PaymentService(s).daily_cash_collected_for_month(2026, 5)
+    assert daily["days_in_month"] == 31
+    assert daily["amounts"][14] == 300.0
+    assert daily["amounts"][0] == 0.0
+  finally:
+    s.close()

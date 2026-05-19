@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF, QSize
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen
+from PySide6.QtCore import Property, QEasingCurve, QPointF, QRectF, QSize, Qt, QPropertyAnimation
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -111,20 +111,38 @@ class CardTitleBar(QWidget):
 
   def refresh_theme(self) -> None:
     t = theme.current_tokens()
-    self._dots.setStyleSheet(f"color: {t.text_muted}; font-size: 18px;")
+    for lbl in self.findChildren(QLabel):
+      if lbl.property("role") == "card-title":
+        lbl.setStyleSheet(
+          f"color: {t.text_primary}; font-size: 15px; font-weight: 700; "
+          f"background: transparent;"
+        )
+    self._dots.setStyleSheet(
+      f"color: {t.text_muted}; font-size: 18px; background: transparent;"
+    )
 
 
 # ── Dashboard stat card (gradient) ───────────────────────────────────────────
 
 
 class DashMetricCard(QFrame):
-  _STYLES = [
+  # light: (gradient_start, icon_circle_bg, accent)
+  _STYLES_LIGHT = [
     ("#FFF4ED", "#FF7043", ORANGE),
     ("#EFF6FF", "#42A5F5", BLUE),
     ("#F5F3FF", "#AB47BC", PURPLE),
     ("#E6FFFA", "#26A69A", TEAL),
     ("#F0FDF4", "#66BB6A", GREEN),
     ("#E0F7FA", "#26C6DA", "#26C6DA"),
+  ]
+  # dark: (icon_circle_bg, accent) — card uses theme surface color
+  _STYLES_DARK = [
+    ("#3D2E24", ORANGE),
+    ("#243347", BLUE),
+    ("#322447", PURPLE),
+    ("#1A3D35", TEAL),
+    ("#243D2A", GREEN),
+    ("#1A3A40", "#26C6DA"),
   ]
 
   def __init__(
@@ -136,7 +154,7 @@ class DashMetricCard(QFrame):
     parent=None,
   ):
     super().__init__(parent)
-    self._style_idx = style_idx % len(self._STYLES)
+    self._style_idx = style_idx % len(self._STYLES_LIGHT)
     self.setMinimumHeight(110)
     lay = QHBoxLayout(self)
     lay.setContentsMargins(18, 16, 18, 16)
@@ -158,23 +176,40 @@ class DashMetricCard(QFrame):
 
   def refresh_theme(self) -> None:
     t = theme.current_tokens()
-    bg, icon_bg, accent = self._STYLES[self._style_idx]
-    self.setStyleSheet(
-      f"QFrame {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
-      f"stop:0 {bg}, stop:1 {t.bg_surface}); border: 1px solid {t.border}; "
-      f"border-radius: 12px; }}"
-    )
-    self._icon.setStyleSheet(
-      f"background: {icon_bg}; color: {accent}; border-radius: 22px; "
-      f"font-size: 18px; font-weight: bold;"
-    )
+    idx = self._style_idx
+    if theme.current_theme_mode() == "dark":
+      icon_bg, accent = self._STYLES_DARK[idx]
+      self.setStyleSheet(
+        f"QFrame {{ background: {t.bg_surface}; border: 1px solid {t.border}; "
+        f"border-radius: 12px; }}"
+      )
+      self._icon.setStyleSheet(
+        f"background: {icon_bg}; color: {accent}; border-radius: 22px; "
+        f"font-size: 18px; font-weight: bold;"
+      )
+    else:
+      bg, icon_bg, accent = self._STYLES_LIGHT[idx]
+      self.setStyleSheet(
+        f"QFrame {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+        f"stop:0 {bg}, stop:1 {t.bg_surface}); border: 1px solid {t.border}; "
+        f"border-radius: 12px; }}"
+      )
+      self._icon.setStyleSheet(
+        f"background: {icon_bg}; color: white; border-radius: 22px; "
+        f"font-size: 18px; font-weight: bold;"
+      )
     self._label.setStyleSheet(
-      f"color: {t.text_secondary}; font-size: 12px; font-weight: 600;"
+      f"color: {t.text_secondary}; font-size: 12px; font-weight: 600; "
+      f"background: transparent;"
     )
     self._value.setStyleSheet(
-      f"color: {t.text_primary}; font-size: 26px; font-weight: 800;"
+      f"color: {t.text_primary}; font-size: 26px; font-weight: 800; "
+      f"background: transparent;"
     )
-    self._trend.setStyleSheet(f"color: {GREEN}; font-size: 11px; font-weight: 600;")
+    self._trend.setStyleSheet(
+      f"color: {t.success}; font-size: 11px; font-weight: 600; "
+      f"background: transparent;"
+    )
 
   def update_metric(self, value: str, trend: str = "") -> None:
     self._value.setText(value)
@@ -189,57 +224,251 @@ class DashMetricCard(QFrame):
 
 
 class RevenueChartWidget(QWidget):
-  """Stacked bar chart — Total Fee vs Collected Fee."""
+  """Daily collected-fee bars for the current calendar month."""
+
+  Y_AXIS_MAX = 100_000.0
+  Y_AXIS_STEP = 20_000.0
 
   def __init__(self, parent=None):
     super().__init__(parent)
-    self.setMinimumHeight(260)
-    self._months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-    self._total = [42, 55, 48, 60, 72, 65, 58, 70, 68, 75, 80, 88]
-    self._collected = [30, 38, 35, 45, 50, 48, 40, 52, 50, 55, 60, 65]
+    self.setMinimumHeight(400)
+    self.setMouseTracking(True)
+    self._month_label = ""
+    self._collected: list[float] = []
+    self._hover_index: int | None = None
+    self._tooltip_opacity = 0.0
+    self._opacity_anim = QPropertyAnimation(self, b"tooltipOpacity")
+    self._opacity_anim.setDuration(180)
+    self._opacity_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-  def set_data(self, total: list[float], collected: list[float]) -> None:
-    self._total = total[:12]
-    self._collected = collected[:12]
+  def get_tooltip_opacity(self) -> float:
+    return self._tooltip_opacity
+
+  def set_tooltip_opacity(self, value: float) -> None:
+    self._tooltip_opacity = float(value)
     self.update()
+
+  tooltipOpacity = Property(float, get_tooltip_opacity, set_tooltip_opacity)
+
+  def set_daily_collections(self, amounts: list[float], *, month_label: str = "") -> None:
+    self._collected = [float(v) for v in amounts]
+    self._month_label = month_label
+    self._hover_index = None
+    self._tooltip_opacity = 0.0
+    self.update()
+    self.repaint()
+
+  @staticmethod
+  def _format_axis_amount(value: float) -> str:
+    v = max(0.0, float(value))
+    if v <= 0:
+      return "₹0"
+    if v >= 1_000 and v % 1_000 == 0:
+      return f"₹{int(v / 1_000)}k"
+    return f"₹{v:,.0f}"
+
+  def _y_tick_values(self) -> list[float]:
+    steps = int(self.Y_AXIS_MAX / self.Y_AXIS_STEP)
+    return [i * self.Y_AXIS_STEP for i in range(steps + 1)]
+
+  def _y_axis_labels(self) -> list[str]:
+    return [self._format_axis_amount(v) for v in self._y_tick_values()]
+
+  def _left_margin_for_axis(self) -> int:
+    axis_font = QFont("Segoe UI", 8)
+    fm = QFontMetrics(axis_font)
+    labels = self._y_axis_labels()
+    widest = max((fm.horizontalAdvance(lbl) for lbl in labels), default=0)
+    return max(52, widest + 14)
+
+  def _chart_layout(self) -> dict | None:
+    n_days = len(self._collected)
+    if n_days < 1:
+      return None
+    w, h = self.width(), self.height()
+    margin_t = 24
+    margin_b = 40 if n_days > 25 else 36
+    max_v = self.Y_AXIS_MAX
+    margin_l = self._left_margin_for_axis()
+    chart_h = h - margin_b - margin_t
+    chart_w = w - margin_l - 16
+    gap = chart_w / n_days
+    bar_w = max(2.0, gap * 0.55)
+    return {
+      "w": w,
+      "h": h,
+      "n_days": n_days,
+      "margin_l": margin_l,
+      "margin_t": margin_t,
+      "margin_b": margin_b,
+      "chart_h": chart_h,
+      "chart_w": chart_w,
+      "max_v": max_v,
+      "y_ticks": self._y_tick_values(),
+      "gap": gap,
+      "bar_w": bar_w,
+    }
+
+  def _bar_rect(self, index: int, layout: dict) -> QRectF:
+    amount = self._collected[index]
+    if amount <= 0:
+      return QRectF()
+    gap = layout["gap"]
+    bar_w = layout["bar_w"]
+    chart_h = layout["chart_h"]
+    max_v = layout["max_v"]
+    margin_l = layout["margin_l"]
+    margin_t = layout["margin_t"]
+    slot_x = margin_l + index * gap
+    x = slot_x + (gap - bar_w) / 2
+    scaled = min(amount, max_v)
+    coll_h = (scaled / max_v) * chart_h
+    return QRectF(x, margin_t + chart_h - coll_h, bar_w, coll_h)
+
+  def _index_at_pos(self, pos: QPointF) -> int | None:
+    layout = self._chart_layout()
+    if layout is None:
+      return None
+    for i in range(layout["n_days"]):
+      bar = self._bar_rect(i, layout)
+      if not bar.isEmpty() and bar.contains(pos):
+        return i
+    return None
+
+  def _fade_tooltip(self, target: float) -> None:
+    self._opacity_anim.stop()
+    self._opacity_anim.setDuration(180 if target > self._tooltip_opacity else 140)
+    self._opacity_anim.setStartValue(self._tooltip_opacity)
+    self._opacity_anim.setEndValue(target)
+    self._opacity_anim.start()
+
+  def _update_hover(self, index: int | None) -> None:
+    if index == self._hover_index:
+      return
+    prev = self._hover_index
+    self._hover_index = index
+    if index is not None and self._collected[index] > 0:
+      self.setCursor(Qt.CursorShape.PointingHandCursor)
+      if prev is None or self._collected[prev] <= 0:
+        self._fade_tooltip(1.0)
+      else:
+        self.update()
+    else:
+      self.unsetCursor()
+      if prev is not None and self._collected[prev] > 0:
+        self._fade_tooltip(0.0)
+      else:
+        self.update()
+
+  def mouseMoveEvent(self, event: QMouseEvent) -> None:
+    self._update_hover(self._index_at_pos(event.position()))
+    super().mouseMoveEvent(event)
+
+  def leaveEvent(self, event) -> None:
+    self._update_hover(None)
+    super().leaveEvent(event)
+
+  def _paint_tooltip(self, p: QPainter, layout: dict, index: int) -> None:
+    if self._tooltip_opacity <= 0.01:
+      return
+    day = index + 1
+    amount = self._collected[index]
+    text = f"Day {day}: ₹{amount:,.0f}"
+    t = theme.current_tokens()
+    tip_font = QFont("Segoe UI", 9)
+    tip_font.setWeight(QFont.Weight.DemiBold)
+    p.setFont(tip_font)
+    metrics = p.fontMetrics()
+    pad_x, pad_y = 10, 6
+    text_w = metrics.horizontalAdvance(text)
+    text_h = metrics.height()
+    box_w = text_w + pad_x * 2
+    box_h = text_h + pad_y * 2
+    bar = self._bar_rect(index, layout)
+    cx = bar.center().x()
+    box_x = max(4.0, min(cx - box_w / 2, layout["w"] - box_w - 4))
+    box_y = max(4.0, bar.top() - box_h - 8)
+    p.save()
+    p.setOpacity(self._tooltip_opacity)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(t.bg_surface))
+    p.drawRoundedRect(QRectF(box_x, box_y, box_w, box_h), 8, 8)
+    p.setPen(QPen(QColor(t.border)))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(QRectF(box_x, box_y, box_w, box_h), 8, 8)
+    p.setPen(QColor(t.text_primary))
+    p.drawText(
+      QRectF(box_x + pad_x, box_y + pad_y, text_w, text_h),
+      Qt.AlignmentFlag.AlignCenter,
+      text,
+    )
+    p.restore()
 
   def paintEvent(self, _event):
     p = QPainter(self)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    w, h = self.width(), self.height()
-    margin_l, margin_b, margin_t = 48, 36, 24
-    chart_h = h - margin_b - margin_t
-    chart_w = w - margin_l - 16
-    max_v = max(max(self._total), max(self._collected), 1) * 1.15
-    bar_w = chart_w / len(self._months) * 0.55
-    gap = chart_w / len(self._months)
+    layout = self._chart_layout()
+    if layout is None:
+      p.end()
+      return
+
+    w = layout["w"]
+    h = layout["h"]
+    n_days = layout["n_days"]
+    margin_l = layout["margin_l"]
+    margin_t = layout["margin_t"]
+    margin_b = layout["margin_b"]
+    chart_h = layout["chart_h"]
+    max_v = layout["max_v"]
+    y_ticks: list[float] = layout["y_ticks"]
+    gap = layout["gap"]
+    bar_w = layout["bar_w"]
+    label_font = QFont("Segoe UI", 6 if n_days > 25 else 7)
+    axis_font = QFont("Segoe UI", 8)
 
     t = theme.current_tokens()
-    # grid lines
     p.setPen(QPen(QColor(t.border)))
-    for i in range(5):
-      y = margin_t + chart_h * (1 - i / 4)
+    for tick_amount in y_ticks:
+      frac = tick_amount / max_v if max_v > 0 else 0.0
+      y = margin_t + chart_h * (1 - frac)
       p.drawLine(margin_l, int(y), w - 8, int(y))
 
-    for i, month in enumerate(self._months):
-      x = margin_l + i * gap + (gap - bar_w) / 2
-      total_h = (self._total[i] / max_v) * chart_h
-      coll_h = (self._collected[i] / max_v) * chart_h
-      # collected (orange) bottom
-      p.setBrush(QColor(ORANGE))
-      p.setPen(Qt.PenStyle.NoPen)
-      p.drawRoundedRect(QRectF(x, margin_t + chart_h - coll_h, bar_w, coll_h), 3, 3)
-      # total remainder (teal)
-      p.setBrush(QColor(TEAL))
-      rem = total_h - coll_h
-      if rem > 0:
-        p.drawRoundedRect(QRectF(x, margin_t + chart_h - total_h, bar_w, rem), 3, 3)
-      # month label
+    p.setFont(axis_font)
+    p.setPen(QColor(t.text_muted))
+    axis_metrics = p.fontMetrics()
+    axis_line_h = axis_metrics.height()
+    for tick_amount in y_ticks:
+      frac = tick_amount / max_v if max_v > 0 else 0.0
+      y = margin_t + chart_h * (1 - frac)
+      text = self._format_axis_amount(tick_amount)
+      p.drawText(
+        QRectF(4, y - axis_line_h / 2, margin_l - 10, axis_line_h),
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+        text,
+      )
+
+    hover_color = QColor(ORANGE)
+    hover_color.setAlpha(230)
+
+    for i, amount in enumerate(self._collected):
+      day = i + 1
+      slot_x = margin_l + i * gap
+      if amount > 0:
+        bar = self._bar_rect(i, layout)
+        is_hover = i == self._hover_index
+        p.setBrush(hover_color if is_hover else QColor(ORANGE))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(bar, 3, 3)
       p.setPen(QColor(t.text_muted))
-      p.setFont(QFont("Segoe UI", 8))
-      p.drawText(QRectF(x - 4, h - margin_b + 4, bar_w + 8, 20),
-                 Qt.AlignmentFlag.AlignCenter, month)
+      p.setFont(label_font)
+      p.drawText(
+        QRectF(slot_x, h - margin_b + 2, gap, 20),
+        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+        str(day),
+      )
+
+    if self._hover_index is not None:
+      self._paint_tooltip(p, layout, self._hover_index)
 
     p.end()
 

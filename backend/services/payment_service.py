@@ -62,3 +62,9 @@ class PaymentService:
 
     def list_payment_history(self, limit: int = 2000, search: str | None = None):
         return self.repo.list_recent_payments_with_students(limit, search=search)
+
+    def dashboard_period_stats(self, week_start: date, today: date) -> dict:
+        return self.repo.dashboard_period_stats(week_start, today)
+
+    def daily_cash_collected_for_month(self, year: int, month: int) -> dict:
+        return self.repo.daily_cash_collected_for_month(year, month)

@@ -11,6 +11,9 @@ class StudentService:
     def list_students(self):
         return self.repo.list_students()
 
+    def count_active_inactive(self) -> tuple[int, int]:
+        return self.repo.count_active_inactive()
+
     @staticmethod
     def _parse_fee_amount(value, field_name: str) -> float:
         if value is None or value == "":

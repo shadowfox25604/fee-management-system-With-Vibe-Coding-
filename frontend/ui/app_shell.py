@@ -13,12 +13,12 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from frontend.ui.school_branding import load_logo_pixmap, school_motto, school_name
 from frontend.ui import theme
 
 
@@ -60,7 +60,8 @@ DEFAULT_NAV: list[NavGroup] = [
     NavGroup("Backup", "💾", page_key="Backup"),
 ]
 
-_HIDE_TOP_SEARCH: frozenset[str] = frozenset({"Add Student"})
+_HIDE_TOP_SEARCH: frozenset[str] = frozenset({"Home Page", "Add Student"})
+_HIDE_TOP_BAR: frozenset[str] = frozenset({"Home Page"})
 
 
 class _NavButton(QPushButton):
@@ -155,47 +156,45 @@ class AppShell(QWidget):
         side_outer.setContentsMargins(0, 0, 0, 0)
         side_outer.setSpacing(0)
 
-        brand = QWidget()
-        brand_lay = QHBoxLayout(brand)
-        brand_lay.setContentsMargins(20, 22, 20, 16)
-        brand_lay.setSpacing(12)
-        self._logo = QLabel()
-        self._logo.setFixedSize(52, 52)
-        self._logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pix = load_logo_pixmap(52)
-        if pix is not None:
-            self._logo.setPixmap(pix)
-        else:
-            self._logo.setText("A")
-        title_col = QVBoxLayout()
-        title_col.setSpacing(2)
-        self._school_name_lbl = QLabel(school_name())
-        self._school_name_lbl.setWordWrap(True)
-        self._motto_lbl = QLabel(school_motto())
-        self._motto_lbl.setWordWrap(True)
-        title_col.addWidget(self._school_name_lbl)
-        title_col.addWidget(self._motto_lbl)
-        brand_lay.addWidget(self._logo)
-        brand_lay.addLayout(title_col, 1)
-        side_outer.addWidget(brand)
+        profile_section = QWidget()
+        profile_section.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
+        profile_section_lay = QVBoxLayout(profile_section)
+        profile_section_lay.setContentsMargins(12, 16, 12, 8)
+        profile_section_lay.setSpacing(0)
 
         self._profile = QFrame()
+        self._profile.setObjectName("profileCard")
+        self._profile.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         pl = QHBoxLayout(self._profile)
         pl.setContentsMargins(12, 10, 12, 10)
+        pl.setSpacing(10)
         self._profile_avatar = QLabel("A")
         self._profile_avatar.setFixedSize(40, 40)
         self._profile_avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pi = QVBoxLayout()
-        pi.setSpacing(0)
+        text_host = QWidget()
+        text_host.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        pi = QVBoxLayout(text_host)
+        pi.setContentsMargins(0, 0, 0, 0)
+        pi.setSpacing(2)
         self._profile_name = QLabel("Administrator")
+        self._profile_name.setWordWrap(False)
         self._profile_role = QLabel("Fee desk")
+        self._profile_role.setWordWrap(False)
         pi.addWidget(self._profile_name)
         pi.addWidget(self._profile_role)
         pl.addWidget(self._profile_avatar)
-        pl.addLayout(pi, 1)
-        self._profile_chev = QLabel("⌄")
-        pl.addWidget(self._profile_chev)
-        side_outer.addWidget(self._profile)
+        pl.addWidget(text_host, 1)
+        profile_section_lay.addWidget(self._profile)
+        side_outer.addWidget(profile_section)
 
         nav_scroll = QScrollArea()
         nav_scroll.setWidgetResizable(True)
@@ -213,30 +212,40 @@ class AppShell(QWidget):
 
         self._nav_layout.addStretch(1)
 
-        self._main = QWidget()
-        main_lay = QVBoxLayout(self._main)
-        main_lay.setContentsMargins(28, 20, 28, 20)
-        main_lay.setSpacing(0)
-
-        self._top = QFrame()
-        top_row = QHBoxLayout(self._top)
-        top_row.setContentsMargins(16, 10, 16, 10)
-        self._search = QLineEdit()
-        self._search.setPlaceholderText("Search")
-        self._search.setClearButtonEnabled(True)
-        self._search.setMinimumHeight(40)
-        top_row.addWidget(self._search, 1)
-
+        self._sidebar_footer = QFrame()
+        footer_lay = QHBoxLayout(self._sidebar_footer)
+        footer_lay.setContentsMargins(16, 10, 16, 14)
+        self._theme_label = QLabel("Theme")
         self._theme_btn = QPushButton("☀")
         self._theme_btn.setProperty("variant", "icon")
         self._theme_btn.setToolTip("Switch to dark theme")
         self._theme_btn.setFixedSize(40, 40)
         self._theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._theme_btn.clicked.connect(self._on_theme_toggle)
-        top_row.addWidget(self._theme_btn)
+        footer_lay.addWidget(self._theme_label)
+        footer_lay.addStretch(1)
+        footer_lay.addWidget(self._theme_btn)
+        side_outer.addWidget(self._sidebar_footer)
+
+        self._main = QWidget()
+        main_lay = QVBoxLayout(self._main)
+        main_lay.setContentsMargins(28, 20, 28, 20)
+        main_lay.setSpacing(0)
+
+        self._top = QFrame()
+        self._top_row = QHBoxLayout(self._top)
+        self._top_row.setContentsMargins(16, 10, 16, 10)
+        self._top_leading_stretch: int | None = None
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Search")
+        self._search.setClearButtonEnabled(True)
+        self._search.setMinimumHeight(40)
+        self._top_row.addWidget(self._search, 1)
 
         main_lay.addWidget(self._top)
-        main_lay.addSpacing(20)
+        self._content_gap = QWidget()
+        self._content_gap.setFixedHeight(20)
+        main_lay.addWidget(self._content_gap)
 
         content_scroll = QScrollArea()
         content_scroll.setWidgetResizable(True)
@@ -274,35 +283,30 @@ class AppShell(QWidget):
             f"border-radius: 12px; }}"
         )
 
-        if self._logo.pixmap() is None or self._logo.pixmap().isNull():
-            self._logo.setStyleSheet(
-                f"background: {t.primary}; color: white; border-radius: 26px; "
-                "font-size: 22px; font-weight: 800;"
-            )
-        else:
-            self._logo.setStyleSheet("background: transparent;")
-
-        self._school_name_lbl.setStyleSheet(
-            f"font-size: 15px; font-weight: 800; color: {t.text_primary}; line-height: 1.2;"
-        )
-        self._motto_lbl.setStyleSheet(
-            f"font-size: 10px; color: {t.text_muted}; font-weight: 600;"
-        )
-
         self._profile.setStyleSheet(
-            f"QFrame {{ background: {t.bg_app}; margin: 0 16px 12px 16px; "
-            f"border-radius: 12px; border: 1px solid {t.border}; }}"
+            f"QFrame#profileCard {{ background: {t.bg_app}; border-radius: 12px; "
+            f"border: 1px solid {t.border}; }}"
         )
         self._profile_avatar.setStyleSheet(
-            f"background: {t.primary}; color: white; border-radius: 20px; font-weight: 700;"
+            f"background: {t.primary}; color: white; border-radius: 20px; "
+            f"font-weight: 700; font-size: 15px;"
         )
         self._profile_name.setStyleSheet(
-            f"font-weight: 700; color: {t.text_primary}; background: transparent;"
+            f"font-size: 13px; font-weight: 700; color: {t.text_primary}; "
+            f"background: transparent;"
         )
         self._profile_role.setStyleSheet(
-            f"color: {t.text_muted}; font-size: 11px; background: transparent;"
+            f"color: {t.text_muted}; font-size: 11px; font-weight: 500; "
+            f"background: transparent;"
         )
-        self._profile_chev.setStyleSheet(f"color: {t.text_muted}; background: transparent;")
+
+        self._sidebar_footer.setStyleSheet(
+            f"QFrame {{ background: transparent; border-top: 1px solid {t.border}; }}"
+        )
+        self._theme_label.setStyleSheet(
+            f"color: {t.text_secondary}; font-size: 12px; font-weight: 600; "
+            f"background: transparent;"
+        )
 
         self._fab.setStyleSheet(
             f"QPushButton {{ background: {t.primary}; color: white; border-radius: 24px; "
@@ -395,7 +399,21 @@ class AppShell(QWidget):
         self.page_changed.emit(idx)
 
     def _update_top_search_visibility(self, page_key: str) -> None:
-        self._search.setVisible(page_key not in _HIDE_TOP_SEARCH)
+        hide_search = page_key in _HIDE_TOP_SEARCH
+        hide_top_bar = page_key in _HIDE_TOP_BAR
+        self._search.setVisible(not hide_search)
+        self._top.setVisible(not hide_top_bar)
+        self._content_gap.setFixedHeight(0 if hide_top_bar else 20)
+        main_lay = self._main.layout()
+        if main_lay is not None:
+            m = main_lay.contentsMargins()
+            main_lay.setContentsMargins(m.left(), 12 if hide_top_bar else 20, m.right(), m.bottom())
+        if hide_search and self._top_leading_stretch is None:
+            self._top_row.insertStretch(0, 1)
+            self._top_leading_stretch = 0
+        elif not hide_search and self._top_leading_stretch is not None:
+            self._top_row.takeAt(self._top_leading_stretch)
+            self._top_leading_stretch = None
 
     def set_current_index(self, index: int) -> None:
         if 0 <= index < len(self._page_keys):

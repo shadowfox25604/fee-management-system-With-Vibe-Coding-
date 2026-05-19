@@ -1,4 +1,5 @@
-from datetime import date
+import calendar
+from datetime import date, datetime
 
 from sqlalchemy import func, not_, or_, select
 
@@ -281,6 +282,85 @@ class PaymentRepository:
         self.session.commit()
         self.session.refresh(payment)
         return payment
+
+    @staticmethod
+    def _coerce_payment_date(value) -> date | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                return date.fromisoformat(text[:10])
+            except ValueError:
+                return None
+        return None
+
+    def daily_cash_collected_for_month(self, year: int, month: int) -> dict:
+        """Per-day cash collected (amount - discount) for each day in the calendar month."""
+        last_day = calendar.monthrange(year, month)[1]
+        start = date(year, month, 1)
+        end = date(year, month, last_day)
+        cash = Payment.amount - Payment.discount_amount
+        rows = self.session.execute(
+            select(Payment.payment_date, func.sum(cash))
+            .where(Payment.payment_date >= start, Payment.payment_date <= end)
+            .group_by(Payment.payment_date)
+        ).all()
+        by_day: dict[int, float] = {}
+        for pd, total in rows:
+            coerced = self._coerce_payment_date(pd)
+            if coerced is not None:
+                by_day[int(coerced.day)] = float(total or 0.0)
+        amounts = [by_day.get(day, 0.0) for day in range(1, last_day + 1)]
+        month_label = date(year, month, 1).strftime("%B %Y")
+        return {
+            "year": year,
+            "month": month,
+            "days_in_month": last_day,
+            "amounts": amounts,
+            "month_label": month_label,
+        }
+
+    def dashboard_period_stats(self, week_start: date, today: date) -> dict:
+        """Aggregated payment metrics for dashboard (full table scan, no row limit)."""
+        cash_collected = Payment.amount - Payment.discount_amount
+        collected_week = float(
+            self.session.scalar(
+                select(func.coalesce(func.sum(cash_collected), 0.0)).where(
+                    Payment.payment_date >= week_start,
+                    Payment.payment_date <= today,
+                )
+            )
+            or 0.0
+        )
+        payments_week = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(Payment)
+                .where(
+                    Payment.payment_date >= week_start,
+                    Payment.payment_date <= today,
+                )
+            )
+            or 0
+        )
+        payments_today = int(
+            self.session.scalar(
+                select(func.count()).select_from(Payment).where(Payment.payment_date == today)
+            )
+            or 0
+        )
+        return {
+            "collected_week": collected_week,
+            "payments_week": payments_week,
+            "payments_today": payments_today,
+        }
 
     def list_recent_payments_with_students(self, limit: int = 2000, search: str | None = None):
         """Newest first: reference, student, amounts, mode, operator. Optional case-insensitive search substring."""
