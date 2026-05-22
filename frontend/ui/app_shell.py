@@ -61,7 +61,10 @@ DEFAULT_NAV: list[NavGroup] = [
 ]
 
 _HIDE_TOP_SEARCH: frozenset[str] = frozenset({"Home Page", "Add Student"})
-_HIDE_TOP_BAR: frozenset[str] = frozenset({"Home Page"})
+_HIDE_TOP_BAR: frozenset[str] = frozenset({"Home Page", "Add Student"})
+
+
+_NAV_ACTIVE_RADIUS = "8px"
 
 
 class _NavButton(QPushButton):
@@ -82,24 +85,18 @@ class _NavButton(QPushButton):
 
     def _apply(self, active: bool) -> None:
         t = theme.current_tokens()
+        pad = "8px 12px 8px 36px" if self._sub else "10px 14px"
         if active:
-            if self._sub:
-                self.setStyleSheet(
-                    f"QPushButton {{ text-align: left; padding: 8px 12px 8px 36px; "
-                    f"border: none; border-radius: 8px; color: {t.nav_active_text}; "
-                    f"font-weight: 600; background: {t.nav_active_bg}; }}"
-                )
-            else:
-                self.setStyleSheet(
-                    f"QPushButton {{ text-align: left; padding: 10px 14px; "
-                    f"border: none; border-radius: 10px; color: {t.text_on_primary}; "
-                    f"font-weight: 600; background: {t.primary}; }}"
-                )
+            self.setStyleSheet(
+                f"QPushButton {{ text-align: left; padding: {pad}; "
+                f"border: none; border-radius: {_NAV_ACTIVE_RADIUS}; color: #FFFFFF; "
+                f"font-weight: 700; background: {t.primary}; }}"
+                f"QPushButton:hover {{ background: {t.primary_dark}; color: #FFFFFF; }}"
+            )
         else:
-            pad = "8px 12px 8px 36px" if self._sub else "10px 14px"
             self.setStyleSheet(
                 f"QPushButton {{ text-align: left; padding: {pad}; border: none; "
-                f"border-radius: 10px; color: {t.text_secondary}; font-weight: 500; "
+                f"border-radius: {_NAV_ACTIVE_RADIUS}; color: {t.text_secondary}; font-weight: 500; "
                 f"background: transparent; }}"
                 f"QPushButton:hover {{ background: {t.nav_hover}; color: {t.text_primary}; }}"
             )
@@ -122,15 +119,15 @@ class _GroupHeader(QPushButton):
         if self._expanded:
             self.setStyleSheet(
                 f"QPushButton {{ text-align: left; padding: 10px 14px; border: none; "
-                f"border-radius: 10px; color: {t.nav_active_text}; font-weight: 600; "
-                f"background: {t.nav_active_bg}; }}"
+                f"border-radius: {_NAV_ACTIVE_RADIUS}; color: {t.text_primary}; font-weight: 600; "
+                f"background: {t.nav_hover}; }}"
             )
         else:
             self.setStyleSheet(
                 f"QPushButton {{ text-align: left; padding: 10px 14px; border: none; "
-                f"border-radius: 10px; color: {t.text_secondary}; font-weight: 600; "
+                f"border-radius: {_NAV_ACTIVE_RADIUS}; color: {t.text_secondary}; font-weight: 600; "
                 f"background: transparent; }}"
-                f"QPushButton:hover {{ background: {t.nav_hover}; }}"
+                f"QPushButton:hover {{ background: {t.nav_hover}; color: {t.text_primary}; }}"
             )
 
 
@@ -247,12 +244,9 @@ class AppShell(QWidget):
         self._content_gap.setFixedHeight(20)
         main_lay.addWidget(self._content_gap)
 
-        content_scroll = QScrollArea()
-        content_scroll.setWidgetResizable(True)
-        content_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._stack = QStackedWidget()
-        content_scroll.setWidget(self._stack)
-        main_lay.addWidget(content_scroll, 1)
+        self._stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        main_lay.addWidget(self._stack, 1)
 
         self._fab = QPushButton("⚙")
         self._fab.setParent(self._main)

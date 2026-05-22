@@ -138,7 +138,7 @@ class AcademicYearDialog(QDialog):
         except AcademicYearProvisionError as e:
             self.session.expire_all()
             self._reload()
-            QMessageBox.warning(
+            theme.message_warning(
                 self,
                 "Year saved — setup incomplete",
                 f"Academic year “{e.year.label}” was saved and will remain after restart, "
@@ -146,12 +146,12 @@ class AcademicYearDialog(QDialog):
             )
         except Exception as e:
             self.session.rollback()
-            QMessageBox.critical(self, "Could not add year", str(e))
+            theme.message_critical(self, "Could not add year", str(e))
 
     def _on_edit(self):
         yid = self._selected_year_id()
         if yid is None:
-            QMessageBox.information(self, "Select a year", "Select an academic year row to edit.")
+            theme.message_information(self, "Select a year", "Select an academic year row to edit.")
             return
         year = self.service.repo.get(yid)
         if year is None:
@@ -165,27 +165,28 @@ class AcademicYearDialog(QDialog):
             self._reload()
         except Exception as e:
             self.session.rollback()
-            QMessageBox.critical(self, "Could not update year", str(e))
+            theme.message_critical(self, "Could not update year", str(e))
 
     def _on_delete(self):
         yid = self._selected_year_id()
         if yid is None:
-            QMessageBox.information(self, "Select a year", "Select an academic year row to delete.")
+            theme.message_information(self, "Select a year", "Select an academic year row to delete.")
             return
         year = self.service.repo.get(yid)
         if year is None:
             return
-        ok = QMessageBox.question(
+        ok = theme.message_question(
             self,
             "Delete academic year",
             f"Delete {year.label} ({format_academic_year_range(year.start_date, year.end_date)})?",
-            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
-        if ok != QMessageBox.Yes:
+        if ok != QMessageBox.StandardButton.Yes:
             return
         try:
             self.service.delete_year(yid)
             self._reload()
         except Exception as e:
             self.session.rollback()
-            QMessageBox.critical(self, "Could not delete year", str(e))
+            theme.message_critical(self, "Could not delete year", str(e))

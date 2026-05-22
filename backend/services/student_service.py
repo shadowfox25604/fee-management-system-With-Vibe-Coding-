@@ -36,6 +36,15 @@ class StudentService:
             raise ValueError("Transport must be van transport or own transport")
         return m
 
+    @staticmethod
+    def _validate_phone(phone: str) -> str:
+        value = (phone or "").strip()
+        if not value:
+            raise ValueError("Phone is required")
+        if not value.isdigit() or len(value) != 10:
+            raise ValueError("Phone must be exactly 10 digits")
+        return value
+
     def create_student(
         self,
         student_id,
@@ -59,10 +68,13 @@ class StudentService:
             raise ValueError("Class is required")
         if not (section or "").strip():
             raise ValueError("Section is required")
-        if not (phone or "").strip():
-            raise ValueError("Phone is required")
+        phone = self._validate_phone(phone)
         if not (guardian_name or "").strip():
             raise ValueError("Guardian name is required")
+        if not (village or "").strip():
+            raise ValueError("Village is required")
+        if not (status or "").strip():
+            raise ValueError("Status is required")
         tm = self._normalize_transport_mode(transport_mode)
         if tm == "own":
             vf = 0.0
@@ -116,8 +128,7 @@ class StudentService:
             raise ValueError("Class is required")
         if not (section or "").strip():
             raise ValueError("Section is required")
-        if not (phone or "").strip():
-            raise ValueError("Phone is required")
+        phone = self._validate_phone(phone)
         if not (guardian_name or "").strip():
             raise ValueError("Guardian name is required")
         tm = self._normalize_transport_mode(transport_mode)

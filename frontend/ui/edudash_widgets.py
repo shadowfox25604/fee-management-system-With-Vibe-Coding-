@@ -70,9 +70,12 @@ class PageChrome(QWidget):
 
 def wrap_page(title: str, breadcrumbs: list[str], body: QWidget) -> QWidget:
   host = QWidget()
+  host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
   lay = QVBoxLayout(host)
   lay.setContentsMargins(0, 0, 0, 0)
   lay.setSpacing(0)
+  body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+  body.setMinimumHeight(0)
   lay.addWidget(PageChrome(title, breadcrumbs))
   lay.addWidget(body, 1)
   return host

@@ -7,7 +7,7 @@ from typing import Callable, Literal
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPalette
-from PySide6.QtWidgets import QApplication, QDialog, QListWidget, QPushButton, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QListWidget, QMessageBox, QPushButton, QWidget
 
 ThemeMode = Literal["light", "dark"]
 
@@ -521,6 +521,32 @@ def _stylesheet(t: ThemeTokens) -> str:
         min-width: 80px;
     }}
 
+    QMessageBox {{
+        background-color: {t.bg_surface};
+        color: {t.text_primary};
+    }}
+    QMessageBox QLabel {{
+        color: {t.text_primary};
+        background: transparent;
+        font-size: 13px;
+        padding: 4px;
+    }}
+    QMessageBox QPushButton {{
+        background-color: {t.primary};
+        color: #FFFFFF;
+        border: none;
+        border-radius: 8px;
+        padding: 8px 22px;
+        font-weight: 700;
+        font-size: 13px;
+        min-width: 88px;
+        min-height: 32px;
+    }}
+    QMessageBox QPushButton:hover {{
+        background-color: {t.primary_dark};
+        color: #FFFFFF;
+    }}
+
     QLabel[role="page-title"] {{
         font-size: 24px; font-weight: 700; color: {t.text_primary};
     }}
@@ -554,3 +580,83 @@ def polish(btn: QPushButton, variant: str) -> None:
 
 def style_primary(btn: QPushButton) -> None:
     polish(btn, "primary")
+
+
+def _message_box_stylesheet() -> str:
+    t = _current_tokens
+    return f"""
+    QMessageBox {{
+        background-color: {t.bg_surface};
+        color: {t.text_primary};
+    }}
+    QMessageBox QLabel {{
+        color: {t.text_primary};
+        background: transparent;
+        font-size: 13px;
+        padding: 4px;
+    }}
+    QMessageBox QPushButton {{
+        background-color: {t.primary};
+        color: #FFFFFF;
+        border: none;
+        border-radius: 8px;
+        padding: 8px 22px;
+        font-weight: 700;
+        font-size: 13px;
+        min-width: 88px;
+        min-height: 32px;
+    }}
+    QMessageBox QPushButton:hover {{
+        background-color: {t.primary_dark};
+        color: #FFFFFF;
+    }}
+    """
+
+
+def _apply_message_box_theme(box: QMessageBox) -> None:
+    t = _current_tokens
+    box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    palette = box.palette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(t.bg_surface))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(t.text_primary))
+    palette.setColor(QPalette.ColorRole.Base, QColor(t.bg_surface))
+    palette.setColor(QPalette.ColorRole.Text, QColor(t.text_primary))
+    box.setPalette(palette)
+    box.setStyleSheet(_message_box_stylesheet())
+
+
+def message_information(parent, title: str, text: str) -> None:
+    box = QMessageBox(QMessageBox.Icon.Information, title, text, QMessageBox.StandardButton.Ok, parent)
+    _apply_message_box_theme(box)
+    box.exec()
+
+
+def message_warning(parent, title: str, text: str) -> None:
+    box = QMessageBox(QMessageBox.Icon.Warning, title, text, QMessageBox.StandardButton.Ok, parent)
+    _apply_message_box_theme(box)
+    box.exec()
+
+
+def message_critical(parent, title: str, text: str) -> None:
+    box = QMessageBox(QMessageBox.Icon.Critical, title, text, QMessageBox.StandardButton.Ok, parent)
+    _apply_message_box_theme(box)
+    box.exec()
+
+
+def message_question(
+    parent,
+    title: str,
+    text: str,
+    buttons: QMessageBox.StandardButton = (
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    ),
+    default_button: QMessageBox.StandardButton = QMessageBox.StandardButton.No,
+) -> QMessageBox.StandardButton:
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setStandardButtons(buttons)
+    box.setDefaultButton(default_button)
+    _apply_message_box_theme(box)
+    return QMessageBox.StandardButton(box.exec())

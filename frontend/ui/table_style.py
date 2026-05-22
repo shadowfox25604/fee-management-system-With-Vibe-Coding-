@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QRect, QSize
-from PySide6.QtGui import QBrush, QColor, QFont, QResizeEvent
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QResizeEvent
 from collections.abc import Callable
 
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QAbstractScrollArea,
     QHBoxLayout,
     QHeaderView,
     QPushButton,
@@ -59,9 +60,9 @@ QPushButton#feeApplyBtn:disabled {{
 
 
 def fee_action_button_width(btn: QPushButton, *, min_width: int = 76) -> int:
-    """Width that fits button label with the same horizontal padding as Apply."""
+    """Width that fits button label with generous horizontal padding (matches Add Student)."""
     metrics = btn.fontMetrics()
-    return max(min_width, metrics.horizontalAdvance(btn.text()) + 28)
+    return max(min_width, metrics.horizontalAdvance(btn.text()) + 60)
 
 
 def style_fee_action_button(btn: QPushButton, *, width: int | None = None) -> None:
@@ -86,11 +87,11 @@ class _ApplyButtonCell(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._btn = QPushButton("Apply", self)
         self._btn.clicked.connect(on_click)
-        style_fee_action_button(self._btn, width=_APPLY_BTN_SIZE.width())
+        style_fee_action_button(self._btn)
         self._center_button()
 
     def _apply_btn_styles(self) -> None:
-        style_fee_action_button(self._btn, width=_APPLY_BTN_SIZE.width())
+        style_fee_action_button(self._btn, width=self._btn.width() if self._btn.width() > 0 else None)
 
     def refresh_theme(self) -> None:
         self._apply_btn_styles()
@@ -133,7 +134,7 @@ class RowSelectionDelegate(QStyledItemDelegate):
         super().paint(painter, opt, index)
 
 
-def configure_data_table(table: QTableWidget) -> None:
+def configure_data_table(table: QTableWidget, *, stretch_last_section: bool = True) -> None:
     """Read-only table with polished row selection."""
     t = theme.current_tokens()
     table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -174,9 +175,98 @@ def configure_data_table(table: QTableWidget) -> None:
     vh = table.verticalHeader()
     vh.setVisible(False)
     vh.setDefaultSectionSize(44)
-    table.horizontalHeader().setStretchLastSection(True)
-    table.horizontalHeader().setHighlightSections(False)
+    header = table.horizontalHeader()
+    header.setStretchLastSection(stretch_last_section)
+    header.setHighlightSections(False)
+    table.setTextElideMode(Qt.TextElideMode.ElideNone)
     table.viewport().update()
+
+
+def _apply_horizontal_scroll_header(header: QHeaderView) -> None:
+    header.setStretchLastSection(False)
+    header.setCascadingSectionResizes(False)
+
+
+def _apply_horizontal_scroll_policies(table: QTableWidget) -> None:
+    table.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored)
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    _apply_horizontal_scroll_header(table.horizontalHeader())
+
+
+def restore_fitted_table_columns(table: QTableWidget) -> None:
+    """Re-apply locked column widths after theme refresh (scroll + no truncation)."""
+    widths: list[int] | None = getattr(table, "_fitted_column_widths", None)
+    if not widths:
+        return
+    header = table.horizontalHeader()
+    _apply_horizontal_scroll_header(header)
+    for col, width in enumerate(widths):
+        if col >= table.columnCount():
+            break
+        header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(col, int(width))
+
+
+def configure_scrollable_data_table(table: QTableWidget) -> None:
+    """Data table that scrolls inside its cell; keeps pagination/footer visible on the page."""
+    configure_data_table(table, stretch_last_section=False)
+    table.setMinimumHeight(120)
+    table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+    _apply_horizontal_scroll_policies(table)
+    header = table.horizontalHeader()
+    header.setMinimumSectionSize(72)
+    if not getattr(table, "_fitted_column_widths", None):
+        header.setDefaultSectionSize(88)
+        for col in range(table.columnCount()):
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+    else:
+        restore_fitted_table_columns(table)
+
+
+def refresh_scrollable_data_table(table: QTableWidget) -> None:
+    """Update scrollable table colors without resetting fitted column widths."""
+    configure_data_table(table, stretch_last_section=False)
+    _apply_horizontal_scroll_policies(table)
+    restore_fitted_table_columns(table)
+
+
+def fit_table_columns_to_contents(
+    table: QTableWidget,
+    *,
+    min_width: int = 72,
+    pad: int = 24,
+) -> None:
+    """Size columns from header + widest cell, then lock widths so horizontal scroll works."""
+    col_count = table.columnCount()
+    if col_count < 1:
+        return
+    header = table.horizontalHeader()
+    header.setMinimumSectionSize(min_width)
+    _apply_horizontal_scroll_header(header)
+    header_metrics = header.fontMetrics()
+    fitted: list[int] = []
+    for col in range(col_count):
+        width = min_width
+        header_item = table.horizontalHeaderItem(col)
+        if header_item is not None:
+            width = max(width, header_metrics.horizontalAdvance(header_item.text()) + pad)
+        for row in range(table.rowCount()):
+            item = table.item(row, col)
+            if item is None:
+                continue
+            item_metrics = table.fontMetrics()
+            if item.font().bold():
+                item_metrics = QFontMetrics(item.font())
+            width = max(width, item_metrics.horizontalAdvance(item.text()) + pad)
+        fitted.append(int(width))
+    table._fitted_column_widths = fitted
+    for col, width in enumerate(fitted):
+        header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(col, width)
+    _apply_horizontal_scroll_policies(table)
 
 
 def configure_fee_editor_table(table: QTableWidget) -> None:
@@ -227,12 +317,24 @@ def refresh_tables_in(root: QWidget | None) -> None:
             if hdr == "Action":
                 configure_fee_editor_table(table)
                 continue
+        if table.property("table_variant") == "scrollable":
+            refresh_scrollable_data_table(table)
+            continue
         configure_data_table(table)
 
 
 def apply_button_cell(on_click: Callable[[], None]) -> QWidget:
     """Centered solid-green Apply button for a table cell."""
     return _ApplyButtonCell(on_click)
+
+
+def clear_data_table_selection(table: QTableWidget | None) -> None:
+    """Remove row highlight / current cell after refresh."""
+    if table is None:
+        return
+    table.clearSelection()
+    table.setCurrentCell(-1, -1)
+    table.clearFocus()
 
 
 def table_item(text: str, *, bold: bool = False) -> QTableWidgetItem:

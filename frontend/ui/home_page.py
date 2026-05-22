@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -46,7 +47,13 @@ class HomePageTab(QWidget):
         self._chart_year = today.year
         self._chart_month = today.month
 
-        root = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        inner = QWidget()
+        root = QVBoxLayout(inner)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(16)
 
@@ -147,6 +154,11 @@ class HomePageTab(QWidget):
         self._payments_host.setColumnStretch(2, 1)
         payments_card.body.addLayout(self._payments_host)
         root.addWidget(payments_card)
+
+        page = QVBoxLayout(self)
+        page.setContentsMargins(0, 0, 0, 0)
+        page.addWidget(scroll)
+        scroll.setWidget(inner)
         self.reload()
 
     def _apply_revenue_chart(self, daily: dict) -> None:
