@@ -343,3 +343,66 @@ def test_van_payment_clears_pending_before_current_year(db_session):
     after = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
     assert after["van_pending"] == pytest.approx(0.0, abs=0.02)
     assert after["van_due"] == pytest.approx(600.0, abs=0.02)
+
+
+def test_next_class_key_progression():
+    from backend.core.fee_control_constants import FIXED_CLASS_KEYS, next_class_key
+
+    assert next_class_key("LKG") == "UKG"
+    assert next_class_key("lkg") == "UKG"
+    assert next_class_key("UKG") == "1"
+    assert next_class_key("6") == "7"
+    assert next_class_key("9") == "10"
+    assert next_class_key("10") is None
+    assert next_class_key("11") is None
+    assert next_class_key("Nursery") is None
+    assert next_class_key("unknown") is None
+
+    for idx, key in enumerate(FIXED_CLASS_KEYS[:-1]):
+        assert next_class_key(key) == FIXED_CLASS_KEYS[idx + 1]
+    assert next_class_key(FIXED_CLASS_KEYS[-1]) is None
+
+
+def test_create_year_promotes_students(db_session):
+    from backend.core.fee_control_constants import next_class_key
+    from backend.services.class_fee_service import ClassFeeService
+    from backend.services.village_van_fee_service import VillageVanFeeService
+
+    ay_repo = AcademicYearRepository(db_session)
+    for row in ay_repo.list_all():
+        db_session.delete(row)
+    db_session.commit()
+
+    ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
+    db_session.commit()
+
+    st = Student(
+        student_id=f"PROMO-{uuid.uuid4().hex[:8]}",
+        full_name="Promo Student",
+        class_name="LKG",
+        section="A",
+        phone="9876543210",
+        guardian_name="G",
+        status="active",
+        school_fees=10000.0,
+        van_fees=500.0,
+    )
+    db_session.add(st)
+    db_session.commit()
+
+    class_svc = ClassFeeService(db_session)
+    village_svc = VillageVanFeeService(db_session)
+    ay_svc = AcademicYearService(db_session)
+    ay_svc.create_year(
+        date(2025, 5, 17),
+        date(2026, 4, 18),
+        "2025-26",
+        class_fee_service=class_svc,
+        village_fee_service=village_svc,
+    )
+    db_session.refresh(st)
+
+    assert st.class_name == next_class_key("LKG")
+    year_row = StudentYearFeeRepository(db_session).get(st.id, ay_repo.list_all()[-1].id)
+    assert year_row is not None
+    assert year_row.school_fees == pytest.approx(class_svc.school_fees_for_class_name("UKG"), abs=0.01)

@@ -14,7 +14,8 @@ from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_LOGO_PATH = _PROJECT_ROOT / "frontend" / "assets" / "school_logo.png"
+DEFAULT_LOGO_PATH = _PROJECT_ROOT / "frontend" / "assets" / "ace_school_logo.jpeg"
+FALLBACK_LOGO_PATH = _PROJECT_ROOT / "frontend" / "assets" / "school_logo.png"
 
 SCHOOL_DISPLAY_NAME = "ACE HIGH SCHOOL"
 
@@ -57,6 +58,8 @@ def render_payment_receipt(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     logo = logo_path if logo_path is not None else DEFAULT_LOGO_PATH
+    if not logo.exists() and logo_path is None and FALLBACK_LOGO_PATH.exists():
+        logo = FALLBACK_LOGO_PATH
     styles = getSampleStyleSheet()
 
     school_title = ParagraphStyle(

@@ -39,7 +39,7 @@ class AddStudentPage(QWidget):
         self.full_name = QLineEdit()
         self.student_class = QComboBox()
         self.student_class.addItems(list(FIXED_CLASS_KEYS))
-        self.student_class.setCurrentIndex(3)
+        self.student_class.setCurrentIndex(FIXED_CLASS_KEYS.index("1"))
         self.section = QComboBox()
         self.section.addItems(list(FIXED_SECTION_KEYS))
         self.phone = QLineEdit()

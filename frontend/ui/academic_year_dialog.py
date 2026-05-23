@@ -37,7 +37,8 @@ class AcademicYearDialog(QDialog):
         hint = QLabel(
             "Each academic year is a date range (DD/MM/YYYY). Ranges must not overlap. "
             "The year that contains today’s date is the current year for new fees and payments. "
-            "Adding a year creates fee records for all students using class and village tariffs."
+            "Adding a new forward year promotes every student one class (e.g. LKG→UKG→1→2) "
+            "and creates fee records using Fee Control class and village tariffs."
         )
         hint.setWordWrap(True)
         hint.setProperty("role", "muted")

@@ -109,3 +109,23 @@ class StudentRepository:
             .where(func.lower(Student.status) != "active")
         ) or 0
         return int(active), int(inactive)
+
+    def promote_all_student_classes(self, class_fee_lookup) -> int:
+        """Advance each student one class (LKG→UKG→1→…→10). Returns count promoted."""
+        from backend.core.fee_control_constants import canonical_class_for_student_class, next_class_key
+
+        promoted = 0
+        for student in self.session.scalars(select(Student)).all():
+            current = canonical_class_for_student_class(student.class_name)
+            if current is None:
+                continue
+            nxt = next_class_key(current)
+            if nxt is None:
+                continue
+            student.class_name = nxt
+            student.school_fees = float(class_fee_lookup(nxt))
+            self.session.add(student)
+            promoted += 1
+        if promoted:
+            self.session.flush()
+        return promoted

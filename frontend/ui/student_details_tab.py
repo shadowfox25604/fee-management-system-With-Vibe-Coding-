@@ -1,45 +1,58 @@
-"""Student Details — EduDash split view with profile cards."""
+"""Student Details — refreshed split layout with smooth interactions."""
 
 from __future__ import annotations
 
 from datetime import date, datetime
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QPushButton,
     QScrollArea,
-    QTableWidget,
-    QTableWidgetItem,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from frontend.ui.edudash_widgets import CardTitleBar, GradientProfileCard, SurfaceCard
-from frontend.ui.table_style import configure_data_table, table_item
+from frontend.ui.table_style import style_fee_action_button
 from frontend.ui import theme
-from frontend.ui.theme import style_primary as style_primary_button
 
 
 class StudentDetailsTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._running_animations: list[QPropertyAnimation] = []
+
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(20)
+        root.setSpacing(14)
 
-        # Left list panel
+        # Left search/list panel
         left = SurfaceCard()
-        left.setFixedWidth(360)
+        left.setMinimumWidth(460)
+        left.setMaximumWidth(560)
+        left.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         ll = left.body
+        ll.setSpacing(14)
+
+        title = QLabel("Find students")
+        title.setProperty("role", "section-title")
+        title_hint = QLabel("Search and pick a student to preview profile details.")
+        title_hint.setProperty("role", "muted")
+        title_hint.setWordWrap(True)
+        ll.addWidget(title)
+        ll.addWidget(title_hint)
+
         tool = QHBoxLayout()
+        tool.setSpacing(8)
         self.refresh_btn = QPushButton("Refresh")
         tool.addWidget(self.refresh_btn)
         tool.addWidget(QLabel("Search by"))
@@ -48,17 +61,26 @@ class StudentDetailsTab(QWidget):
             ["Roll Number", "Name", "Phone", "Village", "Class-Section", "Status", "Guardian Name"]
         )
         self.search_by.setCurrentIndex(1)
-        self.student_search = QLineEdit()
-        self.student_search.setPlaceholderText("Enter student name")
         tool.addWidget(self.search_by, 1)
         ll.addLayout(tool)
+
+        self.student_search = QLineEdit()
+        self.student_search.setPlaceholderText("Enter student name")
+        self.student_search.setClearButtonEnabled(True)
         ll.addWidget(self.student_search)
 
+        meta_row = QHBoxLayout()
         self.match_count_label = QLabel("0 students match")
         self.match_count_label.setProperty("role", "muted")
-        ll.addWidget(self.match_count_label)
+        self._selection_hint = QLabel("Select a student from the list")
+        self._selection_hint.setProperty("role", "hint")
+        meta_row.addWidget(self.match_count_label)
+        meta_row.addStretch(1)
+        meta_row.addWidget(self._selection_hint)
+        ll.addLayout(meta_row)
 
         filters = QHBoxLayout()
+        filters.setSpacing(14)
         self.filter_active_only = QCheckBox("Active only")
         self.filter_outstanding_only = QCheckBox("Outstanding only")
         filters.addWidget(self.filter_active_only)
@@ -67,147 +89,198 @@ class StudentDetailsTab(QWidget):
         ll.addLayout(filters)
 
         self.student_results = QListWidget()
-        theme.refresh_list_widget(self.student_results)
+        self.student_results.setSpacing(4)
+        self._refresh_results_style()
         ll.addWidget(self.student_results, 1)
 
         self.pagination_host = QWidget()
         self.pagination_layout = QHBoxLayout(self.pagination_host)
         self.pagination_layout.setContentsMargins(0, 8, 0, 0)
+        self.pagination_layout.setSpacing(8)
         ll.addWidget(self.pagination_host)
-        root.addWidget(left)
+        root.addWidget(left, 6)
 
-        # Right detail scroll
+        # Right detail panel (scrollable)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        detail = QWidget()
-        dl = QVBoxLayout(detail)
+        self._detail_body = QWidget()
+        self._detail_body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        dl = QVBoxLayout(self._detail_body)
+        dl.setContentsMargins(0, 0, 0, 4)
         dl.setSpacing(16)
 
+        self.detail_heading = QLabel("No student selected")
+        self.detail_heading.setProperty("role", "section-title")
+        self.hint_label = QLabel("Select a student from the left panel to view details.")
+        self.hint_label.setProperty("role", "muted")
+        self.hint_label.setWordWrap(True)
+        dl.addWidget(self.detail_heading)
+        dl.addWidget(self.hint_label)
+
         top_row = QHBoxLayout()
-        self._profile_card = GradientProfileCard("—", "—", "—")
-        self._profile_card.setFixedWidth(280)
+        top_row.setSpacing(14)
+        self._profile_card = GradientProfileCard("—", "—", "—", show_action=False)
+        self._profile_card.setFixedWidth(306)
         top_row.addWidget(self._profile_card)
 
-        quick_col = QVBoxLayout()
-        self._quick_stat_boxes: list[QLabel] = []
-        for label, val in (
-            ("Events", "—"),
-            ("Notifications", "—"),
-            ("Attendance", "—"),
-        ):
-            box = QLabel(f"{label}\n{val}")
-            box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            box.setMinimumHeight(52)
-            self._quick_stat_boxes.append(box)
-            quick_col.addWidget(box)
-        self._refresh_quick_stats()
-        top_row.addLayout(quick_col, 1)
+        overview_card = SurfaceCard()
+        overview_card.body.addWidget(CardTitleBar("Student overview"))
+        overview_form = QFormLayout()
+        overview_form.setHorizontalSpacing(16)
+        overview_form.setVerticalSpacing(8)
+
+        self.lbl_student_id = QLabel("—")
+        self.lbl_name = QLabel("—")
+        self.lbl_class = QLabel("—")
+        self.lbl_phone = QLabel("—")
+        self.lbl_village = QLabel("—")
+        self.lbl_transport = QLabel("—")
+        self.lbl_guardian = QLabel("—")
+        self.lbl_joining = QLabel("—")
+        self._status_badge = QLabel("—")
+        self._status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._status_badge.setMinimumWidth(84)
+        self._status_badge.setMaximumWidth(120)
+
+        overview_form.addRow("Roll number", self.lbl_student_id)
+        overview_form.addRow("Student name", self.lbl_name)
+        overview_form.addRow("Class / section", self.lbl_class)
+        overview_form.addRow("Current status", self._status_badge)
+        overview_form.addRow("Joined on", self.lbl_joining)
+        overview_card.body.addLayout(overview_form)
+        top_row.addWidget(overview_card, 1)
+        top_row.setStretch(0, 4)
+        top_row.setStretch(1, 6)
         dl.addLayout(top_row)
 
-        fees_card = SurfaceCard()
-        fees_card.body.addWidget(CardTitleBar("Fee snapshot"))
-        fees_form = QFormLayout()
-        self.lbl_academic_year = QLabel("—")
-        self.lbl_school_pending = QLabel("—")
-        self.lbl_van_pending = QLabel("—")
-        self.lbl_school_due = QLabel("—")
-        self.lbl_van_due = QLabel("—")
-        self.lbl_school_payable = QLabel("—")
-        self.lbl_van_payable = QLabel("—")
-        self.lbl_total_due = QLabel("—")
-        fees_form.addRow("Academic year", self.lbl_academic_year)
-        fees_form.addRow("Pending school", self.lbl_school_pending)
-        fees_form.addRow("Pending van", self.lbl_van_pending)
-        fees_form.addRow("School due (year)", self.lbl_school_due)
-        fees_form.addRow("Van due (year)", self.lbl_van_due)
-        fees_form.addRow("Payable school", self.lbl_school_payable)
-        fees_form.addRow("Payable van", self.lbl_van_payable)
-        fees_form.addRow("Total payable", self.lbl_total_due)
-        fees_card.body.addLayout(fees_form)
-        dl.addWidget(fees_card)
-
-        year_card = SurfaceCard()
-        year_card.body.addWidget(CardTitleBar("Fees by academic year"))
-        self.year_table = QTableWidget(0, 7)
-        self.year_table.setHorizontalHeaderLabels(
-            ["Year", "School tariff", "School paid", "School due", "Van tariff", "Van paid", "Van due"]
-        )
-        configure_data_table(self.year_table)
-        year_card.body.addWidget(self.year_table)
-        dl.addWidget(year_card)
-
-        pay_card = SurfaceCard()
-        pay_card.body.addWidget(CardTitleBar("Recent payments"))
-        self.payments_table = QTableWidget(0, 5)
-        self.payments_table.setHorizontalHeaderLabels(
-            ["Date", "Reference", "Amount (₹)", "Discount (₹)", "Mode"]
-        )
-        configure_data_table(self.payments_table)
-        pay_card.body.addWidget(self.payments_table)
-        dl.addWidget(pay_card)
-
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
         self.btn_edit = QPushButton("Edit profile")
-        self.btn_collect = QPushButton("Collect payment")
-        style_primary_button(self.btn_collect)
+        style_fee_action_button(self.btn_edit)
         self.btn_edit.setEnabled(False)
-        self.btn_collect.setEnabled(False)
         btn_row.addWidget(self.btn_edit)
-        btn_row.addWidget(self.btn_collect)
         btn_row.addStretch(1)
         dl.addLayout(btn_row)
-        dl.addStretch(1)
 
-        scroll.setWidget(detail)
-        root.addWidget(scroll, 1)
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(14)
 
-        # Legacy labels for compatibility
-        self.detail_heading = QLabel()
-        self.lbl_student_id = QLabel()
-        self.lbl_name = QLabel()
-        self.lbl_class = QLabel()
-        self.lbl_phone = QLabel()
-        self.lbl_village = QLabel()
-        self.lbl_transport = QLabel()
-        self.lbl_guardian = QLabel()
-        self.lbl_status = QLabel()
-        self.lbl_joining = QLabel()
-        self.hint_label = QLabel()
+        contact_card = SurfaceCard()
+        contact_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        contact_card.body.addWidget(CardTitleBar("Contact details"))
+        contact_form = QFormLayout()
+        contact_form.setHorizontalSpacing(16)
+        contact_form.setVerticalSpacing(8)
+        self.lbl_contact_phone = QLabel("—")
+        self.lbl_contact_village = QLabel("—")
+        self.lbl_contact_transport = QLabel("—")
+        self.lbl_contact_guardian = QLabel("—")
+        contact_form.addRow("Phone", self.lbl_contact_phone)
+        contact_form.addRow("Village", self.lbl_contact_village)
+        contact_form.addRow("Transport", self.lbl_contact_transport)
+        contact_form.addRow("Guardian", self.lbl_contact_guardian)
+        contact_card.body.addLayout(contact_form)
+        contact_card.body.addStretch(1)
+        bottom_row.addWidget(contact_card, 1)
+
+        summary_card = SurfaceCard()
+        summary_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        summary_card.body.addWidget(CardTitleBar("Student summary"))
+        self.summary_title = QLabel("Select a student to view a profile summary.")
+        self.summary_title.setProperty("role", "section-title")
+        self.summary_title.setWordWrap(True)
+        self.summary_text = QLabel("Contact and enrollment details will appear here.")
+        self.summary_text.setProperty("role", "muted")
+        self.summary_text.setWordWrap(True)
+        self.summary_hint = QLabel("Tip: use Edit profile to update student records.")
+        self.summary_hint.setProperty("role", "hint")
+        self.summary_hint.setWordWrap(True)
+        summary_card.body.addWidget(self.summary_title)
+        summary_card.body.addWidget(self.summary_text)
+        summary_card.body.addWidget(self.summary_hint)
+        summary_card.body.addStretch(1)
+        bottom_row.addWidget(summary_card, 1)
+
+        dl.addLayout(bottom_row, 1)
+
+        scroll.setWidget(self._detail_body)
+        root.addWidget(scroll, 7)
         self.clear_detail()
 
-    def _refresh_quick_stats(self) -> None:
+    def _style_status_badge(self, status_text: str) -> None:
         t = theme.current_tokens()
-        for i, box in enumerate(self._quick_stat_boxes):
-            bg = t.quick_stat_bgs[i] if i < len(t.quick_stat_bgs) else t.bg_section_header
-            box.setStyleSheet(
-                f"background: {bg}; border-radius: 10px; padding: 12px; "
-                f"font-weight: 700; color: {t.quick_stat_text};"
-            )
-
-    def _style_total_due(self, total: float) -> None:
-        t = theme.current_tokens()
-        if total > 0.01:
-            self.lbl_total_due.setStyleSheet(
-                f"color: {t.danger}; font-weight: 700; background: transparent;"
-            )
+        status_value = (status_text or "").strip().lower()
+        if status_value == "active":
+            bg = t.primary_soft
+            fg = t.success
+        elif status_value == "inactive":
+            bg = t.bg_section_header
+            fg = t.text_secondary
         else:
-            self.lbl_total_due.setStyleSheet(
-                f"color: {t.success}; font-weight: 700; background: transparent;"
-            )
+            bg = t.bg_section_header
+            fg = t.text_primary
+        self._status_badge.setText(status_text or "—")
+        self._status_badge.setStyleSheet(
+            f"background: {bg}; color: {fg}; padding: 4px 10px; border-radius: 10px; font-weight: 700;"
+        )
+
+    def _animate_widget(self, widget: QWidget, *, start: float = 0.78, duration: int = 200) -> None:
+        effect = widget.graphicsEffect()
+        if not isinstance(effect, QGraphicsOpacityEffect):
+            effect = QGraphicsOpacityEffect(widget)
+            widget.setGraphicsEffect(effect)
+        effect.setOpacity(start)
+        animation = QPropertyAnimation(effect, b"opacity", self)
+        animation.setDuration(duration)
+        animation.setStartValue(start)
+        animation.setEndValue(1.0)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.finished.connect(lambda a=animation: self._running_animations.remove(a) if a in self._running_animations else None)
+        self._running_animations.append(animation)
+        animation.start()
+
+    def _refresh_results_style(self) -> None:
+        t = theme.current_tokens()
+        self.student_results.setStyleSheet(
+            f"""
+            QListWidget {{
+                background: {t.bg_surface};
+                color: {t.text_primary};
+                border: 1px solid {t.border};
+                border-radius: 12px;
+                padding: 6px;
+                outline: none;
+            }}
+            QListWidget::item {{
+                color: {t.text_primary};
+                border: 1px solid transparent;
+                border-radius: 8px;
+                margin: 2px 2px;
+                padding: 9px 10px;
+            }}
+            QListWidget::item:hover {{
+                background: {t.bg_hover};
+                border-color: {t.border_light};
+            }}
+            QListWidget::item:selected {{
+                background: {t.primary_soft};
+                border-color: {t.primary_light};
+                color: {t.text_primary};
+            }}
+            """
+        )
+        self.student_results.viewport().update()
+
+    def animate_results_refresh(self) -> None:
+        self._animate_widget(self.student_results, start=0.72, duration=160)
 
     def refresh_theme(self) -> None:
-        self._refresh_quick_stats()
         self._profile_card.refresh_theme()
-        theme.refresh_list_widget(self.student_results)
-        configure_data_table(self.year_table)
-        configure_data_table(self.payments_table)
-        style_primary_button(self.btn_collect)
-        try:
-            total = float(self.lbl_total_due.text().replace(",", "") or 0)
-            self._style_total_due(total)
-        except ValueError:
-            pass
+        self._refresh_results_style()
+        style_fee_action_button(self.btn_edit, width=self.btn_edit.width() if self.btn_edit.width() > 0 else None)
+        self._style_status_badge(self._status_badge.text())
         for bar in self.findChildren(CardTitleBar):
             bar.refresh_theme()
 
@@ -223,77 +296,68 @@ class StudentDetailsTab(QWidget):
 
     def clear_detail(self) -> None:
         self._profile_card.set_student("No student selected", "—", "—")
+        self.detail_heading.setText("No student selected")
+        self.hint_label.setText("Select a student from the left panel to view details.")
         for lbl in (
-            self.lbl_academic_year,
-            self.lbl_school_pending,
-            self.lbl_van_pending,
-            self.lbl_school_due,
-            self.lbl_van_due,
-            self.lbl_school_payable,
-            self.lbl_van_payable,
-            self.lbl_total_due,
+            self.lbl_student_id,
+            self.lbl_name,
+            self.lbl_class,
+            self.lbl_phone,
+            self.lbl_village,
+            self.lbl_transport,
+            self.lbl_guardian,
+            self.lbl_contact_phone,
+            self.lbl_contact_village,
+            self.lbl_contact_transport,
+            self.lbl_contact_guardian,
+            self.lbl_joining,
         ):
             lbl.setText("—")
-        self.year_table.setRowCount(0)
-        self.payments_table.setRowCount(0)
+        self._style_status_badge("—")
+        self.summary_title.setText("Select a student to view a profile summary.")
+        self.summary_text.setText("Contact and enrollment details will appear here.")
+        self.summary_hint.setText("Tip: use Edit profile to update student records.")
         self.btn_edit.setEnabled(False)
-        self.btn_collect.setEnabled(False)
 
     def show_detail(self, data: dict) -> None:
         student = data["student"]
-        due = data.get("due") or {}
+        class_name = str(student.class_name or "—")
+        section = str(student.section or "").strip()
+        class_section = f"{class_name}-{section}" if section else class_name
+        status = str(student.status or "—")
+
         self._profile_card.set_student(
             str(student.full_name or "—"),
-            str(student.class_name or "—"),
+            class_section,
             str(student.student_id or "—"),
         )
+        self.detail_heading.setText(f"{student.full_name or 'Student'}")
+        self.hint_label.setText("Profile and contact details for the selected student.")
 
-        self.lbl_academic_year.setText(str(due.get("current_year_label") or "—"))
-        self.lbl_school_pending.setText(f"{due.get('school_pending', 0):.2f}")
-        self.lbl_van_pending.setText(f"{due.get('van_pending', 0):.2f}")
-        self.lbl_school_due.setText(f"{due.get('fee_due', 0):.2f}")
-        self.lbl_van_due.setText(f"{due.get('van_due', 0):.2f}")
-        self.lbl_school_payable.setText(f"{due.get('school_payable', 0):.2f}")
-        self.lbl_van_payable.setText(f"{due.get('van_payable', 0):.2f}")
-        total = float(due.get("total", 0) or 0)
-        self.lbl_total_due.setText(f"{total:.2f}")
-        self._style_total_due(total)
-
-        self.year_table.setRowCount(0)
-        for row, yr in enumerate(data.get("yearly") or []):
-            self.year_table.insertRow(row)
-            label = yr.get("label") or ""
-            if yr.get("is_current"):
-                label = f"{label} (current)"
-            cells = [
-                label,
-                f"{yr.get('school_tariff', 0):.2f}",
-                f"{yr.get('school_paid', 0):.2f}",
-                f"{yr.get('school_due', 0):.2f}",
-                f"{yr.get('van_tariff', 0):.2f}",
-                f"{yr.get('van_paid', 0):.2f}",
-                f"{yr.get('van_due', 0):.2f}",
-            ]
-            for col, text in enumerate(cells):
-                item = table_item(text)
-                if col in (3, 6) and float(text) > 0.01:
-                    item.setForeground(QColor(theme.current_tokens().danger))
-                self.year_table.setItem(row, col, item)
-        self.year_table.resizeColumnsToContents()
-
-        self.payments_table.setRowCount(0)
-        for row, p in enumerate(data.get("payments") or []):
-            self.payments_table.insertRow(row)
-            pd = p.get("payment_date")
-            pd_str = pd.strftime("%d/%m/%Y") if hasattr(pd, "strftime") else str(pd or "")
-            for col, text in enumerate([
-                pd_str,
-                str(p.get("reference_no") or ""),
-                f"{float(p.get('amount', 0) or 0):.2f}",
-                f"{float(p.get('discount', 0) or 0):.2f}",
-                str(p.get("mode") or ""),
-            ]):
-                self.payments_table.setItem(row, col, table_item(text))
-        self.payments_table.resizeColumnsToContents()
+        self.lbl_student_id.setText(str(student.student_id or "—"))
+        self.lbl_name.setText(str(student.full_name or "—"))
+        self.lbl_class.setText(class_section)
+        self.lbl_phone.setText(str(student.phone or "—"))
+        self.lbl_village.setText(str(getattr(student, "village", None) or "—"))
+        self.lbl_transport.setText(
+            "Own transport"
+            if str(getattr(student, "transport_mode", "van") or "van").lower() == "own"
+            else "Van transport"
+        )
+        self.lbl_guardian.setText(str(student.guardian_name or "—"))
+        self.lbl_contact_phone.setText(self.lbl_phone.text())
+        self.lbl_contact_village.setText(self.lbl_village.text())
+        self.lbl_contact_transport.setText(self.lbl_transport.text())
+        self.lbl_contact_guardian.setText(self.lbl_guardian.text())
+        self.lbl_joining.setText(self.format_joining_date(getattr(student, "created_at", None)))
+        self.summary_title.setText(f"{student.full_name or 'Student'} - {class_section}")
+        self.summary_text.setText(
+            f"{status.title()} profile. Contact: {self.lbl_phone.text()} | "
+            f"Guardian: {self.lbl_guardian.text()} | Village: {self.lbl_village.text()}."
+        )
+        self.summary_hint.setText(
+            f"Student joined on {self.lbl_joining.text()} and currently uses {self.lbl_transport.text().lower()}."
+        )
+        self._style_status_badge(status)
         self.btn_edit.setEnabled(True)
-        self.btn_collect.setEnabled(True)
+        self._animate_widget(self._detail_body, start=0.82, duration=190)

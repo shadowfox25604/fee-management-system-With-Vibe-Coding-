@@ -60,8 +60,26 @@ DEFAULT_NAV: list[NavGroup] = [
     NavGroup("Backup", "💾", page_key="Backup"),
 ]
 
-_HIDE_TOP_SEARCH: frozenset[str] = frozenset({"Home Page", "Add Student"})
-_HIDE_TOP_BAR: frozenset[str] = frozenset({"Home Page", "Add Student"})
+_HIDE_TOP_SEARCH: frozenset[str] = frozenset(
+    {
+        "Home Page",
+        "Add Student",
+        "Student Search",
+        "Student Details",
+        "Collect Payment",
+        "Payment History",
+    }
+)
+_HIDE_TOP_BAR: frozenset[str] = frozenset(
+    {
+        "Home Page",
+        "Add Student",
+        "Student Search",
+        "Student Details",
+        "Collect Payment",
+        "Payment History",
+    }
+)
 
 
 _NAV_ACTIVE_RADIUS = "8px"

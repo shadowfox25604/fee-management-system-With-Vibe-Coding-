@@ -14,6 +14,24 @@ from backend.models import ClassSchoolFee, FeeHead, Invoice, Payment, Student, e
 from backend.repositories.class_fee_repository import ClassFeeRepository
 from backend.core.payment_reference import REF_LEN, is_compact_payment_reference
 from backend.repositories.payment_repository import PaymentRepository
+def test_class_name_matches_query_exact_not_substring():
+    from backend.core.fee_control_constants import (
+        class_name_matches_query,
+        class_section_matches_query,
+    )
+
+    assert class_name_matches_query("1", "1")
+    assert not class_name_matches_query("10", "1")
+    assert not class_name_matches_query("11", "1")
+    assert class_name_matches_query("10", "10")
+    assert class_name_matches_query("LKG", "lkg")
+
+    assert class_section_matches_query("1", "A", "1")
+    assert not class_section_matches_query("10", "A", "1")
+    assert class_section_matches_query("10", "B", "10-b")
+    assert not class_section_matches_query("10", "A", "10-b")
+
+
 def test_schema_and_student_creation():
     Base.metadata.create_all(bind=db.engine)
     apply_sqlite_column_migrations(db.engine)

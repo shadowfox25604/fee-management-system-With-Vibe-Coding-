@@ -2,7 +2,7 @@ from datetime import date, timedelta
 import random
 from backend.core.database import SessionLocal, engine
 from backend.core.schema_migrations import apply_sqlite_column_migrations, apply_sqlite_data_migrations
-from backend.core.fee_control_constants import FIXED_VILLAGE_KEYS
+from backend.core.fee_control_constants import FIXED_CLASS_KEYS, FIXED_VILLAGE_KEYS
 from backend.core.security import hash_password
 from backend.models import FeeHead, FeePlan, Invoice, Student, User
 
@@ -22,6 +22,7 @@ GUARDIAN_FIRST_NAMES = [
 ]
 
 VILLAGES = list(FIXED_VILLAGE_KEYS)
+CLASS_POOL = list(FIXED_CLASS_KEYS)
 def _unique_student_values(idx, used_ids, used_phones):
     student_id = f"STU{idx:04d}"
     while student_id in used_ids:
@@ -72,7 +73,7 @@ def seed(target_students=200):
         next_idx = existing_count + 1
         for i in range(to_create):
             next_idx, student_id, full_name, phone, guardian = _unique_student_values(next_idx + i, used_ids, used_phones)
-            class_num = str(random.randint(1, 12))
+            class_num = random.choice(CLASS_POOL)
             section = random.choice(["A", "B", "C"])
             students.append(
                 Student(

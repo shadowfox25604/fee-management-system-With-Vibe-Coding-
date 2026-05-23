@@ -748,24 +748,25 @@ class UploadPlaceholder(QFrame):
 class GradientProfileCard(QFrame):
   """Student profile highlight card (theme-aware gradient)."""
 
-  def __init__(self, name: str, class_line: str, roll: str, parent=None):
+  def __init__(self, name: str, class_line: str, roll: str, parent=None, show_action: bool = True):
     super().__init__(parent)
     self.setMinimumHeight(160)
     lay = QVBoxLayout(self)
+    lay.setContentsMargins(20, 20, 20, 20)
     lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    lay.setSpacing(10)
+    lay.setSpacing(8)
     av = QLabel(name[:1].upper())
-    av.setFixedSize(64, 64)
+    av.setFixedSize(62, 62)
     av.setAlignment(Qt.AlignmentFlag.AlignCenter)
     av.setStyleSheet(
       "background: rgba(255,255,255,0.25); color: white; "
-      "border-radius: 32px; font-size: 24px; font-weight: 800;"
+      "border-radius: 31px; font-size: 24px; font-weight: 800;"
     )
     n = QLabel(name)
-    n.setStyleSheet("color: white; font-size: 18px; font-weight: 700;")
+    n.setStyleSheet("color: white; font-size: 18px; font-weight: 700; background: transparent;")
     n.setAlignment(Qt.AlignmentFlag.AlignCenter)
     sub = QLabel(f"Class: {class_line}  ·  Roll: {roll}")
-    sub.setStyleSheet("color: rgba(255,255,255,0.85); font-size: 12px;")
+    sub.setStyleSheet("color: rgba(255,255,255,0.85); font-size: 12px; background: transparent;")
     sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
     btn = QPushButton("Edit Profile")
     btn.setStyleSheet(
@@ -774,13 +775,18 @@ class GradientProfileCard(QFrame):
       "padding: 8px 24px; font-weight: 600; }"
       "QPushButton:hover { background: rgba(255,255,255,0.15); }"
     )
+    lay.addStretch(1)
     lay.addWidget(av, alignment=Qt.AlignmentFlag.AlignCenter)
     lay.addWidget(n)
     lay.addWidget(sub)
-    lay.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
+    if show_action:
+      lay.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
+    lay.addStretch(1)
+    self._avatar_lbl = av
     self._edit_btn = btn
     self._name_lbl = n
     self._sub_lbl = sub
+    self._show_action = show_action
     self.refresh_theme()
 
   def refresh_theme(self) -> None:
@@ -792,11 +798,15 @@ class GradientProfileCard(QFrame):
     )
 
   def set_student(self, name: str, class_name: str, roll: str) -> None:
-    self._name_lbl.setText(name)
-    self._sub_lbl.setText(f"Class: {class_name}  ·  Roll: {roll}")
-    av = self.layout().itemAt(0).widget()
-    if av and isinstance(av, QLabel):
-      av.setText(name[:1].upper() if name else "?")
+    raw_name = (name or "").strip()
+    is_placeholder = raw_name.lower() in {"", "—", "-", "no student selected"}
+    if is_placeholder:
+      self._name_lbl.setText("Select a student")
+      self._sub_lbl.setText("Student profile preview")
+    else:
+      self._name_lbl.setText(name)
+      self._sub_lbl.setText(f"Class: {class_name}  ·  Roll: {roll}")
+    self._avatar_lbl.setText(raw_name[:1].upper() if raw_name else "?")
 
   @property
   def edit_button(self) -> QPushButton:
