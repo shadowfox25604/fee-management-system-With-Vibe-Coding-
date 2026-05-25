@@ -227,7 +227,7 @@ class DashMetricCard(QFrame):
 
 
 class RevenueChartWidget(QWidget):
-  """Daily collected-fee bars for the current calendar month."""
+  """Daily collected bars with reverted continuation segments."""
 
   Y_AXIS_MAX = 100_000.0
   Y_AXIS_STEP = 20_000.0
@@ -238,6 +238,7 @@ class RevenueChartWidget(QWidget):
     self.setMouseTracking(True)
     self._month_label = ""
     self._collected: list[float] = []
+    self._reverted: list[float] = []
     self._hover_index: int | None = None
     self._tooltip_opacity = 0.0
     self._opacity_anim = QPropertyAnimation(self, b"tooltipOpacity")
@@ -253,8 +254,18 @@ class RevenueChartWidget(QWidget):
 
   tooltipOpacity = Property(float, get_tooltip_opacity, set_tooltip_opacity)
 
-  def set_daily_collections(self, amounts: list[float], *, month_label: str = "") -> None:
+  def set_daily_collections(
+    self,
+    amounts: list[float],
+    *,
+    month_label: str = "",
+    reverted_amounts: list[float] | None = None,
+  ) -> None:
     self._collected = [float(v) for v in amounts]
+    rev = [float(v) for v in (reverted_amounts or [])]
+    if len(rev) < len(self._collected):
+      rev.extend([0.0] * (len(self._collected) - len(rev)))
+    self._reverted = rev[: len(self._collected)]
     self._month_label = month_label
     self._hover_index = None
     self._tooltip_opacity = 0.0
@@ -312,8 +323,13 @@ class RevenueChartWidget(QWidget):
       "bar_w": bar_w,
     }
 
+  def _day_total(self, index: int) -> float:
+    c = self._collected[index] if 0 <= index < len(self._collected) else 0.0
+    r = self._reverted[index] if 0 <= index < len(self._reverted) else 0.0
+    return max(0.0, float(c or 0.0) + float(r or 0.0))
+
   def _bar_rect(self, index: int, layout: dict) -> QRectF:
-    amount = self._collected[index]
+    amount = self._day_total(index)
     if amount <= 0:
       return QRectF()
     gap = layout["gap"]
@@ -350,15 +366,15 @@ class RevenueChartWidget(QWidget):
       return
     prev = self._hover_index
     self._hover_index = index
-    if index is not None and self._collected[index] > 0:
+    if index is not None and self._day_total(index) > 0:
       self.setCursor(Qt.CursorShape.PointingHandCursor)
-      if prev is None or self._collected[prev] <= 0:
+      if prev is None or self._day_total(prev) <= 0:
         self._fade_tooltip(1.0)
       else:
         self.update()
     else:
       self.unsetCursor()
-      if prev is not None and self._collected[prev] > 0:
+      if prev is not None and self._day_total(prev) > 0:
         self._fade_tooltip(0.0)
       else:
         self.update()
@@ -375,8 +391,10 @@ class RevenueChartWidget(QWidget):
     if self._tooltip_opacity <= 0.01:
       return
     day = index + 1
-    amount = self._collected[index]
-    text = f"Day {day}: ₹{amount:,.0f}"
+    collected = float(self._collected[index] if 0 <= index < len(self._collected) else 0.0)
+    reverted = float(self._reverted[index] if 0 <= index < len(self._reverted) else 0.0)
+    net = collected - reverted
+    text = f"Day {day}: +₹{collected:,.0f} | -₹{reverted:,.0f} | Net ₹{net:,.0f}"
     t = theme.current_tokens()
     tip_font = QFont("Segoe UI", 9)
     tip_font.setWeight(QFont.Weight.DemiBold)
@@ -450,18 +468,36 @@ class RevenueChartWidget(QWidget):
         text,
       )
 
-    hover_color = QColor(ORANGE)
-    hover_color.setAlpha(230)
+    hover_collect_color = QColor(ORANGE)
+    hover_collect_color.setAlpha(230)
+    revert_color = QColor(t.danger)
+    hover_revert_color = QColor(t.danger)
+    hover_revert_color.setAlpha(220)
 
     for i, amount in enumerate(self._collected):
       day = i + 1
       slot_x = margin_l + i * gap
-      if amount > 0:
-        bar = self._bar_rect(i, layout)
+      reverted_amount = self._reverted[i] if i < len(self._reverted) else 0.0
+      bar = self._bar_rect(i, layout)
+      if not bar.isEmpty():
         is_hover = i == self._hover_index
-        p.setBrush(hover_color if is_hover else QColor(ORANGE))
+        total_amount = max(0.0, float(amount or 0.0) + float(reverted_amount or 0.0))
+        collected_h = bar.height() * (float(amount or 0.0) / total_amount) if total_amount > 0 else 0.0
+        if amount > 0 and collected_h > 0:
+          collected_rect = QRectF(bar.x(), bar.bottom() - collected_h + 1.0, bar.width(), collected_h)
+          p.setBrush(hover_collect_color if is_hover else QColor(ORANGE))
+          p.setPen(Qt.PenStyle.NoPen)
+          p.drawRoundedRect(collected_rect, 3, 3)
+        if reverted_amount > 0:
+          reverted_h = bar.height() * (float(reverted_amount or 0.0) / total_amount) if total_amount > 0 else 0.0
+          if reverted_h > 0:
+            reverted_rect = QRectF(bar.x(), bar.y(), bar.width(), reverted_h)
+            p.setBrush(hover_revert_color if is_hover else revert_color)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(reverted_rect, 3, 3)
+      else:
+        p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(bar, 3, 3)
       p.setPen(QColor(t.text_muted))
       p.setFont(label_font)
       p.drawText(

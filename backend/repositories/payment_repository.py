@@ -5,7 +5,7 @@ from sqlalchemy import func, not_, or_, select
 
 from backend.core.fee_heads import van_fee_head_filter, van_fee_head_name_match
 from backend.core.payment_reference import allocate_unique_payment_reference
-from backend.models import AcademicYear, FeeHead, Invoice, Payment, Student
+from backend.models import AcademicYear, FeeHead, Invoice, Payment, PaymentAllocation, Student
 from backend.repositories.academic_year_repository import AcademicYearRepository
 from backend.services.fee_balance_service import FeeBalanceService
 
@@ -30,6 +30,10 @@ class PaymentRepository:
         y = self._year_repo.get_current()
         return y.id if y else None
 
+    @staticmethod
+    def _not_reverted_filter():
+        return or_(Payment.is_reverted.is_(False), Payment.is_reverted.is_(None))
+
     def new_payment_reference(self) -> str:
         def _exists(cand: str) -> bool:
             n = self.session.scalar(select(func.count(Payment.id)).where(Payment.reference_no == cand)) or 0
@@ -48,10 +52,30 @@ class PaymentRepository:
             return {}
         rows = self.session.execute(
             select(Payment.student_id_fk, func.coalesce(func.sum(Payment.discount_amount), 0.0))
-            .where(Payment.student_id_fk.in_(student_ids))
+            .where(Payment.student_id_fk.in_(student_ids), self._not_reverted_filter())
             .group_by(Payment.student_id_fk)
         ).all()
         return {int(r[0]): float(r[1] or 0.0) for r in rows}
+
+    def _allocate_to_invoices(self, payment_id: int, amount: float, invoices) -> float:
+        rem = float(amount or 0.0)
+        for inv in invoices:
+            if rem <= 0:
+                break
+            bal = float(inv.amount_due or 0.0) - float(inv.amount_paid or 0.0)
+            if bal <= 0:
+                continue
+            alloc = min(rem, bal)
+            inv.amount_paid += alloc
+            self.session.add(
+                PaymentAllocation(
+                    payment_id=int(payment_id),
+                    invoice_id=int(inv.id),
+                    allocated_amount=float(alloc),
+                )
+            )
+            rem -= alloc
+        return rem
 
     def get_students_school_fee_summary(self, student_ids):
         return self._balance.get_students_school_fee_summary(student_ids)
@@ -154,27 +178,23 @@ class PaymentRepository:
             student_id_fk=student.id,
             payment_date=d,
             amount=amount,
+            school_amount=amount,
+            van_amount=0.0,
             mode=mode,
             reference_no=self.new_payment_reference(),
             operator_name=operator_name,
+            is_reverted=False,
         )
         self.session.add(payment)
-        rem = amount
+        self.session.flush()
+        rem = float(amount or 0.0)
         invoices = self.session.scalars(
             select(Invoice)
             .outerjoin(AcademicYear, AcademicYear.id == Invoice.academic_year_id)
             .where(Invoice.student_id_fk == student.id)
             .order_by(*self._invoice_year_order())
         ).all()
-        for inv in invoices:
-            if rem <= 0:
-                break
-            bal = inv.amount_due - inv.amount_paid
-            if bal <= 0:
-                continue
-            alloc = min(rem, bal)
-            inv.amount_paid += alloc
-            rem -= alloc
+        rem = self._allocate_to_invoices(payment.id, rem, invoices)
         self.session.commit()
         self.session.refresh(payment)
         return payment
@@ -239,25 +259,16 @@ class PaymentRepository:
             student_id_fk=student.id,
             payment_date=d,
             amount=payment_total,
+            school_amount=school_amount,
+            van_amount=van_amount,
             discount_amount=discount_amount,
             mode=mode,
             reference_no=self.new_payment_reference(),
             operator_name=operator_name,
+            is_reverted=False,
         )
         self.session.add(payment)
-
-        def _allocate(amount: float, invoices):
-            rem = amount
-            for inv in invoices:
-                if rem <= 0:
-                    break
-                bal = inv.amount_due - inv.amount_paid
-                if bal <= 0:
-                    continue
-                alloc = min(rem, bal)
-                inv.amount_paid += alloc
-                rem -= alloc
-            return rem
+        self.session.flush()
 
         van_invoices = self.session.scalars(
             select(Invoice)
@@ -273,12 +284,105 @@ class PaymentRepository:
             .where(Invoice.student_id_fk == student.id, not_(_van_fee_head_filter()))
             .order_by(*self._invoice_year_order())
         ).all()
-        rem_v = _allocate(van_amount, van_invoices)
-        rem_s = _allocate(school_allocate, school_invoices)
+        rem_v = self._allocate_to_invoices(payment.id, van_amount, van_invoices)
+        rem_s = self._allocate_to_invoices(payment.id, school_allocate, school_invoices)
         eps = 1e-6
         if rem_v > eps or rem_s > eps:
             self.session.rollback()
             raise ValueError("Could not allocate payment to invoices; check fee heads and invoice balances")
+        self.session.commit()
+        self.session.refresh(payment)
+        return payment
+
+    def _student_school_invoices(self, student_id: int) -> list[Invoice]:
+        return list(
+            self.session.scalars(
+                select(Invoice)
+                .join(FeeHead, FeeHead.id == Invoice.fee_head_id)
+                .outerjoin(AcademicYear, AcademicYear.id == Invoice.academic_year_id)
+                .where(Invoice.student_id_fk == int(student_id), not_(_van_fee_head_filter()))
+                .order_by(*self._invoice_year_order())
+            ).all()
+        )
+
+    def _student_van_invoices(self, student_id: int) -> list[Invoice]:
+        return list(
+            self.session.scalars(
+                select(Invoice)
+                .join(FeeHead, FeeHead.id == Invoice.fee_head_id)
+                .outerjoin(AcademicYear, AcademicYear.id == Invoice.academic_year_id)
+                .where(Invoice.student_id_fk == int(student_id), _van_fee_head_filter())
+                .order_by(*self._invoice_year_order())
+            ).all()
+        )
+
+    def _student_all_invoices(self, student_id: int) -> list[Invoice]:
+        return list(
+            self.session.scalars(
+                select(Invoice)
+                .outerjoin(AcademicYear, AcademicYear.id == Invoice.academic_year_id)
+                .where(Invoice.student_id_fk == int(student_id))
+                .order_by(*self._invoice_year_order())
+            ).all()
+        )
+
+    def _rebuild_student_allocations(self, student_id: int) -> None:
+        student_id = int(student_id)
+        for inv in self._student_all_invoices(student_id):
+            inv.amount_paid = 0.0
+
+        existing_allocs = self.session.scalars(
+            select(PaymentAllocation)
+            .join(Payment, Payment.id == PaymentAllocation.payment_id)
+            .where(Payment.student_id_fk == student_id)
+        ).all()
+        for alloc in existing_allocs:
+            self.session.delete(alloc)
+        self.session.flush()
+
+        payments = self.session.scalars(
+            select(Payment)
+            .where(Payment.student_id_fk == student_id, self._not_reverted_filter())
+            .order_by(Payment.payment_date.asc(), Payment.id.asc())
+        ).all()
+
+        eps = 1e-6
+        for payment in payments:
+            school_amount = float(getattr(payment, "school_amount", 0.0) or 0.0)
+            van_amount = float(getattr(payment, "van_amount", 0.0) or 0.0)
+            discount_amount = float(payment.discount_amount or 0.0)
+            if school_amount > eps or van_amount > eps:
+                rem_v = self._allocate_to_invoices(payment.id, van_amount, self._student_van_invoices(student_id))
+                rem_s = self._allocate_to_invoices(
+                    payment.id,
+                    school_amount + discount_amount,
+                    self._student_school_invoices(student_id),
+                )
+                rem_total = rem_v + rem_s
+            else:
+                rem_total = self._allocate_to_invoices(
+                    payment.id,
+                    float(payment.amount or 0.0),
+                    self._student_all_invoices(student_id),
+                )
+            if rem_total > eps:
+                self._allocate_to_invoices(payment.id, rem_total, self._student_all_invoices(student_id))
+
+    def undo_payment(self, reference_no: str) -> Payment:
+        ref = (reference_no or "").strip()
+        if not ref:
+            raise ValueError("Payment reference is required.")
+        payment = self.session.scalars(
+            select(Payment).where(Payment.reference_no == ref).limit(1)
+        ).first()
+        if payment is None:
+            raise ValueError("Payment not found.")
+        if bool(getattr(payment, "is_reverted", False)):
+            raise ValueError("This payment is already reverted.")
+
+        payment.is_reverted = True
+        payment.reverted_at = datetime.now()
+        self._rebuild_student_allocations(int(payment.student_id_fk))
         self.session.commit()
         self.session.refresh(payment)
         return payment
@@ -302,34 +406,62 @@ class PaymentRepository:
         return None
 
     def daily_cash_collected_for_month(self, year: int, month: int) -> dict:
-        """Per-day cash collected (amount - discount) for each day in the calendar month."""
+        """Per-day chart data: collected cash by payment date + reverted cash by reversion date."""
         last_day = calendar.monthrange(year, month)[1]
         start = date(year, month, 1)
         end = date(year, month, last_day)
         cash = Payment.amount - Payment.discount_amount
-        rows = self.session.execute(
+        collected_rows = self.session.execute(
             select(Payment.payment_date, func.sum(cash))
             .where(Payment.payment_date >= start, Payment.payment_date <= end)
             .group_by(Payment.payment_date)
         ).all()
-        by_day: dict[int, float] = {}
-        for pd, total in rows:
+        reverted_rows = self.session.execute(
+            select(func.date(Payment.reverted_at), func.sum(cash))
+            .where(
+                Payment.is_reverted.is_(True),
+                Payment.reverted_at.is_not(None),
+                func.date(Payment.reverted_at) >= start.isoformat(),
+                func.date(Payment.reverted_at) <= end.isoformat(),
+            )
+            .group_by(func.date(Payment.reverted_at))
+        ).all()
+        collected_by_day: dict[int, float] = {}
+        reverted_by_day: dict[int, float] = {}
+        for pd, total in collected_rows:
             coerced = self._coerce_payment_date(pd)
             if coerced is not None:
-                by_day[int(coerced.day)] = float(total or 0.0)
-        amounts = [by_day.get(day, 0.0) for day in range(1, last_day + 1)]
+                collected_by_day[int(coerced.day)] = float(total or 0.0)
+        for rd, total in reverted_rows:
+            coerced = self._coerce_payment_date(rd)
+            if coerced is not None:
+                reverted_by_day[int(coerced.day)] = float(total or 0.0)
+        amounts = [collected_by_day.get(day, 0.0) for day in range(1, last_day + 1)]
+        reverted_amounts = [reverted_by_day.get(day, 0.0) for day in range(1, last_day + 1)]
         month_label = date(year, month, 1).strftime("%B %Y")
         return {
             "year": year,
             "month": month,
             "days_in_month": last_day,
             "amounts": amounts,
+            "reverted_amounts": reverted_amounts,
             "month_label": month_label,
         }
 
     def dashboard_period_stats(self, week_start: date, today: date) -> dict:
-        """Aggregated payment metrics for dashboard (full table scan, no row limit)."""
+        """Aggregated payment metrics; reversals are deducted on reversion date."""
         cash_collected = Payment.amount - Payment.discount_amount
+        reverted_week = float(
+            self.session.scalar(
+                select(func.coalesce(func.sum(cash_collected), 0.0)).where(
+                    Payment.is_reverted.is_(True),
+                    Payment.reverted_at.is_not(None),
+                    func.date(Payment.reverted_at) >= week_start.isoformat(),
+                    func.date(Payment.reverted_at) <= today.isoformat(),
+                )
+            )
+            or 0.0
+        )
         collected_week = float(
             self.session.scalar(
                 select(func.coalesce(func.sum(cash_collected), 0.0)).where(
@@ -339,6 +471,7 @@ class PaymentRepository:
             )
             or 0.0
         )
+        collected_week -= reverted_week
         payments_week = int(
             self.session.scalar(
                 select(func.count())
@@ -362,9 +495,17 @@ class PaymentRepository:
             "payments_today": payments_today,
         }
 
-    def list_recent_payments_with_students(self, limit: int = 2000, search: str | None = None):
+    def list_recent_payments_with_students(
+        self,
+        limit: int = 2000,
+        search: str | None = None,
+        *,
+        include_reverted: bool = False,
+    ):
         """Newest first: reference, student, amounts, mode, operator. Optional case-insensitive search substring."""
         stmt = select(Payment, Student).join(Student, Student.id == Payment.student_id_fk)
+        if not include_reverted:
+            stmt = stmt.where(self._not_reverted_filter())
         needle = (search or "").strip()
         if needle:
             pat = f"%{needle.lower()}%"
@@ -391,6 +532,8 @@ class PaymentRepository:
                     "discount": float(p.discount_amount or 0.0),
                     "mode": p.mode or "",
                     "operator": p.operator_name or "",
+                    "is_reverted": bool(getattr(p, "is_reverted", False)),
+                    "status": "Payment reverted" if bool(getattr(p, "is_reverted", False)) else "Paid",
                 }
             )
         return out

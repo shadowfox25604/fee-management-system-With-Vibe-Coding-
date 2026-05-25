@@ -60,8 +60,21 @@ class PaymentService:
             raise ValueError("No outstanding amount for this student")
         return self.repo.create_split_payment(student, va, sa, mode, operator_name, disc, payment_date)
 
-    def list_payment_history(self, limit: int = 2000, search: str | None = None):
-        return self.repo.list_recent_payments_with_students(limit, search=search)
+    def list_payment_history(
+        self,
+        limit: int = 2000,
+        search: str | None = None,
+        *,
+        include_reverted: bool = False,
+    ):
+        return self.repo.list_recent_payments_with_students(
+            limit,
+            search=search,
+            include_reverted=include_reverted,
+        )
+
+    def undo_payment(self, reference_no: str):
+        return self.repo.undo_payment(reference_no)
 
     def dashboard_period_stats(self, week_start: date, today: date) -> dict:
         return self.repo.dashboard_period_stats(week_start, today)

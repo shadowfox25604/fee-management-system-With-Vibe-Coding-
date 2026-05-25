@@ -43,6 +43,7 @@ from backend.services.academic_year_service import AcademicYearService
 from backend.services.backup_service import BackupService
 from backend.services.class_fee_service import ClassFeeService
 from backend.services.village_van_fee_service import VillageVanFeeService
+from backend.services.expense_service import ExpenseService
 from backend.services.payment_service import PaymentService
 from backend.services.report_service import ReportService
 from backend.services.student_service import StudentService
@@ -139,6 +140,7 @@ class MainWindow(QMainWindow):
         self.backup_service = BackupService()
         self.class_fee_service = ClassFeeService(session)
         self.village_van_fee_service = VillageVanFeeService(session)
+        self.expense_service = ExpenseService(session)
         self.academic_year_service = AcademicYearService(session)
         self.selected_student = None
         self._payment_panes: dict[str, PaymentLikePane] = {}
@@ -175,22 +177,26 @@ class MainWindow(QMainWindow):
             "Student Search",
             "Student Details",
             "Collect Payment",
+            "Payment History",
+            "Salary",
+            "Other",
             "Add Student",
             "Reports",
             "Backup",
             "Fee Control",
-            "Payment History",
         ]
         builders = [
             self._build_home_tab,
             self._build_search_tab,
             self._build_student_details_tab,
             self._build_payment_tab,
+            self._build_payment_history_tab,
+            self._build_salary_tab,
+            self._build_other_expense_tab,
             self._build_add_student_tab,
             self._build_reports_tab,
             self._build_backup_tab,
             self._build_fee_control_tab,
-            self._build_payment_history_tab,
         ]
         for key, builder in zip(self._tab_names, builders):
             idx = self._shell.register_page(key, builder())
@@ -200,6 +206,10 @@ class MainWindow(QMainWindow):
                 self._fee_control_tab_index = idx
             if key == "Payment History":
                 self._payment_history_tab_index = idx
+            if key == "Salary":
+                self._salary_tab_index = idx
+            if key == "Other":
+                self._other_expense_tab_index = idx
         self._shell.page_changed.connect(self._on_main_tab_changed)
         theme.ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
         self.setCentralWidget(self._shell)
@@ -265,6 +275,9 @@ class MainWindow(QMainWindow):
             getattr(self, "_create_backup_btn", None),
             getattr(self, "_restore_backup_btn", None),
             getattr(self, "_manage_years_btn", None),
+            getattr(self, "_salary_assign_btn", None),
+            getattr(self, "_salary_calculate_btn", None),
+            getattr(self, "_other_add_btn", None),
         ):
             if btn is not None:
                 style_fee_action_button(btn, width=btn.width() if btn.width() > 0 else None)
@@ -586,6 +599,7 @@ class MainWindow(QMainWindow):
             "database_path": str(DB_PATH),
             "revenue_chart": {
                 "amounts": daily_revenue["amounts"],
+                "reverted_amounts": daily_revenue.get("reverted_amounts", []),
                 "month_label": daily_revenue["month_label"],
             },
             "recent_payments": recent,
@@ -1164,6 +1178,12 @@ class MainWindow(QMainWindow):
             self._refresh_payment_history_table(reset_page=False)
             if hasattr(self, "_payment_history_pagination"):
                 self._payment_history_pagination.refresh_theme()
+        if index == getattr(self, "_salary_tab_index", -1):
+            self._refresh_salary_faculty_options()
+            self._refresh_salary_assignments_table()
+            self._refresh_salary_history_table()
+        if index == getattr(self, "_other_expense_tab_index", -1):
+            self._refresh_other_expense_table()
         if tab_name == "Student Details":
             self._refresh_details_tab(reset_page=False)
         if tab_name == "Collect Payment":
@@ -1194,7 +1214,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._payment_history_filter, 1)
         layout.addLayout(toolbar)
         card = SurfaceCard()
-        self._payment_history_table = QTableWidget(0, 9)
+        self._payment_history_table = QTableWidget(0, 11)
         self._payment_history_table.setHorizontalHeaderLabels(
             [
                 "Date",
@@ -1205,7 +1225,9 @@ class MainWindow(QMainWindow):
                 "Discount (₹)",
                 "Mode",
                 "Operator",
+                "Status",
                 "Print Receipt",
+                "Undo Payment",
             ]
         )
         configure_scrollable_data_table(self._payment_history_table)
@@ -1226,6 +1248,385 @@ class MainWindow(QMainWindow):
             breadcrumb_trail("Fees Collection", "Payment History"),
             body,
         )
+
+    def _build_salary_tab(self):
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        intro = QLabel(
+            "Assign monthly faculty salaries, then calculate payable salaries using attendance."
+        )
+        intro.setProperty("role", "hint")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        assign_card = SurfaceCard()
+        assign_card.body.addWidget(CardTitleBar("1) Assign faculty salaries"))
+        assign_row = QHBoxLayout()
+        self._salary_faculty_name = QLineEdit()
+        self._salary_faculty_name.setPlaceholderText("Faculty name")
+        self._salary_role = QLineEdit()
+        self._salary_role.setPlaceholderText("Role / designation")
+        self._salary_monthly_salary = QLineEdit()
+        self._salary_monthly_salary.setPlaceholderText("Monthly salary (₹)")
+        self._salary_default_working_days = QLineEdit()
+        self._salary_default_working_days.setPlaceholderText("Working days (default 26)")
+        self._salary_assign_btn = QPushButton("Assign / Update")
+        style_fee_action_button(self._salary_assign_btn)
+        self._salary_assign_btn.clicked.connect(self._on_salary_assign_clicked)
+        assign_row.addWidget(self._salary_faculty_name, 2)
+        assign_row.addWidget(self._salary_role, 2)
+        assign_row.addWidget(self._salary_monthly_salary, 1)
+        assign_row.addWidget(self._salary_default_working_days, 1)
+        assign_row.addWidget(self._salary_assign_btn)
+        assign_card.body.addLayout(assign_row)
+        self._salary_assignments_table = QTableWidget(0, 5)
+        self._salary_assignments_table.setHorizontalHeaderLabels(
+            ["Faculty", "Role", "Monthly Salary (₹)", "Working Days", "Status"]
+        )
+        configure_scrollable_data_table(self._salary_assignments_table)
+        self._salary_assignments_table.setProperty("table_variant", "scrollable")
+        assign_card.body.addWidget(self._salary_assignments_table, 1)
+        layout.addWidget(assign_card, 1)
+
+        calc_card = SurfaceCard()
+        calc_card.body.addWidget(CardTitleBar("2) Calculate salary from attendance"))
+        calc_form = QFormLayout()
+        calc_form.setHorizontalSpacing(14)
+        calc_form.setVerticalSpacing(8)
+        self._salary_faculty_combo = QComboBox()
+        self._salary_faculty_combo.currentIndexChanged.connect(self._on_salary_faculty_changed)
+        self._salary_selected_details = QLabel("Select a faculty member.")
+        self._salary_selected_details.setProperty("role", "muted")
+        self._salary_attendance_days = QLineEdit()
+        self._salary_attendance_days.setPlaceholderText("Attendance days")
+        self._salary_working_days = QLineEdit()
+        self._salary_working_days.setPlaceholderText("Working days")
+        self._salary_month_label = QLineEdit(date.today().strftime("%Y-%m"))
+        self._salary_month_label.setPlaceholderText("Month label (YYYY-MM)")
+        self._salary_payment_date = QDateEdit(QDate.currentDate())
+        self._salary_payment_date.setCalendarPopup(True)
+        self._salary_payment_date.setDisplayFormat("dd/MM/yyyy")
+        self._salary_payment_date.setMaximumDate(QDate.currentDate())
+        self._salary_notes = QLineEdit()
+        self._salary_notes.setPlaceholderText("Notes (optional)")
+        calc_form.addRow("Faculty", self._salary_faculty_combo)
+        calc_form.addRow("Assigned details", self._salary_selected_details)
+        calc_form.addRow("Attendance days", self._salary_attendance_days)
+        calc_form.addRow("Working days", self._salary_working_days)
+        calc_form.addRow("Salary month", self._salary_month_label)
+        calc_form.addRow("Payment date", self._salary_payment_date)
+        calc_form.addRow("Notes", self._salary_notes)
+        calc_card.body.addLayout(calc_form)
+
+        self._salary_preview_label = QLabel("Payable amount: ₹0.00")
+        self._salary_preview_label.setProperty("role", "muted")
+        calc_card.body.addWidget(self._salary_preview_label)
+
+        calc_actions = QHBoxLayout()
+        calc_actions.addStretch(1)
+        self._salary_calculate_btn = QPushButton("Calculate + Save")
+        style_fee_action_button(self._salary_calculate_btn)
+        self._salary_calculate_btn.clicked.connect(self._on_salary_calculate_clicked)
+        calc_actions.addWidget(self._salary_calculate_btn)
+        calc_card.body.addLayout(calc_actions)
+        layout.addWidget(calc_card)
+
+        history_card = SurfaceCard()
+        history_card.body.addWidget(CardTitleBar("Salary payout history"))
+        self._salary_total_label = QLabel("Total salary paid: ₹0.00")
+        self._salary_total_label.setProperty("role", "muted")
+        history_card.body.addWidget(self._salary_total_label)
+        self._salary_history_table = QTableWidget(0, 7)
+        self._salary_history_table.setHorizontalHeaderLabels(
+            ["Date", "Faculty", "Month", "Attendance/Days", "Base Salary (₹)", "Paid (₹)", "Notes"]
+        )
+        configure_scrollable_data_table(self._salary_history_table)
+        self._salary_history_table.setProperty("table_variant", "scrollable")
+        history_card.body.addWidget(self._salary_history_table, 1)
+        layout.addWidget(history_card, 1)
+
+        self._refresh_salary_faculty_options()
+        self._refresh_salary_assignments_table()
+        self._refresh_salary_history_table()
+        return wrap_page(
+            "Salary Expenses",
+            breadcrumb_trail("Expenses", "Salary"),
+            body,
+        )
+
+    def _on_salary_faculty_changed(self, _=None) -> None:
+        faculty_id = self._salary_faculty_combo.currentData()
+        if faculty_id is None:
+            self._salary_selected_details.setText("No faculty assigned yet.")
+            return
+        faculty = self.expense_service.repo.get_faculty_salary(int(faculty_id))
+        if faculty is None:
+            self._salary_selected_details.setText("Selected faculty was not found.")
+            return
+        self._salary_selected_details.setText(
+            f"Monthly ₹{float(faculty.monthly_salary):.2f} | Default working days {int(faculty.default_working_days)}"
+        )
+        if not (self._salary_working_days.text() or "").strip():
+            self._salary_working_days.setText(str(int(faculty.default_working_days)))
+
+    def _refresh_salary_faculty_options(self) -> None:
+        if not hasattr(self, "_salary_faculty_combo"):
+            return
+        current_id = self._salary_faculty_combo.currentData()
+        faculty_rows = self.expense_service.list_faculty_salaries(active_only=True)
+        self._salary_faculty_combo.blockSignals(True)
+        self._salary_faculty_combo.clear()
+        for row in faculty_rows:
+            self._salary_faculty_combo.addItem(str(row.faculty_name), int(row.id))
+        self._salary_faculty_combo.blockSignals(False)
+        if current_id is not None:
+            idx = self._salary_faculty_combo.findData(current_id)
+            if idx >= 0:
+                self._salary_faculty_combo.setCurrentIndex(idx)
+        self._salary_calculate_btn.setEnabled(self._salary_faculty_combo.count() > 0)
+        self._on_salary_faculty_changed()
+
+    def _refresh_salary_assignments_table(self) -> None:
+        if not hasattr(self, "_salary_assignments_table"):
+            return
+        rows = self.expense_service.list_faculty_salaries(active_only=False)
+        table = self._salary_assignments_table
+        table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            status = "Active" if bool(getattr(row, "is_active", True)) else "Inactive"
+            values = [
+                str(row.faculty_name or ""),
+                str(row.role or ""),
+                f"{float(row.monthly_salary or 0):.2f}",
+                str(int(row.default_working_days or 0)),
+                status,
+            ]
+            for col, value in enumerate(values):
+                table.setItem(i, col, table_item(value))
+        fit_table_columns_to_contents(table)
+
+    def _refresh_salary_history_table(self) -> None:
+        if not hasattr(self, "_salary_history_table"):
+            return
+        rows = self.expense_service.list_salary_expenses(limit=1000)
+        table = self._salary_history_table
+        table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            d = row.expense_date
+            d_text = d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else str(d or "")
+            attendance = float(getattr(row, "attendance_days", 0) or 0)
+            working = float(getattr(row, "working_days", 0) or 0)
+            values = [
+                d_text,
+                str(row.person_name or ""),
+                str(row.month_label or ""),
+                f"{attendance:.1f}/{working:.1f}",
+                f"{float(row.base_amount or 0):.2f}",
+                f"{float(row.amount or 0):.2f}",
+                str(row.notes or ""),
+            ]
+            for col, value in enumerate(values):
+                table.setItem(i, col, table_item(value))
+        fit_table_columns_to_contents(table)
+        month_filter = (self._salary_month_label.text() or "").strip() if hasattr(self, "_salary_month_label") else ""
+        total = self.expense_service.salary_total(month_filter or None)
+        if hasattr(self, "_salary_total_label"):
+            if month_filter:
+                self._salary_total_label.setText(f"Total salary paid ({month_filter}): ₹{total:.2f}")
+            else:
+                self._salary_total_label.setText(f"Total salary paid: ₹{total:.2f}")
+
+    def _on_salary_assign_clicked(self) -> None:
+        try:
+            faculty_name = (self._salary_faculty_name.text() or "").strip()
+            role = (self._salary_role.text() or "").strip()
+            monthly_salary = float((self._salary_monthly_salary.text() or "").strip() or 0.0)
+            working_days = int(float((self._salary_default_working_days.text() or "").strip() or 26))
+            self.expense_service.assign_faculty_salary(
+                faculty_name,
+                monthly_salary,
+                role=role,
+                default_working_days=working_days,
+            )
+        except ValueError as e:
+            theme.message_warning(self, "Invalid salary assignment", str(e))
+            return
+        except Exception as e:
+            self.session.rollback()
+            theme.message_critical(self, "Salary assignment failed", str(e))
+            return
+
+        self._salary_faculty_name.clear()
+        self._salary_role.clear()
+        self._salary_monthly_salary.clear()
+        self._salary_default_working_days.clear()
+        self._refresh_salary_faculty_options()
+        self._refresh_salary_assignments_table()
+        theme.message_information(self, "Saved", "Faculty salary assignment saved.")
+
+    def _on_salary_calculate_clicked(self) -> None:
+        faculty_id = self._salary_faculty_combo.currentData()
+        if faculty_id is None:
+            theme.message_warning(self, "Missing faculty", "Assign at least one faculty salary first.")
+            return
+        try:
+            attendance_days = float((self._salary_attendance_days.text() or "").strip() or 0.0)
+            working_text = (self._salary_working_days.text() or "").strip()
+            working_days = float(working_text) if working_text else None
+            month_label = (self._salary_month_label.text() or "").strip()
+            qd = self._salary_payment_date.date()
+            payment_date = date(qd.year(), qd.month(), qd.day())
+            notes = (self._salary_notes.text() or "").strip()
+            row = self.expense_service.record_salary_from_attendance(
+                int(faculty_id),
+                attendance_days,
+                working_days=working_days,
+                month_label=month_label,
+                expense_date=payment_date,
+                notes=notes,
+            )
+        except ValueError as e:
+            theme.message_warning(self, "Invalid salary calculation", str(e))
+            return
+        except Exception as e:
+            self.session.rollback()
+            theme.message_critical(self, "Salary save failed", str(e))
+            return
+
+        self._salary_preview_label.setText(f"Payable amount: ₹{float(row.amount or 0):.2f}")
+        self._salary_attendance_days.clear()
+        self._salary_notes.clear()
+        self._refresh_salary_history_table()
+        theme.message_information(
+            self,
+            "Salary saved",
+            f"Salary entry saved for {row.person_name} (₹{float(row.amount):.2f}).",
+        )
+
+    def _build_other_expense_tab(self):
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        intro = QLabel(
+            "Document and calculate non-salary expenses such as rent, donation, and stationary."
+        )
+        intro.setProperty("role", "hint")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        form_card = SurfaceCard()
+        form_card.body.addWidget(CardTitleBar("Add other expense"))
+        row = QHBoxLayout()
+        self._other_category = QComboBox()
+        self._other_category.addItems(["Rent", "Donation", "Stationary", "Other"])
+        self._other_amount = QLineEdit()
+        self._other_amount.setPlaceholderText("Amount (₹)")
+        self._other_date = QDateEdit(QDate.currentDate())
+        self._other_date.setCalendarPopup(True)
+        self._other_date.setDisplayFormat("dd/MM/yyyy")
+        self._other_date.setMaximumDate(QDate.currentDate())
+        self._other_description = QLineEdit()
+        self._other_description.setPlaceholderText("Description")
+        self._other_notes = QLineEdit()
+        self._other_notes.setPlaceholderText("Notes (optional)")
+        self._other_add_btn = QPushButton("Add Expense")
+        style_fee_action_button(self._other_add_btn)
+        self._other_add_btn.clicked.connect(self._on_add_other_expense_clicked)
+        row.addWidget(self._other_category)
+        row.addWidget(self._other_amount)
+        row.addWidget(self._other_date)
+        row.addWidget(self._other_description, 2)
+        row.addWidget(self._other_notes, 2)
+        row.addWidget(self._other_add_btn)
+        form_card.body.addLayout(row)
+        layout.addWidget(form_card)
+
+        totals_card = SurfaceCard()
+        totals_card.body.addWidget(CardTitleBar("Expense totals"))
+        self._other_totals_label = QLabel("Total: ₹0.00")
+        self._other_totals_label.setProperty("role", "muted")
+        self._other_totals_label.setWordWrap(True)
+        totals_card.body.addWidget(self._other_totals_label)
+        layout.addWidget(totals_card)
+
+        table_card = SurfaceCard()
+        table_card.body.addWidget(CardTitleBar("Other expense history"))
+        self._other_expenses_table = QTableWidget(0, 5)
+        self._other_expenses_table.setHorizontalHeaderLabels(
+            ["Date", "Category", "Description", "Amount (₹)", "Notes"]
+        )
+        configure_scrollable_data_table(self._other_expenses_table)
+        self._other_expenses_table.setProperty("table_variant", "scrollable")
+        table_card.body.addWidget(self._other_expenses_table, 1)
+        layout.addWidget(table_card, 1)
+
+        self._refresh_other_expense_table()
+        return wrap_page(
+            "Other Expenses",
+            breadcrumb_trail("Expenses", "Other"),
+            body,
+        )
+
+    def _refresh_other_expense_table(self) -> None:
+        if not hasattr(self, "_other_expenses_table"):
+            return
+        rows = self.expense_service.list_other_expenses(limit=1000)
+        table = self._other_expenses_table
+        table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            d = row.expense_date
+            d_text = d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else str(d or "")
+            values = [
+                d_text,
+                str(row.category or ""),
+                str(row.description or ""),
+                f"{float(row.amount or 0):.2f}",
+                str(row.notes or ""),
+            ]
+            for col, value in enumerate(values):
+                table.setItem(i, col, table_item(value))
+        fit_table_columns_to_contents(table)
+        totals = self.expense_service.other_totals()
+        total = float(totals.get("total", 0.0) or 0.0)
+        by_category = totals.get("by_category", {})
+        parts = [f"{name}: ₹{float(amount):.2f}" for name, amount in by_category.items()]
+        details = " | ".join(parts) if parts else "No expense entries yet."
+        if hasattr(self, "_other_totals_label"):
+            self._other_totals_label.setText(f"Total: ₹{total:.2f} — {details}")
+
+    def _on_add_other_expense_clicked(self) -> None:
+        try:
+            amount = float((self._other_amount.text() or "").strip() or 0.0)
+            category = self._other_category.currentText()
+            qd = self._other_date.date()
+            expense_date = date(qd.year(), qd.month(), qd.day())
+            description = (self._other_description.text() or "").strip()
+            notes = (self._other_notes.text() or "").strip()
+            self.expense_service.add_other_expense(
+                category,
+                amount,
+                expense_date=expense_date,
+                description=description,
+                notes=notes,
+            )
+        except ValueError as e:
+            theme.message_warning(self, "Invalid expense", str(e))
+            return
+        except Exception as e:
+            self.session.rollback()
+            theme.message_critical(self, "Expense save failed", str(e))
+            return
+
+        self._other_amount.clear()
+        self._other_description.clear()
+        self._other_notes.clear()
+        self._refresh_other_expense_table()
+        theme.message_information(self, "Saved", "Other expense entry saved.")
 
     def _clear_list_selection(self, list_widget: QListWidget | None) -> None:
         if list_widget is None:
@@ -1254,7 +1655,11 @@ class MainWindow(QMainWindow):
         if reset_page:
             self._payment_history_page = 0
         search = self._payment_history_filter.text() if hasattr(self, "_payment_history_filter") else ""
-        self._payment_history_cache = self.payment_service.list_payment_history(limit=50000, search=search)
+        self._payment_history_cache = self.payment_service.list_payment_history(
+            limit=50000,
+            search=search,
+            include_reverted=True,
+        )
         self._render_payment_history_page()
 
     def _render_payment_history_page(self):
@@ -1264,6 +1669,7 @@ class MainWindow(QMainWindow):
         tbl = self._payment_history_table
         tbl.setRowCount(len(rows))
         for i, r in enumerate(rows):
+            is_reverted = bool(r.get("is_reverted", False))
             d = r["payment_date"]
             date_s = f"{d.day:02d}/{d.month:02d}/{d.year}" if d else ""
             tbl.setItem(i, 0, QTableWidgetItem(date_s))
@@ -1274,14 +1680,26 @@ class MainWindow(QMainWindow):
             tbl.setItem(i, 5, QTableWidgetItem(f"{float(r['discount']):.2f}"))
             tbl.setItem(i, 6, QTableWidgetItem(str(r["mode"])))
             tbl.setItem(i, 7, QTableWidgetItem(str(r["operator"])))
+            tbl.setItem(i, 8, QTableWidgetItem(str(r.get("status") or "Paid")))
             print_btn = QPushButton("Print Receipt")
             style_fee_action_button(print_btn, width=fee_action_button_width(print_btn, min_width=118))
             print_btn.clicked.connect(
                 lambda _=False, payment_row=dict(r): self._on_payment_history_print_receipt(payment_row)
             )
-            tbl.setCellWidget(i, 8, print_btn)
+            tbl.setCellWidget(i, 9, print_btn)
+            undo_btn = QPushButton("Undo")
+            style_fee_action_button(undo_btn, width=fee_action_button_width(undo_btn, min_width=92))
+            if bool(r.get("is_reverted", False)):
+                undo_btn.setText("Reverted")
+                undo_btn.setEnabled(False)
+            else:
+                undo_btn.clicked.connect(
+                    lambda _=False, payment_row=dict(r): self._on_payment_history_undo_payment(payment_row)
+                )
+            tbl.setCellWidget(i, 10, undo_btn)
         tbl.resizeColumnsToContents()
-        tbl.setColumnWidth(8, max(tbl.columnWidth(8), 142))
+        tbl.setColumnWidth(9, max(tbl.columnWidth(9), 142))
+        tbl.setColumnWidth(10, max(tbl.columnWidth(10), 116))
         if hasattr(self, "_payment_history_pagination"):
             self._payment_history_pagination.update_state(
                 self._payment_history_page, len(self._payment_history_cache)
@@ -1336,6 +1754,43 @@ class MainWindow(QMainWindow):
             self,
             "Receipt saved",
             f"Receipt saved to:\n{path}",
+        )
+
+    def _on_payment_history_undo_payment(self, payment_row: dict) -> None:
+        if bool(payment_row.get("is_reverted", False)):
+            theme.message_information(self, "Already reverted", "This payment is already reverted.")
+            return
+        reference_no = str(payment_row.get("reference_no") or "")
+        if not reference_no:
+            theme.message_warning(self, "Missing reference", "Cannot undo payment without a reference number.")
+            return
+        reply = theme.message_question(
+            self,
+            "Confirm undo payment",
+            f"Undo payment reference “{reference_no}”?\n\n"
+            "This will revert the payment impact on fees and discount, and keep the payment row "
+            "in history with status “Payment reverted”.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            payment = self.payment_service.undo_payment(reference_no)
+        except Exception as e:
+            self.session.rollback()
+            theme.message_critical(self, "Undo payment failed", str(e))
+            return
+
+        self._refresh_payment_history_table(reset_page=False)
+        self.perform_search(reset_page=False)
+        self._invalidate_payment_student_cache()
+        pay_date = self._payment_record_date(getattr(payment, "payment_date", None))
+        self._refresh_dashboard(chart_date=pay_date)
+        theme.message_information(
+            self,
+            "Payment reverted",
+            f"Payment {reference_no} has been reverted and marked as “Payment reverted”.",
         )
 
     def _payment_history_change_page(self, delta: int):
@@ -1592,9 +2047,22 @@ class MainWindow(QMainWindow):
         tab = self._student_details_tab
         if tab is None:
             return
+        due = self.payment_service.get_student_due_breakdown(student.id)
+        roll = str(getattr(student, "student_id", None) or "")
+        recent = [
+            p
+            for p in self.payment_service.list_payment_history(
+                limit=2000,
+                search=roll,
+                include_reverted=True,
+            )
+            if str(p.get("student_roll") or "") == roll
+        ][:8]
         tab.show_detail(
             {
                 "student": student,
+                "due": due,
+                "recent_payments": recent,
             }
         )
 

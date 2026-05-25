@@ -29,6 +29,43 @@ def apply_sqlite_column_migrations(engine) -> None:
                 """
             )
         )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS faculty_salaries (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    faculty_name VARCHAR(120) NOT NULL UNIQUE,
+                    role VARCHAR(80) NOT NULL DEFAULT '',
+                    monthly_salary REAL NOT NULL,
+                    default_working_days INTEGER NOT NULL DEFAULT 26,
+                    is_active BOOLEAN NOT NULL DEFAULT 1,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS expenses (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    expense_type VARCHAR(20) NOT NULL,
+                    category VARCHAR(80) NOT NULL,
+                    person_name VARCHAR(120) NOT NULL DEFAULT '',
+                    description VARCHAR(240) NOT NULL DEFAULT '',
+                    amount REAL NOT NULL,
+                    expense_date DATE NOT NULL,
+                    month_label VARCHAR(20) NOT NULL DEFAULT '',
+                    attendance_days REAL NOT NULL DEFAULT 0.0,
+                    working_days REAL NOT NULL DEFAULT 0.0,
+                    base_amount REAL NOT NULL DEFAULT 0.0,
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at DATETIME
+                )
+                """
+            )
+        )
 
     insp = inspect(engine)
     if not insp.has_table("students"):
@@ -62,6 +99,22 @@ def apply_sqlite_column_migrations(engine) -> None:
                 conn.execute(
                     text("ALTER TABLE payments ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0.0")
                 )
+            if "school_amount" not in pay_cols:
+                conn.execute(
+                    text("ALTER TABLE payments ADD COLUMN school_amount REAL NOT NULL DEFAULT 0.0")
+                )
+            if "van_amount" not in pay_cols:
+                conn.execute(
+                    text("ALTER TABLE payments ADD COLUMN van_amount REAL NOT NULL DEFAULT 0.0")
+                )
+            if "is_reverted" not in pay_cols:
+                conn.execute(
+                    text("ALTER TABLE payments ADD COLUMN is_reverted BOOLEAN NOT NULL DEFAULT 0")
+                )
+            if "reverted_at" not in pay_cols:
+                conn.execute(
+                    text("ALTER TABLE payments ADD COLUMN reverted_at DATETIME")
+                )
             if "reference_no" not in pay_cols:
                 conn.execute(text("ALTER TABLE payments ADD COLUMN reference_no VARCHAR(16)"))
 
@@ -71,6 +124,26 @@ def apply_sqlite_column_migrations(engine) -> None:
             if "academic_year_id" not in inv_cols:
                 conn.execute(
                     text("ALTER TABLE invoices ADD COLUMN academic_year_id INTEGER REFERENCES academic_years(id)")
+                )
+
+    if insp.has_table("expenses"):
+        exp_cols = {c["name"] for c in insp.get_columns("expenses")}
+        with engine.begin() as conn:
+            if "month_label" not in exp_cols:
+                conn.execute(
+                    text("ALTER TABLE expenses ADD COLUMN month_label VARCHAR(20) NOT NULL DEFAULT ''")
+                )
+            if "attendance_days" not in exp_cols:
+                conn.execute(
+                    text("ALTER TABLE expenses ADD COLUMN attendance_days REAL NOT NULL DEFAULT 0.0")
+                )
+            if "working_days" not in exp_cols:
+                conn.execute(
+                    text("ALTER TABLE expenses ADD COLUMN working_days REAL NOT NULL DEFAULT 0.0")
+                )
+            if "base_amount" not in exp_cols:
+                conn.execute(
+                    text("ALTER TABLE expenses ADD COLUMN base_amount REAL NOT NULL DEFAULT 0.0")
                 )
 
 
@@ -234,10 +307,14 @@ def _sqlite_rebuild_payments_strip_receipt(conn) -> None:
                 student_id_fk INTEGER NOT NULL,
                 payment_date DATE NOT NULL,
                 amount FLOAT NOT NULL,
+                school_amount REAL NOT NULL DEFAULT 0.0,
+                van_amount REAL NOT NULL DEFAULT 0.0,
                 discount_amount REAL NOT NULL DEFAULT 0.0,
                 mode VARCHAR(20) NOT NULL,
                 reference_no VARCHAR(16) NOT NULL,
                 operator_name VARCHAR(60) NOT NULL,
+                is_reverted BOOLEAN NOT NULL DEFAULT 0,
+                reverted_at DATETIME,
                 PRIMARY KEY (id),
                 FOREIGN KEY (student_id_fk) REFERENCES students (id)
             )
@@ -272,18 +349,23 @@ def _sqlite_rebuild_payments_strip_receipt(conn) -> None:
         inserted_refs.add(ref_s)
         conn.execute(
             text(
-                "INSERT INTO payments (id, student_id_fk, payment_date, amount, discount_amount, mode, reference_no, operator_name) "
-                "VALUES (:id, :sid, :pdate, :amt, :disc, :mode, :ref, :op)"
+                "INSERT INTO payments "
+                "(id, student_id_fk, payment_date, amount, school_amount, van_amount, discount_amount, mode, reference_no, operator_name, is_reverted, reverted_at) "
+                "VALUES (:id, :sid, :pdate, :amt, :school, :van, :disc, :mode, :ref, :op, :reverted, :rev_at)"
             ),
             {
                 "id": pid,
                 "sid": sid,
                 "pdate": pdate,
                 "amt": amt,
+                "school": 0.0,
+                "van": 0.0,
                 "disc": disc,
                 "mode": mode,
                 "ref": ref_s,
                 "op": op,
+                "reverted": 0,
+                "rev_at": None,
             },
         )
 

@@ -136,6 +136,13 @@ class HomePageTab(QWidget):
         self._rev_legend.append((dot, lbl))
         legend.addWidget(dot)
         legend.addWidget(lbl)
+        dot_reverted = QLabel("●")
+        dot_reverted.setProperty("chart_color", "danger")
+        lbl_reverted = QLabel("Amount Reverted")
+        self._rev_legend.append((dot_reverted, lbl_reverted))
+        legend.addSpacing(10)
+        legend.addWidget(dot_reverted)
+        legend.addWidget(lbl_reverted)
         legend.addStretch(1)
         rev_header.addLayout(legend)
         revenue_card.body.addLayout(rev_header)
@@ -167,10 +174,15 @@ class HomePageTab(QWidget):
         if raw is None:
             raw = daily.get("collected")
         amounts = list(raw or [])
+        reverted_amounts = list(daily.get("reverted_amounts") or [])
         self._rev_month_lbl.setText(
-            f"Daily collections — {month_label}" if month_label else "Daily collections"
+            f"Daily collections and reversals — {month_label}" if month_label else "Daily collections and reversals"
         )
-        self._revenue_chart.set_daily_collections(amounts, month_label=month_label)
+        self._revenue_chart.set_daily_collections(
+            amounts,
+            month_label=month_label,
+            reverted_amounts=reverted_amounts,
+        )
 
     def _load_chart_from_backend(self, year: int, month: int) -> None:
         self._chart_year = year
@@ -207,7 +219,8 @@ class HomePageTab(QWidget):
         )
         self._rev_month_lbl.setStyleSheet(f"color: {t.text_muted}; font-size: 11px;")
         for dot, lbl in self._rev_legend:
-            color = dot.property("chart_color") or ORANGE
+            color_prop = dot.property("chart_color")
+            color = t.danger if color_prop == "danger" else (color_prop or ORANGE)
             dot.setStyleSheet(f"color: {color}; font-size: 10px;")
             lbl.setStyleSheet(f"color: {t.text_secondary}; font-size: 11px;")
         for card in self._cards:
