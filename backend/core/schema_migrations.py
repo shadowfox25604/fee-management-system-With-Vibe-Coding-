@@ -35,6 +35,7 @@ def apply_sqlite_column_migrations(engine) -> None:
                 CREATE TABLE IF NOT EXISTS faculty_salaries (
                     id INTEGER NOT NULL PRIMARY KEY,
                     faculty_name VARCHAR(120) NOT NULL UNIQUE,
+                    faculty_type VARCHAR(20) NOT NULL DEFAULT 'Teaching',
                     role VARCHAR(80) NOT NULL DEFAULT '',
                     monthly_salary REAL NOT NULL,
                     default_working_days INTEGER NOT NULL DEFAULT 26,
@@ -62,6 +63,25 @@ def apply_sqlite_column_migrations(engine) -> None:
                     base_amount REAL NOT NULL DEFAULT 0.0,
                     notes TEXT NOT NULL DEFAULT '',
                     created_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS faculty_attendance (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    faculty_id_fk INTEGER NOT NULL REFERENCES faculty_salaries(id),
+                    month_label VARCHAR(20) NOT NULL,
+                    marked_days_csv TEXT NOT NULL DEFAULT '',
+                    checked_days INTEGER NOT NULL DEFAULT 0,
+                    sunday_days INTEGER NOT NULL DEFAULT 0,
+                    attendance_days REAL NOT NULL DEFAULT 0.0,
+                    working_days REAL NOT NULL DEFAULT 0.0,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    CONSTRAINT uq_faculty_attendance_month UNIQUE (faculty_id_fk, month_label)
                 )
                 """
             )
@@ -124,6 +144,40 @@ def apply_sqlite_column_migrations(engine) -> None:
             if "academic_year_id" not in inv_cols:
                 conn.execute(
                     text("ALTER TABLE invoices ADD COLUMN academic_year_id INTEGER REFERENCES academic_years(id)")
+                )
+
+    if insp.has_table("faculty_salaries"):
+        fac_cols = {c["name"] for c in insp.get_columns("faculty_salaries")}
+        with engine.begin() as conn:
+            if "faculty_type" not in fac_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE faculty_salaries ADD COLUMN faculty_type VARCHAR(20) NOT NULL DEFAULT 'Teaching'"
+                    )
+                )
+
+    if insp.has_table("faculty_attendance"):
+        att_cols = {c["name"] for c in insp.get_columns("faculty_attendance")}
+        with engine.begin() as conn:
+            if "marked_days_csv" not in att_cols:
+                conn.execute(
+                    text("ALTER TABLE faculty_attendance ADD COLUMN marked_days_csv TEXT NOT NULL DEFAULT ''")
+                )
+            if "checked_days" not in att_cols:
+                conn.execute(
+                    text("ALTER TABLE faculty_attendance ADD COLUMN checked_days INTEGER NOT NULL DEFAULT 0")
+                )
+            if "sunday_days" not in att_cols:
+                conn.execute(
+                    text("ALTER TABLE faculty_attendance ADD COLUMN sunday_days INTEGER NOT NULL DEFAULT 0")
+                )
+            if "attendance_days" not in att_cols:
+                conn.execute(
+                    text("ALTER TABLE faculty_attendance ADD COLUMN attendance_days REAL NOT NULL DEFAULT 0.0")
+                )
+            if "working_days" not in att_cols:
+                conn.execute(
+                    text("ALTER TABLE faculty_attendance ADD COLUMN working_days REAL NOT NULL DEFAULT 0.0")
                 )
 
     if insp.has_table("expenses"):

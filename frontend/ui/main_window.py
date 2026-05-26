@@ -1,3 +1,4 @@
+import calendar
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -5,7 +6,10 @@ from PySide6.QtCore import QDate, QEasingCurve, QPropertyAnimation, Qt, QTimer
 from PySide6.QtGui import QColor, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QComboBox,
+    QCheckBox,
+    QCalendarWidget,
     QDateEdit,
     QDialog,
     QDialogButtonBox,
@@ -13,6 +17,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGraphicsOpacityEffect,
     QGroupBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -22,6 +27,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QHeaderView,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QTableWidget,
@@ -48,6 +54,7 @@ from backend.services.payment_service import PaymentService
 from backend.services.report_service import ReportService
 from backend.services.student_service import StudentService
 from frontend.ui.academic_year_dialog import AcademicYearDialog
+from frontend.ui.add_faculty_page import AddFacultyPage
 from frontend.ui.add_student_page import AddStudentPage
 from frontend.ui.app_shell import AppShell
 from frontend.ui.school_branding import (
@@ -154,6 +161,10 @@ class MainWindow(QMainWindow):
         self._report_defaulter_rows: list = []
         self._payment_history_page = 0
         self._payment_history_cache: list = []
+        self._salary_assignments_page = 0
+        self._salary_assignments_cache: list = []
+        self._salary_assignments_page_size = 15
+        self._salary_selected_faculty_id: int | None = None
         self._all_payment_students = None
         self._details_page_index = 0
         self._details_filtered_ids: list[int] = []
@@ -180,6 +191,7 @@ class MainWindow(QMainWindow):
             "Payment History",
             "Salary",
             "Other",
+            "Add Faculty",
             "Add Student",
             "Reports",
             "Backup",
@@ -193,6 +205,7 @@ class MainWindow(QMainWindow):
             self._build_payment_history_tab,
             self._build_salary_tab,
             self._build_other_expense_tab,
+            self._build_add_faculty_tab,
             self._build_add_student_tab,
             self._build_reports_tab,
             self._build_backup_tab,
@@ -210,6 +223,8 @@ class MainWindow(QMainWindow):
                 self._salary_tab_index = idx
             if key == "Other":
                 self._other_expense_tab_index = idx
+            if key == "Add Faculty":
+                self._add_faculty_tab_index = idx
         self._shell.page_changed.connect(self._on_main_tab_changed)
         theme.ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
         self.setCentralWidget(self._shell)
@@ -260,6 +275,9 @@ class MainWindow(QMainWindow):
         add_page = getattr(self, "_add_student_page", None)
         if add_page is not None:
             add_page.refresh_theme()
+        add_faculty_page = getattr(self, "_add_faculty_page", None)
+        if add_faculty_page is not None:
+            add_faculty_page.refresh_theme()
         details = getattr(self, "_student_details_tab", None)
         if details is not None:
             details.refresh_theme()
@@ -275,12 +293,14 @@ class MainWindow(QMainWindow):
             getattr(self, "_create_backup_btn", None),
             getattr(self, "_restore_backup_btn", None),
             getattr(self, "_manage_years_btn", None),
-            getattr(self, "_salary_assign_btn", None),
-            getattr(self, "_salary_calculate_btn", None),
+            getattr(self, "_salary_refresh_btn", None),
+            getattr(self, "_salary_open_window_btn", None),
+            getattr(self, "_add_faculty_submit_btn", None),
             getattr(self, "_other_add_btn", None),
         ):
             if btn is not None:
                 style_fee_action_button(btn, width=btn.width() if btn.width() > 0 else None)
+        self._refresh_salary_list_style()
         for pane_id in self._payment_panes:
             self._refresh_payment_pane_visuals(pane_id)
         for btn in self.findChildren(QPushButton):
@@ -521,6 +541,7 @@ class MainWindow(QMainWindow):
             "_search_pagination",
             "_details_pagination",
             "_payment_history_pagination",
+            "_salary_assignments_pagination",
         ):
             bar = getattr(self, attr, None)
             if bar is not None:
@@ -854,6 +875,19 @@ class MainWindow(QMainWindow):
         self._refresh_payment_pane_visuals(pane_id)
         self._set_payment_preview_idle(self._payment_panes[pane_id])
         return w
+    def _build_add_faculty_tab(self):
+        page = AddFacultyPage(parent=self)
+        self._add_faculty_page = page
+        self.add_faculty_name = page.faculty_name
+        self.add_faculty_type = page.faculty_type
+        self.add_faculty_role = page.role
+        self.add_faculty_monthly_salary = page.monthly_salary
+        self.add_faculty_default_working_days = page.default_working_days
+        self.add_faculty_status = page.status
+        self._add_faculty_submit_btn = page.submit_btn
+        page.submit_btn.clicked.connect(self.add_faculty)
+        return page
+
     def _build_add_student_tab(self):
         page = AddStudentPage(self._populate_village_combo, parent=self)
         self._add_student_page = page
@@ -888,6 +922,16 @@ class MainWindow(QMainWindow):
         return s if s in FIXED_SECTION_KEYS else None
 
     @staticmethod
+    def _default_working_days_for_month(year: int, month: int) -> int:
+        days_in_month = calendar.monthrange(year, month)[1]
+        sunday_count = sum(
+            1
+            for day_num in range(1, days_in_month + 1)
+            if date(year, month, day_num).weekday() == 6
+        )
+        return max(1, days_in_month - sunday_count)
+
+    @staticmethod
     def _select_combo_value(combo: QComboBox, value: str | None, *, canonical=None) -> None:
         """Select combo item; optional canonical() maps legacy text to a list key."""
         raw = (value or "").strip()
@@ -904,6 +948,119 @@ class MainWindow(QMainWindow):
         idx = combo.findText(raw, Qt.MatchFixedString)
         if idx >= 0:
             combo.setCurrentIndex(idx)
+
+    def _refresh_salary_list_style(self) -> None:
+        t = theme.current_tokens()
+        list_widget = getattr(self, "_salary_faculty_list", None)
+        if list_widget is not None:
+            list_widget.setStyleSheet(
+                f"""
+                QListWidget {{
+                    background: {t.bg_surface};
+                    color: {t.text_primary};
+                    border: 1px solid {t.border};
+                    border-radius: 12px;
+                    padding: 6px;
+                    outline: none;
+                }}
+                QListWidget::item {{
+                    color: {t.text_primary};
+                    border: 1px solid transparent;
+                    border-radius: 8px;
+                    margin: 2px;
+                    padding: 10px 12px;
+                }}
+                QListWidget::item:hover {{
+                    background: {t.bg_hover};
+                    border-color: {t.border_light};
+                }}
+                QListWidget::item:selected {{
+                    background: {t.primary_soft};
+                    border-color: {t.primary_light};
+                    color: {t.text_primary};
+                }}
+                """
+            )
+        for card in self.findChildren(QWidget):
+            if card.objectName() == "salaryStatCard":
+                card.setStyleSheet(
+                    f"QWidget#salaryStatCard {{ background: {t.bg_surface}; border: 1px solid {t.border}; border-radius: 12px; }}"
+                )
+
+    def _create_salary_stat_card(self, title: str) -> tuple[QWidget, QLabel]:
+        card = QWidget()
+        card.setObjectName("salaryStatCard")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(4)
+        title_lbl = QLabel(title)
+        title_lbl.setProperty("role", "muted")
+        value_lbl = QLabel("—")
+        value_lbl.setProperty("role", "section-title")
+        lay.addWidget(title_lbl)
+        lay.addWidget(value_lbl)
+        t = theme.current_tokens()
+        card.setStyleSheet(
+            f"QWidget#salaryStatCard {{ background: {t.bg_surface}; border: 1px solid {t.border}; border-radius: 12px; }}"
+        )
+        return card, value_lbl
+
+    def _style_salary_status_badge(self, status_text: str) -> None:
+        badge = getattr(self, "_salary_lbl_status", None)
+        if badge is None:
+            return
+        t = theme.current_tokens()
+        status_value = (status_text or "").strip().lower()
+        if status_value == "active":
+            bg = t.primary_soft
+            fg = t.success
+        elif status_value == "inactive":
+            bg = t.bg_section_header
+            fg = t.text_secondary
+        else:
+            bg = t.bg_section_header
+            fg = t.text_primary
+        badge.setText(status_text or "—")
+        badge.setStyleSheet(
+            f"background: {bg}; color: {fg}; padding: 4px 10px; border-radius: 10px; font-weight: 700;"
+        )
+
+    def _clear_salary_detail_panel(self) -> None:
+        if hasattr(self, "_salary_profile_card"):
+            self._salary_profile_card.set_student("No faculty selected", "—", "—")
+        if hasattr(self, "_salary_detail_heading"):
+            self._salary_detail_heading.setText("No faculty selected")
+        if hasattr(self, "_salary_detail_hint"):
+            self._salary_detail_hint.setText("Select a faculty member from the left panel to view details.")
+        for attr in (
+            "_salary_lbl_name",
+            "_salary_lbl_type",
+            "_salary_lbl_role",
+            "_salary_lbl_monthly",
+            "_salary_lbl_working",
+            "_salary_lbl_created",
+            "_salary_attendance_month_value",
+            "_salary_attendance_checked_value",
+            "_salary_attendance_sunday_value",
+            "_salary_attendance_total_value",
+            "_salary_attendance_working_value",
+            "_salary_stat_total_paid",
+            "_salary_stat_entries",
+            "_salary_stat_last_paid",
+            "_salary_stat_month",
+        ):
+            lbl = getattr(self, attr, None)
+            if lbl is not None:
+                lbl.setText("—")
+        self._style_salary_status_badge("—")
+        if hasattr(self, "_salary_total_label"):
+            self._salary_total_label.setText("Total paid: ₹0.00")
+        table = getattr(self, "_salary_history_table", None)
+        if table is not None:
+            table.setRowCount(0)
+        open_btn = getattr(self, "_salary_open_window_btn", None)
+        if open_btn is not None:
+            open_btn.setEnabled(False)
 
     def _build_reports_tab(self):
         body = QWidget()
@@ -1171,6 +1328,18 @@ class MainWindow(QMainWindow):
         tab_name = self._tab_names[index] if 0 <= index < len(self._tab_names) else ""
         if tab_name == "Add Student":
             self._populate_village_combo(self.add_student_village)
+        if index == getattr(self, "_add_faculty_tab_index", -1):
+            page = getattr(self, "_add_faculty_page", None)
+            if page is not None:
+                has_user_input = any(
+                    [
+                        bool((page.faculty_name.text() or "").strip()),
+                        bool((page.role.text() or "").strip()),
+                        bool((page.monthly_salary.text() or "").strip()),
+                    ]
+                )
+                if not has_user_input:
+                    page.sync_default_working_days_current_month()
         if index == getattr(self, "_fee_control_tab_index", -1):
             self._refresh_fee_control_amounts()
             self._refresh_van_fee_control_amounts()
@@ -1251,168 +1420,422 @@ class MainWindow(QMainWindow):
 
     def _build_salary_tab(self):
         body = QWidget()
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        root = QHBoxLayout(body)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(14)
 
-        intro = QLabel(
-            "Assign monthly faculty salaries, then calculate payable salaries using attendance."
+        left = SurfaceCard()
+        left.setMinimumWidth(460)
+        left.setMaximumWidth(560)
+        left.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        ll = left.body
+        ll.setSpacing(14)
+
+        title = QLabel("Find faculty")
+        title.setProperty("role", "section-title")
+        title_hint = QLabel("Search and pick a faculty profile to view salary details and attendance snapshot.")
+        title_hint.setProperty("role", "muted")
+        title_hint.setWordWrap(True)
+        ll.addWidget(title)
+        ll.addWidget(title_hint)
+
+        badge_row = QHBoxLayout()
+        badge_row.setSpacing(8)
+        self._salary_total_faculty_label = QLabel("Total faculty: 0")
+        self._salary_teaching_label = QLabel("Teaching: 0")
+        self._salary_non_teaching_label = QLabel("Non Teaching: 0")
+        for badge in (
+            self._salary_total_faculty_label,
+            self._salary_teaching_label,
+            self._salary_non_teaching_label,
+        ):
+            badge.setProperty("role", "muted")
+            badge_row.addWidget(badge)
+        badge_row.addStretch(1)
+        ll.addLayout(badge_row)
+
+        tool = QHBoxLayout()
+        tool.setSpacing(8)
+        self._salary_refresh_btn = QPushButton("Refresh")
+        style_fee_action_button(self._salary_refresh_btn)
+        self._salary_refresh_btn.clicked.connect(self._on_salary_assignments_refresh_clicked)
+        tool.addWidget(self._salary_refresh_btn)
+        tool.addWidget(QLabel("Search by"))
+        self._salary_search_by = QComboBox()
+        self._salary_search_by.addItem("Name", "name")
+        self._salary_search_by.addItem("Role / Designation", "role")
+        self._salary_search_by.currentIndexChanged.connect(self._on_salary_assignments_filter_changed)
+        tool.addWidget(self._salary_search_by, 1)
+        ll.addLayout(tool)
+
+        self._salary_filter_search = QLineEdit()
+        self._salary_filter_search.setPlaceholderText("Enter faculty name")
+        self._salary_filter_search.setClearButtonEnabled(True)
+        self._salary_filter_search.textChanged.connect(self._on_salary_assignments_filter_changed)
+        ll.addWidget(self._salary_filter_search)
+
+        meta_row = QHBoxLayout()
+        self._salary_match_count_label = QLabel("0 faculty match")
+        self._salary_match_count_label.setProperty("role", "muted")
+        self._salary_selection_hint = QLabel("Select a faculty from the list")
+        self._salary_selection_hint.setProperty("role", "hint")
+        meta_row.addWidget(self._salary_match_count_label)
+        meta_row.addStretch(1)
+        meta_row.addWidget(self._salary_selection_hint)
+        ll.addLayout(meta_row)
+
+        type_filter_row = QHBoxLayout()
+        type_filter_row.setSpacing(14)
+        type_filter_row.addWidget(QLabel("Category"))
+        self._salary_filter_type_group = QButtonGroup(self)
+        self._salary_filter_type_all = QRadioButton("All")
+        self._salary_filter_type_non_teaching = QRadioButton("Non Teaching")
+        self._salary_filter_type_teaching = QRadioButton("Teaching")
+        self._salary_filter_type_group.addButton(self._salary_filter_type_all, 0)
+        self._salary_filter_type_group.addButton(self._salary_filter_type_non_teaching, 1)
+        self._salary_filter_type_group.addButton(self._salary_filter_type_teaching, 2)
+        self._salary_filter_type_all.setChecked(True)
+        for radio in (
+            self._salary_filter_type_all,
+            self._salary_filter_type_non_teaching,
+            self._salary_filter_type_teaching,
+        ):
+            radio.toggled.connect(self._on_salary_assignments_filter_changed)
+            type_filter_row.addWidget(radio)
+        type_filter_row.addStretch(1)
+        ll.addLayout(type_filter_row)
+
+        self._salary_faculty_list = QListWidget()
+        self._salary_faculty_list.setSpacing(4)
+        self._salary_faculty_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._salary_faculty_list.itemSelectionChanged.connect(self._on_salary_assignment_selected)
+        ll.addWidget(self._salary_faculty_list, 1)
+
+        self._salary_assignments_pagination = PaginationBar(
+            lambda: self._salary_assignments_change_page(-1),
+            lambda: self._salary_assignments_change_page(1),
+            green_style=True,
         )
-        intro.setProperty("role", "hint")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
+        self._salary_assignments_pagination.refresh_theme()
+        ll.addWidget(self._salary_assignments_pagination)
+        root.addWidget(left, 6)
 
-        assign_card = SurfaceCard()
-        assign_card.body.addWidget(CardTitleBar("1) Assign faculty salaries"))
-        assign_row = QHBoxLayout()
-        self._salary_faculty_name = QLineEdit()
-        self._salary_faculty_name.setPlaceholderText("Faculty name")
-        self._salary_role = QLineEdit()
-        self._salary_role.setPlaceholderText("Role / designation")
-        self._salary_monthly_salary = QLineEdit()
-        self._salary_monthly_salary.setPlaceholderText("Monthly salary (₹)")
-        self._salary_default_working_days = QLineEdit()
-        self._salary_default_working_days.setPlaceholderText("Working days (default 26)")
-        self._salary_assign_btn = QPushButton("Assign / Update")
-        style_fee_action_button(self._salary_assign_btn)
-        self._salary_assign_btn.clicked.connect(self._on_salary_assign_clicked)
-        assign_row.addWidget(self._salary_faculty_name, 2)
-        assign_row.addWidget(self._salary_role, 2)
-        assign_row.addWidget(self._salary_monthly_salary, 1)
-        assign_row.addWidget(self._salary_default_working_days, 1)
-        assign_row.addWidget(self._salary_assign_btn)
-        assign_card.body.addLayout(assign_row)
-        self._salary_assignments_table = QTableWidget(0, 5)
-        self._salary_assignments_table.setHorizontalHeaderLabels(
-            ["Faculty", "Role", "Monthly Salary (₹)", "Working Days", "Status"]
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._salary_detail_body = QWidget()
+        self._salary_detail_body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        dl = QVBoxLayout(self._salary_detail_body)
+        dl.setContentsMargins(0, 0, 0, 4)
+        dl.setSpacing(16)
+
+        self._salary_detail_heading = QLabel("No faculty selected")
+        self._salary_detail_heading.setProperty("role", "section-title")
+        self._salary_detail_hint = QLabel("Select a faculty member from the left panel to view details.")
+        self._salary_detail_hint.setProperty("role", "muted")
+        self._salary_detail_hint.setWordWrap(True)
+        dl.addWidget(self._salary_detail_heading)
+        dl.addWidget(self._salary_detail_hint)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(14)
+        self._salary_profile_card = GradientProfileCard("—", "—", "—", show_action=False)
+        self._salary_profile_card.setFixedWidth(306)
+        top_row.addWidget(self._salary_profile_card)
+
+        overview_card = SurfaceCard()
+        overview_card.body.addWidget(CardTitleBar("Faculty overview"))
+        overview_form = QFormLayout()
+        overview_form.setHorizontalSpacing(16)
+        overview_form.setVerticalSpacing(8)
+        self._salary_lbl_name = QLabel("—")
+        self._salary_lbl_type = QLabel("—")
+        self._salary_lbl_role = QLabel("—")
+        self._salary_lbl_monthly = QLabel("—")
+        self._salary_lbl_working = QLabel("—")
+        self._salary_lbl_status = QLabel("—")
+        self._salary_lbl_created = QLabel("—")
+        self._salary_lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._salary_lbl_status.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._salary_lbl_status.setMinimumWidth(84)
+        self._salary_lbl_status.setMaximumWidth(124)
+        overview_form.addRow("Faculty name", self._salary_lbl_name)
+        overview_form.addRow("Category", self._salary_lbl_type)
+        overview_form.addRow("Role", self._salary_lbl_role)
+        overview_form.addRow("Monthly salary", self._salary_lbl_monthly)
+        overview_form.addRow("Working days", self._salary_lbl_working)
+        overview_form.addRow("Status", self._salary_lbl_status)
+        overview_form.addRow("Created at", self._salary_lbl_created)
+        overview_card.body.addLayout(overview_form)
+        top_row.addWidget(overview_card, 1)
+        top_row.setStretch(0, 4)
+        top_row.setStretch(1, 6)
+        dl.addLayout(top_row)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+        self._salary_open_window_btn = QPushButton("Open Faculty Window")
+        style_fee_action_button(self._salary_open_window_btn)
+        self._salary_open_window_btn.clicked.connect(self._on_salary_open_faculty_window_clicked)
+        action_row.addWidget(self._salary_open_window_btn)
+        action_row.addStretch(1)
+        dl.addLayout(action_row)
+
+        stats_row = QHBoxLayout()
+        stats_row.setSpacing(10)
+        card_total, self._salary_stat_total_paid = self._create_salary_stat_card("Total paid")
+        card_entries, self._salary_stat_entries = self._create_salary_stat_card("Salary entries")
+        card_last, self._salary_stat_last_paid = self._create_salary_stat_card("Last salary date")
+        card_month, self._salary_stat_month = self._create_salary_stat_card("Attendance month")
+        stats_row.addWidget(card_total, 1)
+        stats_row.addWidget(card_entries, 1)
+        stats_row.addWidget(card_last, 1)
+        stats_row.addWidget(card_month, 1)
+        dl.addLayout(stats_row)
+
+        middle_row = QHBoxLayout()
+        middle_row.setSpacing(14)
+
+        attendance_card = SurfaceCard()
+        attendance_card.body.addWidget(CardTitleBar("Attendance snapshot"))
+        attendance_form = QFormLayout()
+        attendance_form.setHorizontalSpacing(16)
+        attendance_form.setVerticalSpacing(8)
+        self._salary_snapshot_month_edit = QDateEdit(QDate.currentDate())
+        self._salary_snapshot_month_edit.setCalendarPopup(True)
+        self._salary_snapshot_month_edit.setDisplayFormat("MMMM yyyy")
+        self._salary_snapshot_month_edit.setDate(
+            QDate(QDate.currentDate().year(), QDate.currentDate().month(), 1)
         )
-        configure_scrollable_data_table(self._salary_assignments_table)
-        self._salary_assignments_table.setProperty("table_variant", "scrollable")
-        assign_card.body.addWidget(self._salary_assignments_table, 1)
-        layout.addWidget(assign_card, 1)
-
-        calc_card = SurfaceCard()
-        calc_card.body.addWidget(CardTitleBar("2) Calculate salary from attendance"))
-        calc_form = QFormLayout()
-        calc_form.setHorizontalSpacing(14)
-        calc_form.setVerticalSpacing(8)
-        self._salary_faculty_combo = QComboBox()
-        self._salary_faculty_combo.currentIndexChanged.connect(self._on_salary_faculty_changed)
-        self._salary_selected_details = QLabel("Select a faculty member.")
-        self._salary_selected_details.setProperty("role", "muted")
-        self._salary_attendance_days = QLineEdit()
-        self._salary_attendance_days.setPlaceholderText("Attendance days")
-        self._salary_working_days = QLineEdit()
-        self._salary_working_days.setPlaceholderText("Working days")
-        self._salary_month_label = QLineEdit(date.today().strftime("%Y-%m"))
-        self._salary_month_label.setPlaceholderText("Month label (YYYY-MM)")
-        self._salary_payment_date = QDateEdit(QDate.currentDate())
-        self._salary_payment_date.setCalendarPopup(True)
-        self._salary_payment_date.setDisplayFormat("dd/MM/yyyy")
-        self._salary_payment_date.setMaximumDate(QDate.currentDate())
-        self._salary_notes = QLineEdit()
-        self._salary_notes.setPlaceholderText("Notes (optional)")
-        calc_form.addRow("Faculty", self._salary_faculty_combo)
-        calc_form.addRow("Assigned details", self._salary_selected_details)
-        calc_form.addRow("Attendance days", self._salary_attendance_days)
-        calc_form.addRow("Working days", self._salary_working_days)
-        calc_form.addRow("Salary month", self._salary_month_label)
-        calc_form.addRow("Payment date", self._salary_payment_date)
-        calc_form.addRow("Notes", self._salary_notes)
-        calc_card.body.addLayout(calc_form)
-
-        self._salary_preview_label = QLabel("Payable amount: ₹0.00")
-        self._salary_preview_label.setProperty("role", "muted")
-        calc_card.body.addWidget(self._salary_preview_label)
-
-        calc_actions = QHBoxLayout()
-        calc_actions.addStretch(1)
-        self._salary_calculate_btn = QPushButton("Calculate + Save")
-        style_fee_action_button(self._salary_calculate_btn)
-        self._salary_calculate_btn.clicked.connect(self._on_salary_calculate_clicked)
-        calc_actions.addWidget(self._salary_calculate_btn)
-        calc_card.body.addLayout(calc_actions)
-        layout.addWidget(calc_card)
+        self._salary_snapshot_month_edit.dateChanged.connect(self._on_salary_snapshot_month_changed)
+        self._salary_attendance_month_value = QLabel("—")
+        self._salary_attendance_checked_value = QLabel("—")
+        self._salary_attendance_sunday_value = QLabel("—")
+        self._salary_attendance_total_value = QLabel("—")
+        self._salary_attendance_working_value = QLabel("—")
+        attendance_form.addRow("Snapshot month", self._salary_snapshot_month_edit)
+        attendance_form.addRow("Month label", self._salary_attendance_month_value)
+        attendance_form.addRow("Checked attendance", self._salary_attendance_checked_value)
+        attendance_form.addRow("Auto Sundays", self._salary_attendance_sunday_value)
+        attendance_form.addRow("Salary attendance", self._salary_attendance_total_value)
+        attendance_form.addRow("Total month days", self._salary_attendance_working_value)
+        attendance_card.body.addLayout(attendance_form)
+        attendance_hint = QLabel(
+            "Attendance is marked inside Faculty Window. Salary calculation happens there and is not saved from this page."
+        )
+        attendance_hint.setProperty("role", "hint")
+        attendance_hint.setWordWrap(True)
+        attendance_card.body.addWidget(attendance_hint)
+        middle_row.addWidget(attendance_card, 1)
+        dl.addLayout(middle_row)
 
         history_card = SurfaceCard()
-        history_card.body.addWidget(CardTitleBar("Salary payout history"))
-        self._salary_total_label = QLabel("Total salary paid: ₹0.00")
+        history_card.body.addWidget(CardTitleBar("Salary history (selected faculty)"))
+        self._salary_total_label = QLabel("Total paid: ₹0.00")
         self._salary_total_label.setProperty("role", "muted")
         history_card.body.addWidget(self._salary_total_label)
-        self._salary_history_table = QTableWidget(0, 7)
+        self._salary_history_table = QTableWidget(0, 6)
         self._salary_history_table.setHorizontalHeaderLabels(
-            ["Date", "Faculty", "Month", "Attendance/Days", "Base Salary (₹)", "Paid (₹)", "Notes"]
+            ["Date", "Month", "Attendance/Days", "Base Salary (₹)", "Paid (₹)", "Notes"]
         )
         configure_scrollable_data_table(self._salary_history_table)
         self._salary_history_table.setProperty("table_variant", "scrollable")
+        self._salary_history_table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.ResizeMode.Stretch
+        )
         history_card.body.addWidget(self._salary_history_table, 1)
-        layout.addWidget(history_card, 1)
+        dl.addWidget(history_card, 1)
 
-        self._refresh_salary_faculty_options()
-        self._refresh_salary_assignments_table()
-        self._refresh_salary_history_table()
+        scroll.setWidget(self._salary_detail_body)
+        root.addWidget(scroll, 7)
+
+        self._refresh_salary_list_style()
+        self._refresh_salary_assignments_table(reset_page=True)
+        self._clear_salary_detail_panel()
         return wrap_page(
-            "Salary Expenses",
+            "Salary",
             breadcrumb_trail("Expenses", "Salary"),
             body,
         )
 
     def _on_salary_faculty_changed(self, _=None) -> None:
-        faculty_id = self._salary_faculty_combo.currentData()
+        faculty_id = self._salary_selected_faculty_id
         if faculty_id is None:
-            self._salary_selected_details.setText("No faculty assigned yet.")
+            self._clear_salary_detail_panel()
             return
         faculty = self.expense_service.repo.get_faculty_salary(int(faculty_id))
         if faculty is None:
-            self._salary_selected_details.setText("Selected faculty was not found.")
+            self._salary_selected_faculty_id = None
+            self._clear_salary_detail_panel()
             return
-        self._salary_selected_details.setText(
-            f"Monthly ₹{float(faculty.monthly_salary):.2f} | Default working days {int(faculty.default_working_days)}"
+        self._salary_detail_heading.setText(f"{faculty.faculty_name} ({faculty.faculty_type})")
+        self._salary_detail_hint.setText("Faculty profile, attendance snapshot, and salary history overview.")
+        self._salary_profile_card.set_student(
+            str(faculty.faculty_name or "—"),
+            str(faculty.faculty_type or "—"),
+            str(faculty.role or "—"),
         )
-        if not (self._salary_working_days.text() or "").strip():
-            self._salary_working_days.setText(str(int(faculty.default_working_days)))
+        self._salary_lbl_name.setText(str(faculty.faculty_name or "—"))
+        self._salary_lbl_type.setText(str(faculty.faculty_type or "—"))
+        self._salary_lbl_role.setText(str(faculty.role or "—"))
+        self._salary_lbl_monthly.setText(f"₹{float(faculty.monthly_salary or 0.0):,.2f}")
+        self._salary_lbl_working.setText(str(int(faculty.default_working_days or 0)))
+        self._salary_lbl_created.setText(str(getattr(faculty, "created_at", "—") or "—"))
+        self._style_salary_status_badge(
+            "Active" if bool(getattr(faculty, "is_active", True)) else "Inactive"
+        )
+        self._salary_open_window_btn.setEnabled(True)
+        self._refresh_salary_attendance_snapshot()
+        self._refresh_salary_history_table()
+        self._animate_widget_fade(getattr(self, "_salary_detail_body", None), start=0.82, duration=190)
 
     def _refresh_salary_faculty_options(self) -> None:
-        if not hasattr(self, "_salary_faculty_combo"):
+        if not hasattr(self, "_salary_faculty_list"):
             return
-        current_id = self._salary_faculty_combo.currentData()
-        faculty_rows = self.expense_service.list_faculty_salaries(active_only=True)
-        self._salary_faculty_combo.blockSignals(True)
-        self._salary_faculty_combo.clear()
-        for row in faculty_rows:
-            self._salary_faculty_combo.addItem(str(row.faculty_name), int(row.id))
-        self._salary_faculty_combo.blockSignals(False)
-        if current_id is not None:
-            idx = self._salary_faculty_combo.findData(current_id)
-            if idx >= 0:
-                self._salary_faculty_combo.setCurrentIndex(idx)
-        self._salary_calculate_btn.setEnabled(self._salary_faculty_combo.count() > 0)
-        self._on_salary_faculty_changed()
+        self._refresh_salary_assignments_table(reset_page=False)
 
-    def _refresh_salary_assignments_table(self) -> None:
-        if not hasattr(self, "_salary_assignments_table"):
+    def _on_salary_assignments_refresh_clicked(self) -> None:
+        if hasattr(self, "_salary_filter_search"):
+            self._salary_filter_search.blockSignals(True)
+            self._salary_filter_search.clear()
+            self._salary_filter_search.blockSignals(False)
+        if hasattr(self, "_salary_filter_type_all"):
+            self._salary_filter_type_all.blockSignals(True)
+            self._salary_filter_type_all.setChecked(True)
+            self._salary_filter_type_all.blockSignals(False)
+        if hasattr(self, "_salary_search_by"):
+            self._salary_search_by.blockSignals(True)
+            self._salary_search_by.setCurrentIndex(0)
+            self._salary_search_by.blockSignals(False)
+        self._refresh_salary_assignments_table(reset_page=True)
+
+    def _on_salary_assignments_filter_changed(self, _=None) -> None:
+        self._refresh_salary_assignments_table(reset_page=True)
+
+    def _refresh_salary_assignments_table(self, _=None, *, reset_page: bool = False) -> None:
+        if not hasattr(self, "_salary_faculty_list"):
             return
-        rows = self.expense_service.list_faculty_salaries(active_only=False)
-        table = self._salary_assignments_table
-        table.setRowCount(len(rows))
+        if reset_page:
+            self._salary_assignments_page = 0
+        type_filter = None
+        if hasattr(self, "_salary_filter_type_teaching") and self._salary_filter_type_teaching.isChecked():
+            type_filter = "Teaching"
+        elif hasattr(self, "_salary_filter_type_non_teaching") and self._salary_filter_type_non_teaching.isChecked():
+            type_filter = "Non Teaching"
+        search_text = (self._salary_filter_search.text() or "").strip() if hasattr(
+            self, "_salary_filter_search"
+        ) else ""
+        search_mode = self._salary_search_by.currentData() if hasattr(self, "_salary_search_by") else "name"
+        rows = self.expense_service.list_faculty_salaries(
+            active_only=False,
+            faculty_type=type_filter,
+            search=None,
+        )
+        if search_text:
+            needle = search_text.lower()
+            if str(search_mode or "name").lower() == "role":
+                rows = [r for r in rows if needle in str(getattr(r, "role", "") or "").lower()]
+            else:
+                rows = [r for r in rows if needle in str(getattr(r, "faculty_name", "") or "").lower()]
+        self._salary_assignments_cache = list(rows or [])
+        if hasattr(self, "_salary_match_count_label"):
+            count = len(self._salary_assignments_cache)
+            self._salary_match_count_label.setText(f"{count} faculty match")
+        if hasattr(self, "_salary_selection_hint"):
+            self._salary_selection_hint.setText(
+                "Select a faculty from the list" if self._salary_assignments_cache else "No faculty match the filters."
+            )
+
+        all_rows = self.expense_service.list_faculty_salaries(active_only=False)
+        all_ids = {int(getattr(r, "id", 0)) for r in all_rows}
+        if self._salary_selected_faculty_id is not None and self._salary_selected_faculty_id not in all_ids:
+            self._salary_selected_faculty_id = None
+
+        pages = page_count(len(self._salary_assignments_cache), self._salary_assignments_page_size)
+        if self._salary_assignments_page >= pages:
+            self._salary_assignments_page = max(0, pages - 1)
+        self._render_salary_assignments_page()
+
+        teaching = sum(1 for r in all_rows if str(getattr(r, "faculty_type", "")).lower() == "teaching")
+        non_teaching = len(all_rows) - teaching
+        if hasattr(self, "_salary_total_faculty_label"):
+            self._salary_total_faculty_label.setText(f"Total faculty: {len(all_rows)}")
+            self._salary_teaching_label.setText(f"Teaching: {teaching}")
+            self._salary_non_teaching_label.setText(f"Non Teaching: {non_teaching}")
+
+    def _render_salary_assignments_page(self) -> None:
+        if not hasattr(self, "_salary_faculty_list"):
+            return
+        list_widget = self._salary_faculty_list
+        rows = slice_page(
+            self._salary_assignments_cache,
+            self._salary_assignments_page,
+            self._salary_assignments_page_size,
+        )
+        selected_row = -1
+        list_widget.blockSignals(True)
+        list_widget.clear()
         for i, row in enumerate(rows):
             status = "Active" if bool(getattr(row, "is_active", True)) else "Inactive"
-            values = [
-                str(row.faculty_name or ""),
-                str(row.role or ""),
-                f"{float(row.monthly_salary or 0):.2f}",
-                str(int(row.default_working_days or 0)),
-                status,
-            ]
-            for col, value in enumerate(values):
-                table.setItem(i, col, table_item(value))
-        fit_table_columns_to_contents(table)
+            item = QListWidgetItem(
+                f"{str(row.faculty_name or '')} ({str(getattr(row, 'faculty_type', '') or 'Teaching')})\n"
+                f"{str(row.role or 'Role not set')} | Monthly ₹{float(row.monthly_salary or 0):,.2f} "
+                f"| Working {int(row.default_working_days or 0)} | {status}"
+            )
+            item.setData(Qt.UserRole, int(row.id))
+            list_widget.addItem(item)
+            if int(getattr(row, "id", 0) or 0) == int(self._salary_selected_faculty_id or 0):
+                selected_row = i
+        list_widget.blockSignals(False)
+        if list_widget.count() > 0:
+            if selected_row < 0:
+                selected_row = 0
+            list_widget.setCurrentRow(selected_row)
+            current = list_widget.currentItem()
+            if current is not None:
+                selected_id = current.data(Qt.UserRole)
+                self._salary_selected_faculty_id = int(selected_id) if selected_id is not None else None
+                self._on_salary_faculty_changed()
+        else:
+            self._salary_selected_faculty_id = None
+            self._clear_salary_detail_panel()
+        self._animate_widget_fade(list_widget, start=0.78, duration=150)
+        if hasattr(self, "_salary_assignments_pagination"):
+            self._salary_assignments_pagination.update_state(
+                self._salary_assignments_page,
+                len(self._salary_assignments_cache),
+                self._salary_assignments_page_size,
+            )
+
+    def _salary_assignments_change_page(self, delta: int) -> None:
+        new_page = self._salary_assignments_page + int(delta)
+        if new_page < 0 or new_page >= page_count(
+            len(self._salary_assignments_cache),
+            self._salary_assignments_page_size,
+        ):
+            return
+        self._salary_assignments_page = new_page
+        self._render_salary_assignments_page()
 
     def _refresh_salary_history_table(self) -> None:
         if not hasattr(self, "_salary_history_table"):
             return
-        rows = self.expense_service.list_salary_expenses(limit=1000)
+        faculty_id = self._salary_selected_faculty_id
         table = self._salary_history_table
+        if faculty_id is None:
+            table.setRowCount(0)
+            if hasattr(self, "_salary_total_label"):
+                self._salary_total_label.setText("Total paid: ₹0.00")
+            return
+        try:
+            overview = self.expense_service.faculty_salary_overview(int(faculty_id), history_limit=1000)
+        except Exception:
+            table.setRowCount(0)
+            if hasattr(self, "_salary_total_label"):
+                self._salary_total_label.setText("Total paid: ₹0.00")
+            return
+        faculty = overview["faculty"]
+        rows = overview["history"]
         table.setRowCount(len(rows))
         for i, row in enumerate(rows):
             d = row.expense_date
@@ -1421,7 +1844,6 @@ class MainWindow(QMainWindow):
             working = float(getattr(row, "working_days", 0) or 0)
             values = [
                 d_text,
-                str(row.person_name or ""),
                 str(row.month_label or ""),
                 f"{attendance:.1f}/{working:.1f}",
                 f"{float(row.base_amount or 0):.2f}",
@@ -1431,80 +1853,615 @@ class MainWindow(QMainWindow):
             for col, value in enumerate(values):
                 table.setItem(i, col, table_item(value))
         fit_table_columns_to_contents(table)
-        month_filter = (self._salary_month_label.text() or "").strip() if hasattr(self, "_salary_month_label") else ""
-        total = self.expense_service.salary_total(month_filter or None)
         if hasattr(self, "_salary_total_label"):
-            if month_filter:
-                self._salary_total_label.setText(f"Total salary paid ({month_filter}): ₹{total:.2f}")
-            else:
-                self._salary_total_label.setText(f"Total salary paid: ₹{total:.2f}")
-
-    def _on_salary_assign_clicked(self) -> None:
-        try:
-            faculty_name = (self._salary_faculty_name.text() or "").strip()
-            role = (self._salary_role.text() or "").strip()
-            monthly_salary = float((self._salary_monthly_salary.text() or "").strip() or 0.0)
-            working_days = int(float((self._salary_default_working_days.text() or "").strip() or 26))
-            self.expense_service.assign_faculty_salary(
-                faculty_name,
-                monthly_salary,
-                role=role,
-                default_working_days=working_days,
+            self._salary_total_label.setText(
+                f"Total paid to {faculty.faculty_name}: ₹{float(overview.get('total_paid', 0.0)):.2f}"
             )
-        except ValueError as e:
-            theme.message_warning(self, "Invalid salary assignment", str(e))
-            return
-        except Exception as e:
-            self.session.rollback()
-            theme.message_critical(self, "Salary assignment failed", str(e))
-            return
+        if hasattr(self, "_salary_stat_total_paid"):
+            self._salary_stat_total_paid.setText(f"₹{float(overview.get('total_paid', 0.0)):.2f}")
+        if hasattr(self, "_salary_stat_entries"):
+            self._salary_stat_entries.setText(str(len(rows)))
+        if hasattr(self, "_salary_stat_last_paid"):
+            last_paid = rows[0].expense_date if rows else None
+            last_paid_text = (
+                last_paid.strftime("%d/%m/%Y")
+                if hasattr(last_paid, "strftime")
+                else ("—" if last_paid is None else str(last_paid))
+            )
+            self._salary_stat_last_paid.setText(last_paid_text)
 
-        self._salary_faculty_name.clear()
-        self._salary_role.clear()
-        self._salary_monthly_salary.clear()
-        self._salary_default_working_days.clear()
-        self._refresh_salary_faculty_options()
-        self._refresh_salary_assignments_table()
-        theme.message_information(self, "Saved", "Faculty salary assignment saved.")
-
-    def _on_salary_calculate_clicked(self) -> None:
-        faculty_id = self._salary_faculty_combo.currentData()
+    def _refresh_salary_attendance_snapshot(self) -> None:
+        if not hasattr(self, "_salary_snapshot_month_edit"):
+            return
+        faculty_id = self._salary_selected_faculty_id
         if faculty_id is None:
-            theme.message_warning(self, "Missing faculty", "Assign at least one faculty salary first.")
+            for attr in (
+                "_salary_attendance_month_value",
+                "_salary_attendance_checked_value",
+                "_salary_attendance_sunday_value",
+                "_salary_attendance_total_value",
+                "_salary_attendance_working_value",
+            ):
+                lbl = getattr(self, attr, None)
+                if lbl is not None:
+                    lbl.setText("—")
             return
+        qd = self._salary_snapshot_month_edit.date()
+        year = int(qd.year())
+        month = int(qd.month())
+        month_label = f"{year:04d}-{month:02d}"
         try:
-            attendance_days = float((self._salary_attendance_days.text() or "").strip() or 0.0)
-            working_text = (self._salary_working_days.text() or "").strip()
-            working_days = float(working_text) if working_text else None
-            month_label = (self._salary_month_label.text() or "").strip()
-            qd = self._salary_payment_date.date()
-            payment_date = date(qd.year(), qd.month(), qd.day())
-            notes = (self._salary_notes.text() or "").strip()
-            row = self.expense_service.record_salary_from_attendance(
+            payload = self.expense_service.get_saved_faculty_attendance(
                 int(faculty_id),
-                attendance_days,
-                working_days=working_days,
-                month_label=month_label,
-                expense_date=payment_date,
-                notes=notes,
+                year=year,
+                month=month,
             )
+        except Exception:
+            payload = {
+                "attendance": None,
+                "month_label": month_label,
+                "checked_days": 0,
+                "sunday_days": 0,
+                "attendance_days": 0.0,
+                "working_days": 0.0,
+            }
+        self._salary_attendance_month_value.setText(str(payload.get("month_label", month_label)))
+        self._salary_attendance_checked_value.setText(str(int(payload.get("checked_days", 0) or 0)))
+        self._salary_attendance_sunday_value.setText(str(int(payload.get("sunday_days", 0) or 0)))
+        self._salary_attendance_total_value.setText(str(int(float(payload.get("attendance_days", 0) or 0.0))))
+        self._salary_attendance_working_value.setText(str(int(float(payload.get("working_days", 0) or 0.0))))
+        if hasattr(self, "_salary_stat_month"):
+            self._salary_stat_month.setText(str(payload.get("month_label", month_label)))
+
+    def _on_salary_snapshot_month_changed(self, selected_date: QDate) -> None:
+        first_day = QDate(selected_date.year(), selected_date.month(), 1)
+        if selected_date.day() != 1:
+            self._salary_snapshot_month_edit.blockSignals(True)
+            self._salary_snapshot_month_edit.setDate(first_day)
+            self._salary_snapshot_month_edit.blockSignals(False)
+        self._refresh_salary_attendance_snapshot()
+
+    def _on_salary_assignment_selected(self) -> None:
+        if not hasattr(self, "_salary_faculty_list"):
+            return
+        current = self._salary_faculty_list.currentItem()
+        if current is None:
+            return
+        faculty_id = current.data(Qt.UserRole)
+        if faculty_id is None:
+            return
+        selected_id = int(faculty_id)
+        if self._salary_selected_faculty_id != selected_id:
+            self._salary_selected_faculty_id = selected_id
+            self._on_salary_faculty_changed()
+
+    def _on_salary_open_faculty_window_clicked(self) -> None:
+        faculty_id = self._salary_selected_faculty_id
+        if faculty_id is None:
+            theme.message_warning(self, "Missing faculty", "Select a faculty member first.")
+            return
+        self._open_salary_faculty_window(int(faculty_id))
+
+    def _open_salary_faculty_window(self, faculty_id: int) -> None:
+        try:
+            faculty = self.expense_service.repo.get_faculty_salary(int(faculty_id))
+            if faculty is None:
+                raise ValueError("Selected faculty does not exist.")
         except ValueError as e:
-            theme.message_warning(self, "Invalid salary calculation", str(e))
+            theme.message_warning(self, "Faculty not found", str(e))
             return
         except Exception as e:
-            self.session.rollback()
-            theme.message_critical(self, "Salary save failed", str(e))
+            theme.message_critical(self, "Unable to open faculty window", str(e))
             return
 
-        self._salary_preview_label.setText(f"Payable amount: ₹{float(row.amount or 0):.2f}")
-        self._salary_attendance_days.clear()
-        self._salary_notes.clear()
-        self._refresh_salary_history_table()
-        theme.message_information(
-            self,
-            "Salary saved",
-            f"Salary entry saved for {row.person_name} (₹{float(row.amount):.2f}).",
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Faculty Window - {faculty.faculty_name}")
+        screen = dialog.screen() or self.screen() or QGuiApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            target_width = min(1120, max(860, int(available.width() * 0.86)))
+            target_height = min(available.height() - 12, max(680, int(available.height() * 0.92)))
+            x = available.x() + max(0, (available.width() - target_width) // 2)
+            y = available.y() + max(0, (available.height() - target_height) // 2)
+            dialog.setGeometry(x, y, target_width, target_height)
+        else:
+            dialog.resize(980, 780)
+        theme.apply_dialog_theme(dialog)
+
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(18, 16, 18, 14)
+        dialog_layout.setSpacing(10)
+
+        heading = QLabel(f"{faculty.faculty_name} ({faculty.faculty_type})")
+        heading.setProperty("role", "page-title")
+        sub_heading = QLabel("Faculty details and salary history")
+        sub_heading.setProperty("role", "muted")
+        dialog_layout.addWidget(heading)
+        dialog_layout.addWidget(sub_heading)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(14)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(14)
+        profile_card = GradientProfileCard(
+            str(faculty.faculty_name or "—"),
+            str(faculty.faculty_type or "—"),
+            str(faculty.role or "—"),
+            show_action=False,
         )
+        profile_card.setFixedWidth(306)
+        top_row.addWidget(profile_card)
+
+        details_box = SurfaceCard()
+        details_box.body.addWidget(CardTitleBar("Faculty details"))
+        details_form = QFormLayout()
+        details_form.setHorizontalSpacing(16)
+        details_form.setVerticalSpacing(8)
+        details_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        details_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        details_form.addRow("Name", QLabel(str(faculty.faculty_name or "-")))
+        details_form.addRow("Category", QLabel(str(faculty.faculty_type or "-")))
+        details_form.addRow("Role", QLabel(str(faculty.role or "-")))
+        details_form.addRow("Monthly salary", QLabel(f"₹{float(faculty.monthly_salary or 0):.2f}"))
+        details_form.addRow("Default working days", QLabel(str(int(faculty.default_working_days or 0))))
+        details_form.addRow(
+            "Status",
+            QLabel("Active" if bool(getattr(faculty, "is_active", True)) else "Inactive"),
+        )
+        details_form.addRow("Created at", QLabel(str(getattr(faculty, "created_at", "-") or "-")))
+        details_box.body.addLayout(details_form)
+        top_row.addWidget(details_box, 1)
+        top_row.setStretch(0, 4)
+        top_row.setStretch(1, 6)
+        layout.addLayout(top_row)
+
+        summary_box = SurfaceCard()
+        summary_box.body.addWidget(CardTitleBar("Salary summary"))
+        summary_form = QFormLayout()
+        summary_form.setHorizontalSpacing(16)
+        summary_form.setVerticalSpacing(8)
+        summary_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        summary_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        total_paid_lbl = QLabel("₹0.00")
+        entry_count_lbl = QLabel("0")
+        last_salary_lbl = QLabel("-")
+        summary_form.addRow("Total paid", total_paid_lbl)
+        summary_form.addRow("Entries", entry_count_lbl)
+        summary_form.addRow("Last salary date", last_salary_lbl)
+        summary_box.body.addLayout(summary_form)
+        layout.addWidget(summary_box)
+
+        record_box = SurfaceCard()
+        record_box.body.addWidget(CardTitleBar("Record salary from attendance"))
+        record_form = QFormLayout()
+        record_form.setHorizontalSpacing(16)
+        record_form.setVerticalSpacing(8)
+        record_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        record_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        record_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        attendance_month_edit = QDateEdit(QDate.currentDate())
+        attendance_month_edit.setCalendarPopup(True)
+        attendance_month_edit.setDisplayFormat("MMMM yyyy")
+        attendance_month_edit.setDate(QDate(QDate.currentDate().year(), QDate.currentDate().month(), 1))
+        month_label_value = QLabel("-")
+        month_label_value.setProperty("role", "muted")
+        working_days_value = QLabel("0")
+        working_days_value.setProperty("role", "muted")
+        attendance_days_value = QLabel("0")
+        attendance_days_value.setProperty("role", "muted")
+        auto_sundays_value = QLabel("0")
+        auto_sundays_value.setProperty("role", "muted")
+        salary_attendance_value = QLabel("0")
+        salary_attendance_value.setProperty("role", "muted")
+        payment_date_edit = QDateEdit(QDate.currentDate())
+        payment_date_edit.setCalendarPopup(True)
+        payment_date_edit.setDisplayFormat("dd/MM/yyyy")
+        payment_date_edit.setMaximumDate(QDate.currentDate())
+        notes_edit = QLineEdit()
+        notes_edit.setPlaceholderText("Notes (optional)")
+        attendance_month_edit.setMinimumWidth(220)
+        payment_date_edit.setMinimumWidth(220)
+
+        def _theme_date_edit_popup(date_edit: QDateEdit) -> None:
+            t = theme.current_tokens()
+            calendar_widget = QCalendarWidget(dialog)
+            calendar_widget.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+            calendar_widget.setFirstDayOfWeek(Qt.DayOfWeek.Monday)
+            calendar_widget.setStyleSheet(
+                f"""
+                QCalendarWidget {{
+                    background: {t.bg_surface};
+                    color: {t.text_primary};
+                    border: 1px solid {t.border};
+                    border-radius: 10px;
+                }}
+                QCalendarWidget QWidget#qt_calendar_navigationbar {{
+                    background: {t.bg_surface};
+                    border-bottom: 1px solid {t.border_light};
+                }}
+                QCalendarWidget QToolButton {{
+                    color: {t.text_primary};
+                    background: {t.bg_surface};
+                    border: none;
+                    border-radius: 6px;
+                    padding: 4px 8px;
+                }}
+                QCalendarWidget QToolButton:hover {{
+                    background: {t.bg_hover};
+                }}
+                QCalendarWidget QSpinBox {{
+                    background: {t.bg_input};
+                    color: {t.text_primary};
+                    border: 1px solid {t.border};
+                    border-radius: 6px;
+                    padding: 2px 6px;
+                }}
+                QCalendarWidget QMenu {{
+                    background: {t.bg_surface};
+                    color: {t.text_primary};
+                    border: 1px solid {t.border};
+                }}
+                QCalendarWidget QMenu::item:selected {{
+                    background: {t.primary_soft};
+                    color: {t.text_primary};
+                }}
+                QCalendarWidget QAbstractItemView:enabled {{
+                    background: {t.bg_surface};
+                    color: {t.text_primary};
+                    selection-background-color: {t.primary};
+                    selection-color: {t.text_on_primary};
+                }}
+                """
+            )
+            date_edit.setCalendarWidget(calendar_widget)
+
+        _theme_date_edit_popup(attendance_month_edit)
+        _theme_date_edit_popup(payment_date_edit)
+        record_form.addRow("Attendance month", attendance_month_edit)
+        record_form.addRow("Month label", month_label_value)
+        record_form.addRow("Default working days", working_days_value)
+        record_form.addRow("Checked attendance", attendance_days_value)
+        record_form.addRow("Auto Sundays", auto_sundays_value)
+        record_form.addRow("Salary attendance", salary_attendance_value)
+        record_form.addRow("Payment date", payment_date_edit)
+        record_form.addRow("Notes", notes_edit)
+        record_box.body.addLayout(record_form)
+        layout.addWidget(record_box)
+
+        attendance_calendar_box = SurfaceCard()
+        attendance_calendar_box.body.addWidget(CardTitleBar("Attendance calendar (week-wise)"))
+        attendance_calendar_layout = QVBoxLayout()
+        attendance_calendar_layout.setContentsMargins(0, 0, 0, 0)
+        attendance_calendar_layout.setSpacing(8)
+        attendance_calendar_hint = QLabel(
+            "Tick each day attended. Every checkbox shows the date and day."
+        )
+        attendance_calendar_hint.setWordWrap(True)
+        attendance_calendar_hint.setProperty("role", "hint")
+        attendance_calendar_layout.addWidget(attendance_calendar_hint)
+        attendance_grid = QGridLayout()
+        attendance_grid.setHorizontalSpacing(10)
+        attendance_grid.setVerticalSpacing(8)
+        for col in range(7):
+            attendance_grid.setColumnStretch(col, 1)
+        attendance_calendar_layout.addLayout(attendance_grid)
+        attendance_calendar_box.body.addLayout(attendance_calendar_layout)
+        layout.addWidget(attendance_calendar_box)
+
+        preview_lbl = QLabel("Salary is not calculated yet. Mark attendance first, then click Save Salary Entry.")
+        preview_lbl.setProperty("role", "muted")
+        layout.addWidget(preview_lbl)
+
+        attendance_checkboxes: dict[int, QCheckBox] = {}
+        weekday_headers = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        attendance_dirty = False
+
+        def _attendance_checked_days() -> int:
+            return sum(1 for cb in attendance_checkboxes.values() if cb.isChecked())
+
+        def _selected_attendance_month() -> tuple[int, int]:
+            selected = attendance_month_edit.date()
+            return int(selected.year()), int(selected.month())
+
+        def _attendance_salary_parts() -> tuple[float, float, int, int, list[int], str]:
+            year, month = _selected_attendance_month()
+            total_days = calendar.monthrange(year, month)[1]
+            marked_days = sorted(
+                [int(day_num) for day_num, cb in attendance_checkboxes.items() if cb.isChecked() and cb.isEnabled()]
+            )
+            checked_days = _attendance_checked_days()
+            sunday_days = max(0, total_days - self._default_working_days_for_month(year, month))
+            effective_attendance = checked_days + sunday_days
+            month_label = f"{year:04d}-{month:02d}"
+            return (
+                float(effective_attendance),
+                float(total_days),
+                int(sunday_days),
+                int(checked_days),
+                marked_days,
+                month_label,
+            )
+
+        def _set_attendance_count_labels(attendance_days: float, working_days: float, sunday_days: int, checked_days: int) -> None:
+            attendance_days_value.setText(str(int(checked_days)))
+            auto_sundays_value.setText(str(int(sunday_days)))
+            salary_attendance_value.setText(str(int(attendance_days)))
+            working_days_value.setText(str(int(working_days)))
+
+        def _on_attendance_checkbox_changed(_state: int) -> None:
+            nonlocal attendance_dirty
+            attendance_dirty = True
+            attendance_days, working_days, sunday_days, checked_days, _marked_days, _month_label = _attendance_salary_parts()
+            _set_attendance_count_labels(attendance_days, working_days, sunday_days, checked_days)
+            preview_lbl.setText("Attendance changed. Click Mark Attendance to save it.")
+
+        def _clear_attendance_grid() -> None:
+            while attendance_grid.count():
+                item = attendance_grid.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+
+        def _rebuild_attendance_calendar() -> None:
+            nonlocal attendance_dirty
+            attendance_checkboxes.clear()
+            _clear_attendance_grid()
+            for col, label_text in enumerate(weekday_headers):
+                header = QLabel(label_text)
+                header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                header.setProperty("role", "muted")
+                attendance_grid.addWidget(header, 0, col)
+
+            year, month = _selected_attendance_month()
+            month_label_value.setText(f"{year:04d}-{month:02d}")
+            working_days = self._default_working_days_for_month(year, month)
+            working_days_value.setText(str(int(working_days)))
+
+            month_calendar = calendar.Calendar(firstweekday=0)
+            weeks = month_calendar.monthdayscalendar(year, month)
+            for week_index, week_days in enumerate(weeks, start=1):
+                for weekday_index, day_num in enumerate(week_days):
+                    if day_num <= 0:
+                        attendance_grid.addWidget(QLabel(""), week_index, weekday_index)
+                        continue
+                    day_date = date(year, month, day_num)
+                    day_name = day_date.strftime("%a")
+                    checkbox = QCheckBox(f"{day_num:02d} {day_name}")
+                    if day_date.weekday() == 6:
+                        checkbox.setEnabled(False)
+                        checkbox.setStyleSheet(
+                            """
+                            QCheckBox {
+                                color: #7b8ca8;
+                            }
+                            QCheckBox::indicator {
+                                width: 14px;
+                                height: 14px;
+                                border-radius: 3px;
+                            }
+                            QCheckBox::indicator:disabled:unchecked {
+                                border: 0px;
+                                background-color: #1abc9c;
+                            }
+                            QCheckBox::indicator:disabled:checked {
+                                border: 0px;
+                                background-color: #1abc9c;
+                            }
+                            """
+                        )
+                        checkbox.setToolTip("Sunday is auto-counted in salary and cannot be selected.")
+                    checkbox.stateChanged.connect(_on_attendance_checkbox_changed)
+                    attendance_checkboxes[int(day_num)] = checkbox
+                    attendance_grid.addWidget(checkbox, week_index, weekday_index)
+
+            attendance_dirty = False
+            attendance_days, working_days, sunday_days, checked_days, _marked_days, _month_label = _attendance_salary_parts()
+            _set_attendance_count_labels(attendance_days, working_days, sunday_days, checked_days)
+
+        def _load_saved_attendance_for_month() -> None:
+            nonlocal attendance_dirty
+            year, month = _selected_attendance_month()
+            try:
+                payload = self.expense_service.get_saved_faculty_attendance(
+                    int(faculty.id),
+                    year=year,
+                    month=month,
+                )
+            except ValueError as e:
+                theme.message_warning(dialog, "Attendance load failed", str(e))
+                return
+            except Exception as e:
+                self.session.rollback()
+                theme.message_critical(dialog, "Attendance load failed", str(e))
+                return
+
+            marked_days = {int(day) for day in payload.get("marked_days", [])}
+            for day_num, cb in attendance_checkboxes.items():
+                should_check = cb.isEnabled() and day_num in marked_days
+                cb.blockSignals(True)
+                cb.setChecked(bool(should_check))
+                cb.blockSignals(False)
+
+            checked_days = int(payload.get("checked_days", 0) or 0)
+            sunday_days = int(payload.get("sunday_days", 0) or 0)
+            attendance_days = float(payload.get("attendance_days", checked_days + sunday_days) or 0.0)
+            working_days = float(payload.get("working_days", 0.0) or 0.0)
+            _set_attendance_count_labels(attendance_days, working_days, sunday_days, checked_days)
+            attendance_dirty = False
+            if payload.get("attendance") is None:
+                preview_lbl.setText("No attendance marked yet for this month. Tick days and click Mark Attendance.")
+            else:
+                preview_lbl.setText(
+                    f"Attendance marked for {payload.get('month_label', '')}. "
+                    "Salary is not calculated yet."
+                )
+
+        def _on_attendance_month_changed(selected_date: QDate) -> None:
+            # Keep month picker anchored to day 1 so month transitions remain predictable.
+            first_day = QDate(selected_date.year(), selected_date.month(), 1)
+            if selected_date.day() != 1:
+                attendance_month_edit.blockSignals(True)
+                attendance_month_edit.setDate(first_day)
+                attendance_month_edit.blockSignals(False)
+            _rebuild_attendance_calendar()
+            _load_saved_attendance_for_month()
+
+        attendance_month_edit.dateChanged.connect(_on_attendance_month_changed)
+
+        record_actions = QHBoxLayout()
+        record_actions.addStretch(1)
+        save_salary_btn = QPushButton("Save Salary Entry")
+        style_fee_action_button(save_salary_btn)
+        record_actions.addWidget(save_salary_btn)
+        mark_attendance_btn = QPushButton("Mark Attendence")
+        style_fee_action_button(mark_attendance_btn)
+        record_actions.addWidget(mark_attendance_btn)
+        layout.addLayout(record_actions)
+
+        table_card = SurfaceCard()
+        table_card.body.addWidget(CardTitleBar("Salary history"))
+        table = QTableWidget(0, 5)
+        table.setHorizontalHeaderLabels(
+            ["Date", "Month", "Attendance/Days", "Paid (₹)", "Notes"]
+        )
+        configure_scrollable_data_table(table)
+        table.setProperty("table_variant", "scrollable")
+        table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        table_card.body.addWidget(table, 1)
+        layout.addWidget(table_card, 1)
+        layout.addStretch(1)
+        scroll.setWidget(content)
+        dialog_layout.addWidget(scroll, 1)
+
+        def _reload_dialog_salary_data() -> None:
+            try:
+                current = self.expense_service.faculty_salary_overview(int(faculty.id), history_limit=500)
+            except Exception:
+                return
+            history = current.get("history", [])
+            total_paid = float(current.get("total_paid", 0.0) or 0.0)
+            last_paid = history[0].expense_date if history else None
+            last_paid_text = (
+                last_paid.strftime("%d/%m/%Y")
+                if hasattr(last_paid, "strftime")
+                else ("-" if last_paid is None else str(last_paid))
+            )
+            total_paid_lbl.setText(f"₹{total_paid:.2f}")
+            entry_count_lbl.setText(str(len(history)))
+            last_salary_lbl.setText(last_paid_text)
+
+            table.setRowCount(len(history))
+            for i, row in enumerate(history):
+                d = row.expense_date
+                d_text = d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else str(d or "")
+                attendance = float(getattr(row, "attendance_days", 0) or 0)
+                working = float(getattr(row, "working_days", 0) or 0)
+                values = [
+                    d_text,
+                    str(row.month_label or ""),
+                    f"{attendance:.1f}/{working:.1f}",
+                    f"{float(row.amount or 0):.2f}",
+                    str(row.notes or ""),
+                ]
+                for col, value in enumerate(values):
+                    table.setItem(i, col, table_item(value))
+            fit_table_columns_to_contents(table)
+
+        def _mark_attendance_from_window() -> None:
+            nonlocal attendance_dirty
+            try:
+                year, month = _selected_attendance_month()
+                attendance_days, working_days, sunday_days, checked_days, marked_days, month_label = _attendance_salary_parts()
+                payload = self.expense_service.save_faculty_attendance(
+                    int(faculty.id),
+                    year=year,
+                    month=month,
+                    marked_days=marked_days,
+                )
+            except ValueError as e:
+                theme.message_warning(dialog, "Attendance not saved", str(e))
+                return
+            except Exception as e:
+                self.session.rollback()
+                theme.message_critical(dialog, "Attendance save failed", str(e))
+                return
+
+            _set_attendance_count_labels(
+                float(payload.get("attendance_days", attendance_days) or attendance_days),
+                float(payload.get("working_days", working_days) or working_days),
+                int(payload.get("sunday_days", sunday_days) or sunday_days),
+                int(payload.get("checked_days", checked_days) or checked_days),
+            )
+            attendance_dirty = False
+            preview_lbl.setText(
+                f"Attendance marked for {month_label} "
+                f"({checked_days} checked + {sunday_days} Sundays). Salary not calculated yet."
+            )
+            theme.message_information(
+                dialog,
+                "Attendance marked",
+                f"Attendance marked for {faculty.faculty_name} ({month_label}).",
+            )
+
+        def _save_salary_entry_from_window() -> None:
+            try:
+                year, month = _selected_attendance_month()
+                if attendance_dirty:
+                    raise ValueError("Attendance changed. Click Mark Attendance before calculating salary.")
+                payload = self.expense_service.get_saved_faculty_attendance(
+                    int(faculty.id),
+                    year=year,
+                    month=month,
+                )
+                if payload.get("attendance") is None:
+                    raise ValueError("No saved attendance found for this month. Click Mark Attendance first.")
+                calc = self.expense_service.calculate_salary_for_faculty(
+                    int(faculty.id),
+                    float(payload.get("attendance_days", 0.0) or 0.0),
+                    working_days=float(payload.get("working_days", 0.0) or 0.0),
+                )
+            except ValueError as e:
+                theme.message_warning(dialog, "Invalid salary calculation", str(e))
+                return
+            except Exception as e:
+                self.session.rollback()
+                theme.message_critical(dialog, "Salary calculation failed", str(e))
+                return
+
+            payable_amount = float(calc.get("payable_amount", 0.0) or 0.0)
+            attendance_days = float(payload.get("attendance_days", 0.0) or 0.0)
+            working_days = float(payload.get("working_days", 0.0) or 0.0)
+            checked_days = int(payload.get("checked_days", 0) or 0)
+            sunday_days = int(payload.get("sunday_days", 0) or 0)
+            month_label = str(payload.get("month_label", f"{year:04d}-{month:02d}"))
+            preview_lbl.setText(
+                f"Payable amount: ₹{payable_amount:.2f} "
+                f"({checked_days} checked + {sunday_days} Sundays = {int(attendance_days)}/{int(working_days)} days)"
+            )
+            theme.message_information(
+                dialog,
+                "Salary calculated",
+                f"Calculated salary for {faculty.faculty_name} ({month_label}) is ₹{payable_amount:.2f}. "
+                "This amount is only calculated and not saved to history.",
+            )
+
+        mark_attendance_btn.clicked.connect(_mark_attendance_from_window)
+        save_salary_btn.clicked.connect(_save_salary_entry_from_window)
+        _rebuild_attendance_calendar()
+        _load_saved_attendance_for_month()
+        _reload_dialog_salary_data()
+
+        actions = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        actions.rejected.connect(dialog.reject)
+        actions.accepted.connect(dialog.accept)
+        dialog_layout.addWidget(actions)
+        dialog.exec()
 
     def _build_other_expense_tab(self):
         body = QWidget()
@@ -2961,6 +3918,62 @@ class MainWindow(QMainWindow):
         self.student_info.setText(
             f"Selected: {s.full_name} ({s.student_id}) — {self._format_fee_due_lines(d)}"
         )
+
+    def add_faculty(self) -> None:
+        page = getattr(self, "_add_faculty_page", None)
+        if page is not None:
+            errors = page.form_validation_errors()
+            if errors:
+                if len(errors) == 1:
+                    theme.message_warning(self, "Validation", errors[0])
+                else:
+                    theme.message_warning(
+                        self,
+                        "Validation",
+                        "\n".join(f"• {msg}" for msg in errors),
+                    )
+                return
+        try:
+            faculty_name = self.add_faculty_name.text().strip()
+            faculty_type = str(self.add_faculty_type.currentData() or "Teaching")
+            role = self.add_faculty_role.text().strip()
+            monthly_salary = float((self.add_faculty_monthly_salary.text() or "").strip() or 0.0)
+            working_days = int(float((self.add_faculty_default_working_days.text() or "").strip() or 26))
+            is_active = bool(self.add_faculty_status.currentData())
+            row = self.expense_service.assign_faculty_salary(
+                faculty_name,
+                monthly_salary,
+                faculty_type=faculty_type,
+                role=role,
+                default_working_days=working_days,
+                is_active=is_active,
+            )
+            self.add_faculty_name.clear()
+            self.add_faculty_role.clear()
+            self.add_faculty_monthly_salary.clear()
+            if page is not None:
+                page.sync_default_working_days_current_month()
+            else:
+                today = date.today()
+                self.add_faculty_default_working_days.setText(
+                    str(self._default_working_days_for_month(today.year, today.month))
+                )
+            self.add_faculty_type.setCurrentIndex(0)
+            self.add_faculty_status.setCurrentIndex(0)
+            self._refresh_salary_faculty_options()
+            self._refresh_salary_assignments_table(reset_page=True)
+            self._refresh_salary_history_table()
+            theme.message_information(
+                self,
+                "Faculty saved",
+                f"Faculty {row.faculty_name} has been saved successfully.",
+            )
+        except ValueError as e:
+            theme.message_warning(self, "Invalid faculty data", str(e))
+        except Exception as e:
+            self.session.rollback()
+            theme.message_critical(self, "Add faculty error", str(e))
+
     def add_student(self):
         page = getattr(self, "_add_student_page", None)
         if page is not None:

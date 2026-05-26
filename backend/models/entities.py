@@ -95,12 +95,30 @@ class FacultySalary(Base):
     __tablename__ = "faculty_salaries"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     faculty_name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    faculty_type: Mapped[str] = mapped_column(String(20), default="Teaching", nullable=False)
     role: Mapped[str] = mapped_column(String(80), default="", nullable=False)
     monthly_salary: Mapped[float] = mapped_column(Float, nullable=False)
     default_working_days: Mapped[int] = mapped_column(Integer, default=26, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class FacultyAttendance(Base):
+    __tablename__ = "faculty_attendance"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    faculty_id_fk: Mapped[int] = mapped_column(ForeignKey("faculty_salaries.id"), nullable=False)
+    month_label: Mapped[str] = mapped_column(String(20), nullable=False)
+    marked_days_csv: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    checked_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sunday_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    attendance_days: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    working_days: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (
+        UniqueConstraint("faculty_id_fk", "month_label", name="uq_faculty_attendance_month"),
+    )
 
 
 class Expense(Base):
