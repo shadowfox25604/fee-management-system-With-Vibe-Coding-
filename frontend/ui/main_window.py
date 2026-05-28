@@ -1238,7 +1238,7 @@ class MainWindow(QMainWindow):
         self._manage_years_btn = manage_years_btn
         manage_years_btn.setToolTip(
             "Add or edit academic year date ranges (DD/MM/YYYY). "
-            "Adding a new forward year promotes students one class and provisions fees."
+            "Adding a new forward year promotes students one class (Class 10→Passed Out, inactive) and provisions fees."
         )
         manage_years_btn.clicked.connect(self._on_manage_academic_years_clicked)
         academic_years_row.addWidget(manage_years_btn)
@@ -4215,6 +4215,30 @@ class MainWindow(QMainWindow):
                 lbl_created.setText(str(s.created_at or "-"))
 
         def on_save():
+            if not edit_student_id.text().strip():
+                theme.message_warning(dialog, "Validation", "Student ID is required.")
+                return
+            if not edit_name.text().strip():
+                theme.message_warning(dialog, "Validation", "Name is required.")
+                return
+            if not edit_gender.currentText().strip():
+                theme.message_warning(dialog, "Validation", "Gender is required.")
+                return
+            if not edit_father_name.text().strip():
+                theme.message_warning(dialog, "Validation", "Father name is required.")
+                return
+            if not edit_class.currentText().strip():
+                theme.message_warning(dialog, "Validation", "Class is required.")
+                return
+            if not edit_section.currentText().strip():
+                theme.message_warning(dialog, "Validation", "Section is required.")
+                return
+            if not edit_village.currentText().strip():
+                theme.message_warning(dialog, "Validation", "Village is required.")
+                return
+            if not (edit_transport.currentData() or edit_transport.currentText()).strip():
+                theme.message_warning(dialog, "Validation", "Transport is required.")
+                return
             mobile_1_error = phone_validation_message(edit_mobile_1.text())
             if mobile_1_error:
                 theme.message_warning(
@@ -4229,6 +4253,10 @@ class MainWindow(QMainWindow):
                 if mobile_2_error:
                     theme.message_warning(dialog, "Validation", mobile_2_error.replace("Phone", "Mobile number 2"))
                     return
+            aadhaar_text = normalize_phone_text((edit_aadhaar.text() or "").strip())
+            if aadhaar_text and len(aadhaar_text) != 12:
+                theme.message_warning(dialog, "Validation", "Aadhaar must be exactly 12 digits.")
+                return
             try:
                 updated = self.student_service.update_student(
                     student,
@@ -4694,6 +4722,7 @@ class MainWindow(QMainWindow):
                     )
                 return
         try:
+            optional = page.optional_fields_for_submit() if page is not None else {}
             st = self.student_service.create_student(
                 self.add_student_id.text(),
                 self.add_student_name.text(),
@@ -4702,18 +4731,18 @@ class MainWindow(QMainWindow):
                 self.add_student_mobile_number_1.text(),
                 self.add_student_village.currentText(),
                 self.add_student_father_name.text(),
-                self.add_student_status.currentText(),
+                optional.get("status", self.add_student_status.currentText()),
                 transport_mode=self.add_student_transport.currentData() or "van",
                 village_fee_service=self.village_van_fee_service,
                 class_fee_service=self.class_fee_service,
                 gender=self.add_student_gender.currentText(),
                 father_name=self.add_student_father_name.text(),
-                mother_name=self.add_student_mother_name.text(),
+                mother_name=optional.get("mother_name", self.add_student_mother_name.text()),
                 mobile_number_1=self.add_student_mobile_number_1.text(),
-                mobile_number_2=self.add_student_mobile_number_2.text(),
-                date_of_birth=self.add_student_date_of_birth.text(),
-                caste=self.add_student_caste.text(),
-                aadhaar=self.add_student_aadhaar.text(),
+                mobile_number_2=optional.get("mobile_number_2", self.add_student_mobile_number_2.text()),
+                date_of_birth=optional.get("date_of_birth", self.add_student_date_of_birth.text()),
+                caste=optional.get("caste", self.add_student_caste.text()),
+                aadhaar=optional.get("aadhaar", self.add_student_aadhaar.text()),
             )
             self.add_student_id.clear()
             self.add_student_name.clear()

@@ -1,6 +1,7 @@
 from backend.core.fee_control_constants import (
     FIXED_CLASS_KEYS,
     canonical_class_for_student_class,
+    is_passed_out_class,
     normalize_class_name,
 )
 from backend.repositories.class_fee_repository import ClassFeeRepository
@@ -31,6 +32,8 @@ class ClassFeeService:
 
     def school_fees_for_class_name(self, class_name: str) -> float:
         """Tariff for new students: Fee Control stored value, else class average, else default."""
+        if is_passed_out_class(class_name):
+            return 0.0
         key = canonical_class_for_student_class(class_name)
         if key is None:
             return 20000.0

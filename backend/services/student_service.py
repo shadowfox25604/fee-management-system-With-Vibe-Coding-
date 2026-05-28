@@ -118,7 +118,9 @@ class StudentService:
         secondary_mobile = self._validate_optional_phone(mobile_number_2)
         father = (father_name or guardian_name or "").strip()
         mother = (mother_name or "").strip()
-        gender_value = (gender or "").strip() or "Other"
+        gender_value = (gender or "").strip()
+        if not gender_value:
+            raise ValueError("Gender is required")
         caste_value = (caste or "").strip()
         if not father:
             raise ValueError("Father name is required")
@@ -126,8 +128,9 @@ class StudentService:
         dob_value = self._parse_date_of_birth(date_of_birth)
         if not (village or "").strip():
             raise ValueError("Village is required")
-        if not (status or "").strip():
-            raise ValueError("Status is required")
+        if not str(transport_mode or "").strip():
+            raise ValueError("Transport is required")
+        status_value = (status or "").strip() or "active"
         tm = self._normalize_transport_mode(transport_mode)
         if tm == "own":
             vf = 0.0
@@ -149,7 +152,7 @@ class StudentService:
             primary_mobile,
             village,
             father,
-            status,
+            status_value,
             vf,
             sf,
             transport_mode=tm,
@@ -201,12 +204,19 @@ class StudentService:
         secondary_mobile = self._validate_optional_phone(mobile_number_2)
         father = (father_name or guardian_name or "").strip()
         mother = (mother_name or "").strip()
-        gender_value = (gender or "").strip() or "Other"
+        gender_value = (gender or "").strip()
+        if not gender_value:
+            raise ValueError("Gender is required")
         caste_value = (caste or "").strip()
         if not father:
             raise ValueError("Father name is required")
         aadhaar_value = self._validate_aadhaar(aadhaar)
         dob_value = self._parse_date_of_birth(date_of_birth)
+        if not (village or "").strip():
+            raise ValueError("Village is required")
+        if not str(transport_mode or "").strip():
+            raise ValueError("Transport is required")
+        status_value = (status or "").strip() or "active"
         tm = self._normalize_transport_mode(transport_mode)
         old_tm = (getattr(student, "transport_mode", None) or "van").strip().lower()
         if tm == "own":
@@ -233,7 +243,7 @@ class StudentService:
             primary_mobile,
             village,
             father,
-            status,
+            status_value,
             vf,
             sf,
             transport_mode=tm,

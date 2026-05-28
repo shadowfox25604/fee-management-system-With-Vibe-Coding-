@@ -15,6 +15,9 @@ FIXED_CLASS_KEYS: tuple[str, ...] = (
     "10",
 )
 
+# Graduation class — assigned on academic year promotion after class 10 (not in Fee Control).
+PASSED_OUT_CLASS_KEY = "Passed Out"
+
 # Standard division / section letters for data entry (Add Student, etc.)
 FIXED_SECTION_KEYS: tuple[str, ...] = ("A", "B", "C", "D", "E", "F", "G", "H")
 
@@ -28,10 +31,16 @@ def canonical_class_for_student_class(class_name: str | None) -> str | None:
     n = normalize_class_name(class_name)
     if not n:
         return None
+    if normalize_class_name(PASSED_OUT_CLASS_KEY) == n:
+        return PASSED_OUT_CLASS_KEY
     for key in FIXED_CLASS_KEYS:
         if normalize_class_name(key) == n:
             return key
     return None
+
+
+def is_passed_out_class(class_name: str | None) -> bool:
+    return canonical_class_for_student_class(class_name) == PASSED_OUT_CLASS_KEY
 
 
 def class_name_matches_query(student_class: str | None, query: str | None) -> bool:
@@ -69,13 +78,13 @@ def class_section_matches_query(
 
 
 def next_class_key(class_name: str | None) -> str | None:
-    """Next class in the fixed progression (LKG→UKG→1→…→10). None at class 10 or unknown."""
+    """Next class in the fixed progression (LKG→UKG→1→…→10→Passed Out). None at Passed Out or unknown."""
     key = canonical_class_for_student_class(class_name)
-    if key is None:
+    if key is None or key == PASSED_OUT_CLASS_KEY:
         return None
     idx = FIXED_CLASS_KEYS.index(key)
     if idx >= len(FIXED_CLASS_KEYS) - 1:
-        return None
+        return PASSED_OUT_CLASS_KEY
     return FIXED_CLASS_KEYS[idx + 1]
 
 

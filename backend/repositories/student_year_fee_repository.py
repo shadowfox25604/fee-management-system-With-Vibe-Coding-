@@ -53,8 +53,11 @@ class StudentYearFeeRepository:
         return float(student.school_fees or 0.0), float(student.van_fees or 0.0)
 
     def sync_student_to_current_year(self, student: Student) -> None:
+        from backend.core.fee_control_constants import is_passed_out_class
         from backend.repositories.academic_year_repository import AcademicYearRepository
 
+        if is_passed_out_class(student.class_name):
+            return
         current = AcademicYearRepository(self.session).get_current()
         if current is None:
             return
@@ -76,9 +79,13 @@ class StudentYearFeeRepository:
         village_fee_lookup,
     ) -> int:
         """Create year-fee rows for students missing them (tariffs from class/village services)."""
+        from backend.core.fee_control_constants import is_passed_out_class
+
         students = list(self.session.scalars(select(Student)).all())
         count = 0
         for st in students:
+            if is_passed_out_class(st.class_name):
+                continue
             if self.get(st.student_id, academic_year_id) is not None:
                 continue
             sf = float(class_fee_lookup(st.class_name))
