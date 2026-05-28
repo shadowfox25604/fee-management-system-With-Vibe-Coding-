@@ -7,10 +7,10 @@ class StudentYearFeeRepository:
     def __init__(self, session):
         self.session = session
 
-    def get(self, student_id: int, academic_year_id: int) -> StudentAcademicYearFee | None:
+    def get(self, student_id: str, academic_year_id: int) -> StudentAcademicYearFee | None:
         return self.session.scalars(
             select(StudentAcademicYearFee).where(
-                StudentAcademicYearFee.student_id_fk == int(student_id),
+                StudentAcademicYearFee.student_id_fk == str(student_id),
                 StudentAcademicYearFee.academic_year_id == int(academic_year_id),
             )
         ).first()
@@ -22,13 +22,13 @@ class StudentYearFeeRepository:
         school_fees: float | None = None,
         van_fees: float | None = None,
     ) -> StudentAcademicYearFee:
-        row = self.get(student.id, academic_year_id)
+        row = self.get(student.student_id, academic_year_id)
         if row is not None:
             return row
         sf = float(school_fees if school_fees is not None else student.school_fees or 0.0)
         vf = float(van_fees if van_fees is not None else student.van_fees or 0.0)
         row = StudentAcademicYearFee(
-            student_id_fk=student.id,
+            student_id_fk=student.student_id,
             academic_year_id=int(academic_year_id),
             school_fees=sf,
             van_fees=vf,
@@ -37,7 +37,7 @@ class StudentYearFeeRepository:
         self.session.flush()
         return row
 
-    def set_tariffs(self, student_id: int, academic_year_id: int, school_fees: float, van_fees: float) -> None:
+    def set_tariffs(self, student_id: str, academic_year_id: int, school_fees: float, van_fees: float) -> None:
         row = self.get(student_id, academic_year_id)
         if row is None:
             raise ValueError("Student academic year fee record not found.")
@@ -47,7 +47,7 @@ class StudentYearFeeRepository:
         self.session.flush()
 
     def tariffs_for_student_year(self, student: Student, academic_year_id: int) -> tuple[float, float]:
-        row = self.get(student.id, academic_year_id)
+        row = self.get(student.student_id, academic_year_id)
         if row is not None:
             return float(row.school_fees or 0.0), float(row.van_fees or 0.0)
         return float(student.school_fees or 0.0), float(student.van_fees or 0.0)
@@ -79,7 +79,7 @@ class StudentYearFeeRepository:
         students = list(self.session.scalars(select(Student)).all())
         count = 0
         for st in students:
-            if self.get(st.id, academic_year_id) is not None:
+            if self.get(st.student_id, academic_year_id) is not None:
                 continue
             sf = float(class_fee_lookup(st.class_name))
             tm = (getattr(st, "transport_mode", None) or "van").strip().lower()

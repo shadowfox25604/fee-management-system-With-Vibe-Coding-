@@ -6,7 +6,7 @@ class ReportRepository:
         self.session = session
     def defaulters(self, as_of=None, student_query=None, class_name=None, section=None):
         as_of = as_of or date.today()
-        stmt = select(Student.student_id, Student.full_name, Student.class_name, Student.section, func.sum(Invoice.amount_due-Invoice.amount_paid).label("outstanding")).join(Invoice, Invoice.student_id_fk==Student.id).where(and_(Invoice.due_date<=as_of, Invoice.amount_due>Invoice.amount_paid))
+        stmt = select(Student.student_id, Student.full_name, Student.class_name, Student.section, func.sum(Invoice.amount_due-Invoice.amount_paid).label("outstanding")).join(Invoice, Invoice.student_id_fk==Student.student_id).where(and_(Invoice.due_date<=as_of, Invoice.amount_due>Invoice.amount_paid))
         q = (student_query or "").strip()
         if q:
             p = f"%{q}%"

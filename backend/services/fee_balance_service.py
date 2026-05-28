@@ -48,7 +48,7 @@ class FeeBalanceService:
         self, student: Student, yr: AcademicYear, joining_date: date
     ) -> tuple[float, float]:
         """Tariff for a year the student was enrolled in; 0 if no fee row and not joining/current year."""
-        row = self.year_fee_repo.get(student.id, yr.id)
+        row = self.year_fee_repo.get(student.student_id, yr.id)
         if row is not None:
             return float(row.school_fees or 0.0), float(row.van_fees or 0.0)
         join_year = self.year_repo.get_for_date(joining_date)
@@ -69,8 +69,8 @@ class FeeBalanceService:
         return 0
 
     def _paid_by_year_bucket(
-        self, student_ids: list[int], current: AcademicYear | None, fallback_year_id: int | None
-    ) -> dict[int, dict[int, dict[str, float]]]:
+        self, student_ids: list[str], current: AcademicYear | None, fallback_year_id: int | None
+    ) -> dict[str, dict[int, dict[str, float]]]:
         """student_id -> year_id -> {school, van} paid sums."""
         if not student_ids:
             return {}
@@ -84,11 +84,11 @@ class FeeBalanceService:
             .join(FeeHead, FeeHead.id == Invoice.fee_head_id)
             .where(Invoice.student_id_fk.in_(student_ids))
         ).all()
-        acc: dict[int, dict[int, dict[str, float]]] = {}
+        acc: dict[str, dict[int, dict[str, float]]] = {}
         for sid in student_ids:
-            acc[int(sid)] = {}
+            acc[str(sid)] = {}
         for student_id_fk, year_id, amount_paid, head_name in rows:
-            sid = int(student_id_fk)
+            sid = str(student_id_fk)
             yid = self._normalize_year_id(year_id, current, fallback_year_id)
             if sid not in acc:
                 acc[sid] = {}
@@ -101,8 +101,8 @@ class FeeBalanceService:
         return acc
 
     def _invoice_open_by_year_bucket(
-        self, student_ids: list[int], current: AcademicYear | None, fallback_year_id: int | None
-    ) -> dict[int, dict[int, dict[str, float]]]:
+        self, student_ids: list[str], current: AcademicYear | None, fallback_year_id: int | None
+    ) -> dict[str, dict[int, dict[str, float]]]:
         if not student_ids:
             return {}
         rows = self.session.execute(
@@ -116,11 +116,11 @@ class FeeBalanceService:
             .join(FeeHead, FeeHead.id == Invoice.fee_head_id)
             .where(Invoice.student_id_fk.in_(student_ids))
         ).all()
-        acc: dict[int, dict[int, dict[str, float]]] = {}
+        acc: dict[str, dict[int, dict[str, float]]] = {}
         for sid in student_ids:
-            acc[int(sid)] = {}
+            acc[str(sid)] = {}
         for student_id_fk, year_id, amount_due, amount_paid, head_name in rows:
-            sid = int(student_id_fk)
+            sid = str(student_id_fk)
             yid = self._normalize_year_id(year_id, current, fallback_year_id)
             bal = float(amount_due or 0.0) - float(amount_paid or 0.0)
             if bal <= 0:
@@ -137,8 +137,8 @@ class FeeBalanceService:
         years = self.year_repo.list_all()
         current = self.year_repo.get_current()
         fallback_id = years[-1].id if years else None
-        paid_map = self._paid_by_year_bucket([student.id], current, fallback_id).get(student.id, {})
-        inv_map = self._invoice_open_by_year_bucket([student.id], current, fallback_id).get(student.id, {})
+        paid_map = self._paid_by_year_bucket([student.student_id], current, fallback_id).get(student.student_id, {})
+        inv_map = self._invoice_open_by_year_bucket([student.student_id], current, fallback_id).get(student.student_id, {})
         return years, paid_map, inv_map
 
     @staticmethod
@@ -175,7 +175,7 @@ class FeeBalanceService:
             if van_gap > eps and van_fee_head is not None:
                 self.session.add(
                     Invoice(
-                        student_id_fk=student.id,
+                        student_id_fk=student.student_id,
                         academic_year_id=yid,
                         fee_head_id=van_fee_head.id,
                         period_label=f"Tariff sync van {yr.label} {anchor_date.isoformat()}",
@@ -187,7 +187,7 @@ class FeeBalanceService:
             if school_gap > eps and school_fee_head is not None:
                 self.session.add(
                     Invoice(
-                        student_id_fk=student.id,
+                        student_id_fk=student.student_id,
                         academic_year_id=yid,
                         fee_head_id=school_fee_head.id,
                         period_label=f"Tariff sync school {yr.label} {anchor_date.isoformat()}",
@@ -198,18 +198,18 @@ class FeeBalanceService:
                 )
         self.session.flush()
 
-    def get_students_due_breakdown(self, student_ids: list[int], discount_by_id: dict[int, float] | None = None) -> dict:
+    def get_students_due_breakdown(self, student_ids: list[str], discount_by_id: dict[str, float] | None = None) -> dict:
         if not student_ids:
             return {}
         self.year_repo.ensure_bootstrap_year()
         current = self.year_repo.get_current()
         years = self.year_repo.list_all()
         if not years:
-            return {int(sid): _empty_due() for sid in student_ids}
+            return {str(sid): _empty_due() for sid in student_ids}
 
         students = {
-            int(s.id): s
-            for s in self.session.scalars(select(Student).where(Student.id.in_(student_ids))).all()
+            str(s.student_id): s
+            for s in self.session.scalars(select(Student).where(Student.student_id.in_(student_ids))).all()
         }
         fallback_id = years[-1].id if years else None
         current_id = current.id if current else fallback_id
@@ -219,7 +219,7 @@ class FeeBalanceService:
 
         out = {}
         for sid in student_ids:
-            i = int(sid)
+            i = str(sid)
             st = students.get(i)
             if st is None:
                 out[i] = _empty_due()
@@ -271,7 +271,7 @@ class FeeBalanceService:
             return []
         fallback_id = years[-1].id if years else None
         current_id = current.id if current else fallback_id
-        sid = int(student.id)
+        sid = str(student.student_id)
         paid_map = self._paid_by_year_bucket([sid], current, fallback_id).get(sid, {})
         joining_date = self._student_joining_date(student)
         rows = []
@@ -298,7 +298,7 @@ class FeeBalanceService:
             )
         return rows
 
-    def get_students_school_fee_summary(self, student_ids: list[int]) -> dict:
+    def get_students_school_fee_summary(self, student_ids: list[str]) -> dict:
         """Totals for search table: current-year tariff and all-years school paid."""
         if not student_ids:
             return {}
@@ -308,12 +308,12 @@ class FeeBalanceService:
         fallback_id = years[-1].id if years else None
         paid_map = self._paid_by_year_bucket(student_ids, current, fallback_id)
         students = {
-            int(s.id): s
-            for s in self.session.scalars(select(Student).where(Student.id.in_(student_ids))).all()
+            str(s.student_id): s
+            for s in self.session.scalars(select(Student).where(Student.student_id.in_(student_ids))).all()
         }
         out = {}
         for sid in student_ids:
-            i = int(sid)
+            i = str(sid)
             st = students.get(i)
             if st is None:
                 continue
@@ -333,7 +333,7 @@ class FeeBalanceService:
             }
         return out
 
-    def get_students_van_fee_summary(self, student_ids: list[int]) -> dict:
+    def get_students_van_fee_summary(self, student_ids: list[str]) -> dict:
         if not student_ids:
             return {}
         current = self.year_repo.get_current()
@@ -341,12 +341,12 @@ class FeeBalanceService:
         fallback_id = years[-1].id if years else None
         paid_map = self._paid_by_year_bucket(student_ids, current, fallback_id)
         students = {
-            int(s.id): s
-            for s in self.session.scalars(select(Student).where(Student.id.in_(student_ids))).all()
+            str(s.student_id): s
+            for s in self.session.scalars(select(Student).where(Student.student_id.in_(student_ids))).all()
         }
         out = {}
         for sid in student_ids:
-            i = int(sid)
+            i = str(sid)
             st = students.get(i)
             if st is None:
                 continue
@@ -357,7 +357,7 @@ class FeeBalanceService:
             out[i] = {"van_paid": van_paid, "van_due": van_tariff - van_paid}
         return out
 
-    def _discount_map(self, student_ids: list[int]) -> dict[int, float]:
+    def _discount_map(self, student_ids: list[str]) -> dict[str, float]:
         from backend.models import Payment
 
         if not student_ids:
@@ -367,4 +367,4 @@ class FeeBalanceService:
             .where(Payment.student_id_fk.in_(student_ids))
             .group_by(Payment.student_id_fk)
         ).all()
-        return {int(r[0]): float(r[1] or 0.0) for r in rows}
+        return {str(r[0]): float(r[1] or 0.0) for r in rows}

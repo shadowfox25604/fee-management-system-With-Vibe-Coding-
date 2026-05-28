@@ -25,7 +25,7 @@ class AcademicYearRepository:
         for st in self.session.scalars(select(Student)).all():
             self.session.add(
                 StudentAcademicYearFee(
-                    student_id_fk=st.id,
+                    student_id_fk=st.student_id,
                     academic_year_id=year.id,
                     school_fees=float(st.school_fees or 0.0),
                     van_fees=float(st.van_fees or 0.0),

@@ -42,25 +42,40 @@ class AddStudentPage(QWidget):
         self.student_class.setCurrentIndex(FIXED_CLASS_KEYS.index("1"))
         self.section = QComboBox()
         self.section.addItems(list(FIXED_SECTION_KEYS))
-        self.phone = QLineEdit()
-        configure_phone_line_edit(self.phone)
+        self.gender = QComboBox()
+        self.gender.addItems(["Male", "Female", "Other"])
+        self.father_name = QLineEdit()
+        self.mother_name = QLineEdit()
+        self.mobile_number_1 = QLineEdit()
+        configure_phone_line_edit(self.mobile_number_1)
+        self.mobile_number_2 = QLineEdit()
+        configure_phone_line_edit(self.mobile_number_2)
+        self.date_of_birth = QLineEdit()
+        self.date_of_birth.setPlaceholderText("DD/MM/YYYY")
+        self.caste = QLineEdit()
+        self.aadhaar = QLineEdit()
         self.village = QComboBox()
         populate_village(self.village)
         self.transport = QComboBox()
         self.transport.addItem("Van transport", "van")
         self.transport.addItem("Own transport", "own")
-        self.guardian_name = QLineEdit()
         self.status = QComboBox()
         self.status.addItems(["active", "inactive"])
 
         grid.add_field(FormField("Student ID", self.student_id, required=True))
         grid.add_field(FormField("Name", self.full_name, required=True))
+        grid.add_field(FormField("Gender", self.gender, required=True))
+        grid.add_field(FormField("Father Name", self.father_name, required=True))
+        grid.add_field(FormField("Mother Name", self.mother_name, required=True))
         grid.add_field(FormField("Class", self.student_class, required=True))
         grid.add_field(FormField("Section", self.section, required=True))
-        grid.add_field(FormField("Phone", self.phone, required=True))
+        grid.add_field(FormField("Mobile Number 1", self.mobile_number_1, required=True))
+        grid.add_field(FormField("Mobile Number 2", self.mobile_number_2))
+        grid.add_field(FormField("Date of Birth", self.date_of_birth))
+        grid.add_field(FormField("Caste", self.caste, required=True))
+        grid.add_field(FormField("Aadhaar", self.aadhaar, required=True))
         grid.add_field(FormField("Village", self.village, required=True))
         grid.add_field(FormField("Transport", self.transport, required=True))
-        grid.add_field(FormField("Guardian Name", self.guardian_name, required=True))
         grid.add_field(FormField("Status", self.status, required=True))
         body_lay.addWidget(grid)
 
@@ -107,16 +122,32 @@ class AddStudentPage(QWidget):
             errors.append("Please fill in Class.")
         if not self.section.currentText().strip():
             errors.append("Please fill in Section.")
-        phone = self.phone.text().strip()
-        phone_error = phone_validation_message(phone)
+        mobile_1 = self.mobile_number_1.text().strip()
+        phone_error = phone_validation_message(mobile_1)
         if phone_error:
-            errors.append(phone_error)
+            errors.append(phone_error.replace("Phone", "Mobile number 1"))
+        mobile_2 = self.mobile_number_2.text().strip()
+        if mobile_2:
+            mobile_2_error = phone_validation_message(mobile_2)
+            if mobile_2_error:
+                errors.append(mobile_2_error.replace("Phone", "Mobile number 2"))
+        if not self.gender.currentText().strip():
+            errors.append("Please fill in Gender.")
+        if not self.father_name.text().strip():
+            errors.append("Please fill in Father Name.")
+        if not self.mother_name.text().strip():
+            errors.append("Please fill in Mother Name.")
+        if not self.caste.text().strip():
+            errors.append("Please fill in Caste.")
+        aadhaar = normalize_phone_text(self.aadhaar.text().strip())
+        if not aadhaar:
+            errors.append("Please fill in Aadhaar.")
+        elif len(aadhaar) != 12:
+            errors.append("Aadhaar must be exactly 12 digits.")
         if not self.village.currentText().strip():
             errors.append("Please fill in Village.")
         if not self.transport.currentText().strip():
             errors.append("Please fill in Transport.")
-        if not self.guardian_name.text().strip():
-            errors.append("Please fill in Guardian Name.")
         if not self.status.currentText().strip():
             errors.append("Please fill in Status.")
         return errors

@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
     QComboBox,
-    QCheckBox,
     QCalendarWidget,
     QDateEdit,
     QDialog,
@@ -17,7 +16,6 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGraphicsOpacityEffect,
     QGroupBox,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -84,13 +82,18 @@ from frontend.ui.phone_input import configure_phone_line_edit, normalize_phone_t
 
 
 _SEARCH_TABLE_HEADERS = [
-    "PK",
     "Student ID",
     "Name",
+    "Gender",
+    "Father Name",
+    "Mother Name",
     "Class",
     "Section",
-    "Phone",
-    "Guardian Name",
+    "Mobile Number 1",
+    "Mobile Number 2",
+    "Date of Birth",
+    "Caste",
+    "Aadhaar",
     "Village",
     "Status",
     "Van Fees",
@@ -107,10 +110,10 @@ _SEARCH_TABLE_HEADERS = [
 ]
 # Column index for header-click sorting (Student Search tab).
 _SEARCH_SORTABLE_COLUMNS: dict[str, int] = {
-    "Student ID": 1,
-    "Name": 2,
-    "Class": 3,
-    "Village": 7,
+    "Student ID": 0,
+    "Name": 1,
+    "Class": 5,
+    "Village": 12,
 }
 
 
@@ -165,9 +168,14 @@ class MainWindow(QMainWindow):
         self._salary_assignments_cache: list = []
         self._salary_assignments_page_size = 15
         self._salary_selected_faculty_id: int | None = None
+        self._salary_clear_selection_on_next_render = False
+        self._salary_control_page = 0
+        self._salary_control_cache: list = []
+        self._salary_control_page_size = 15
+        self._salary_control_selected_faculty_id: int | None = None
         self._all_payment_students = None
         self._details_page_index = 0
-        self._details_filtered_ids: list[int] = []
+        self._details_filtered_ids: list[str] = []
         self._details_due_map: dict = {}
         self._student_details_tab: StudentDetailsTab | None = None
         self._ui_animations: list[QPropertyAnimation] = []
@@ -190,6 +198,7 @@ class MainWindow(QMainWindow):
             "Collect Payment",
             "Payment History",
             "Salary",
+            "Salary Control",
             "Other",
             "Add Faculty",
             "Add Student",
@@ -204,6 +213,7 @@ class MainWindow(QMainWindow):
             self._build_payment_tab,
             self._build_payment_history_tab,
             self._build_salary_tab,
+            self._build_salary_control_tab,
             self._build_other_expense_tab,
             self._build_add_faculty_tab,
             self._build_add_student_tab,
@@ -221,6 +231,8 @@ class MainWindow(QMainWindow):
                 self._payment_history_tab_index = idx
             if key == "Salary":
                 self._salary_tab_index = idx
+            if key == "Salary Control":
+                self._salary_control_tab_index = idx
             if key == "Other":
                 self._other_expense_tab_index = idx
             if key == "Add Faculty":
@@ -295,6 +307,9 @@ class MainWindow(QMainWindow):
             getattr(self, "_manage_years_btn", None),
             getattr(self, "_salary_refresh_btn", None),
             getattr(self, "_salary_open_window_btn", None),
+            getattr(self, "_salary_control_refresh_btn", None),
+            getattr(self, "_salary_control_edit_salary_btn", None),
+            getattr(self, "_salary_control_edit_profile_btn", None),
             getattr(self, "_add_faculty_submit_btn", None),
             getattr(self, "_other_add_btn", None),
         ):
@@ -445,7 +460,7 @@ class MainWindow(QMainWindow):
             pane.payments_table.setRowCount(0)
 
     def _set_payment_preview_student(self, pane: PaymentLikePane, student: Student, due: dict | None = None) -> None:
-        d = due or self.payment_service.get_student_due_breakdown(student.id)
+        d = due or self.payment_service.get_student_due_breakdown(student.student_id)
         total_due = float(d.get("total", 0) or 0)
         class_name = str(getattr(student, "class_name", None) or "—")
         section = str(getattr(student, "section", None) or "").strip()
@@ -640,7 +655,21 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(search_refresh_btn)
         toolbar.addWidget(QLabel("Search by"))
         self.search_by = QComboBox()
-        self.search_by.addItems(["Roll Number", "Name", "Village", "Class"])
+        self.search_by.addItems(
+            [
+                "Roll Number",
+                "Name",
+                "Gender",
+                "Father Name",
+                "Mother Name",
+                "Mobile Number 1",
+                "Mobile Number 2",
+                "Aadhaar",
+                "Village",
+                "Class",
+                "Caste",
+            ]
+        )
         self.search_by.setCurrentIndex(1)
         self.search_by.currentIndexChanged.connect(self.on_student_search_basis_changed)
         self.search_input = QLineEdit()
@@ -751,7 +780,20 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(refresh_btn)
         toolbar.addWidget(QLabel("Search by"))
         search_by = QComboBox()
-        search_by.addItems(["Roll Number", "Name", "Phone", "Village", "Class-Section", "Status", "Guardian Name"])
+        search_by.addItems(
+            [
+                "Roll Number",
+                "Name",
+                "Mobile Number 1",
+                "Mobile Number 2",
+                "Village",
+                "Class-Section",
+                "Status",
+                "Father Name",
+                "Mother Name",
+                "Aadhaar",
+            ]
+        )
         search_by.setCurrentIndex(1)
         search_by.currentIndexChanged.connect(lambda _=None, p=pane_id: self._on_payment_search_basis_changed(p))
         student_search = QLineEdit()
@@ -893,12 +935,18 @@ class MainWindow(QMainWindow):
         self._add_student_page = page
         self.add_student_id = page.student_id
         self.add_student_name = page.full_name
+        self.add_student_gender = page.gender
+        self.add_student_father_name = page.father_name
+        self.add_student_mother_name = page.mother_name
         self.add_student_class = page.student_class
         self.add_student_section = page.section
-        self.add_student_phone = page.phone
+        self.add_student_mobile_number_1 = page.mobile_number_1
+        self.add_student_mobile_number_2 = page.mobile_number_2
+        self.add_student_date_of_birth = page.date_of_birth
+        self.add_student_caste = page.caste
+        self.add_student_aadhaar = page.aadhaar
         self.add_student_village = page.village
         self.add_student_transport = page.transport
-        self.add_student_guardian = page.guardian_name
         self.add_student_status = page.status
         page.submit_btn.clicked.connect(self.add_student)
         return page
@@ -920,6 +968,21 @@ class MainWindow(QMainWindow):
     def _canonical_section_for_combo(section: str | None) -> str | None:
         s = (section or "").strip().upper()
         return s if s in FIXED_SECTION_KEYS else None
+
+    @staticmethod
+    def _gender_display(value: str | None) -> str:
+        text = (value or "").strip()
+        lower = text.lower()
+        if lower in ("male", "boy"):
+            return "Male"
+        if lower in ("female", "girl"):
+            return "Female"
+        return text.title() if text else ""
+
+    @staticmethod
+    def _gender_for_combo(value: str | None) -> str:
+        shown = MainWindow._gender_display(value)
+        return shown if shown in ("Male", "Female", "Other") else "Male"
 
     @staticmethod
     def _default_working_days_for_month(year: int, month: int) -> int:
@@ -1351,6 +1414,9 @@ class MainWindow(QMainWindow):
             self._refresh_salary_faculty_options()
             self._refresh_salary_assignments_table()
             self._refresh_salary_history_table()
+        if index == getattr(self, "_salary_control_tab_index", -1):
+            self._refresh_salary_control_assignments_table(reset_page=False)
+            self._refresh_salary_control_history_table()
         if index == getattr(self, "_other_expense_tab_index", -1):
             self._refresh_other_expense_table()
         if tab_name == "Student Details":
@@ -1615,13 +1681,14 @@ class MainWindow(QMainWindow):
         self._salary_attendance_working_value = QLabel("—")
         attendance_form.addRow("Snapshot month", self._salary_snapshot_month_edit)
         attendance_form.addRow("Month label", self._salary_attendance_month_value)
-        attendance_form.addRow("Checked attendance", self._salary_attendance_checked_value)
-        attendance_form.addRow("Auto Sundays", self._salary_attendance_sunday_value)
-        attendance_form.addRow("Salary attendance", self._salary_attendance_total_value)
-        attendance_form.addRow("Total month days", self._salary_attendance_working_value)
+        attendance_form.addRow("Days present", self._salary_attendance_checked_value)
+        attendance_form.addRow("Additional days", self._salary_attendance_sunday_value)
+        attendance_form.addRow("Attendance used", self._salary_attendance_total_value)
+        attendance_form.addRow("Total working days", self._salary_attendance_working_value)
         attendance_card.body.addLayout(attendance_form)
         attendance_hint = QLabel(
-            "Attendance is marked inside Faculty Window. Salary calculation happens there and is not saved from this page."
+            "Attendance values are entered in Faculty Window (working days and present days). "
+            "Salary calculation happens there and is not saved from this page."
         )
         attendance_hint.setProperty("role", "hint")
         attendance_hint.setWordWrap(True)
@@ -1657,6 +1724,465 @@ class MainWindow(QMainWindow):
             breadcrumb_trail("Expenses", "Salary"),
             body,
         )
+
+    def _build_salary_control_tab(self):
+        body = QWidget()
+        root = QHBoxLayout(body)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(14)
+
+        left = SurfaceCard()
+        left.setMinimumWidth(460)
+        left.setMaximumWidth(560)
+        left.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        ll = left.body
+        ll.setSpacing(14)
+
+        title = QLabel("Find faculty")
+        title.setProperty("role", "section-title")
+        hint = QLabel("Pick a faculty profile and edit salary or profile details.")
+        hint.setProperty("role", "muted")
+        hint.setWordWrap(True)
+        ll.addWidget(title)
+        ll.addWidget(hint)
+
+        tool = QHBoxLayout()
+        tool.setSpacing(8)
+        self._salary_control_refresh_btn = QPushButton("Refresh")
+        style_fee_action_button(self._salary_control_refresh_btn)
+        self._salary_control_refresh_btn.clicked.connect(self._on_salary_control_refresh_clicked)
+        tool.addWidget(self._salary_control_refresh_btn)
+        tool.addWidget(QLabel("Search by"))
+        self._salary_control_search_by = QComboBox()
+        self._salary_control_search_by.addItem("Name", "name")
+        self._salary_control_search_by.addItem("Role / Designation", "role")
+        self._salary_control_search_by.currentIndexChanged.connect(
+            lambda _: self._refresh_salary_control_assignments_table(reset_page=True)
+        )
+        tool.addWidget(self._salary_control_search_by, 1)
+        ll.addLayout(tool)
+
+        self._salary_control_filter_search = QLineEdit()
+        self._salary_control_filter_search.setPlaceholderText("Enter faculty name")
+        self._salary_control_filter_search.setClearButtonEnabled(True)
+        self._salary_control_filter_search.textChanged.connect(
+            lambda _: self._refresh_salary_control_assignments_table(reset_page=True)
+        )
+        ll.addWidget(self._salary_control_filter_search)
+
+        meta_row = QHBoxLayout()
+        self._salary_control_match_count_label = QLabel("0 faculty match")
+        self._salary_control_match_count_label.setProperty("role", "muted")
+        self._salary_control_selection_hint = QLabel("Select a faculty from the list")
+        self._salary_control_selection_hint.setProperty("role", "hint")
+        meta_row.addWidget(self._salary_control_match_count_label)
+        meta_row.addStretch(1)
+        meta_row.addWidget(self._salary_control_selection_hint)
+        ll.addLayout(meta_row)
+
+        type_filter_row = QHBoxLayout()
+        type_filter_row.setSpacing(14)
+        type_filter_row.addWidget(QLabel("Category"))
+        self._salary_control_filter_type_group = QButtonGroup(self)
+        self._salary_control_filter_type_all = QRadioButton("All")
+        self._salary_control_filter_type_non_teaching = QRadioButton("Non Teaching")
+        self._salary_control_filter_type_teaching = QRadioButton("Teaching")
+        self._salary_control_filter_type_group.addButton(self._salary_control_filter_type_all, 0)
+        self._salary_control_filter_type_group.addButton(self._salary_control_filter_type_non_teaching, 1)
+        self._salary_control_filter_type_group.addButton(self._salary_control_filter_type_teaching, 2)
+        self._salary_control_filter_type_all.setChecked(True)
+        for radio in (
+            self._salary_control_filter_type_all,
+            self._salary_control_filter_type_non_teaching,
+            self._salary_control_filter_type_teaching,
+        ):
+            radio.toggled.connect(lambda _=False: self._refresh_salary_control_assignments_table(reset_page=True))
+            type_filter_row.addWidget(radio)
+        type_filter_row.addStretch(1)
+        ll.addLayout(type_filter_row)
+
+        self._salary_control_faculty_list = QListWidget()
+        self._salary_control_faculty_list.setSpacing(4)
+        self._salary_control_faculty_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._salary_control_faculty_list.itemSelectionChanged.connect(self._on_salary_control_assignment_selected)
+        ll.addWidget(self._salary_control_faculty_list, 1)
+
+        self._salary_control_pagination = PaginationBar(
+            lambda: self._salary_control_change_page(-1),
+            lambda: self._salary_control_change_page(1),
+            green_style=True,
+        )
+        self._salary_control_pagination.refresh_theme()
+        ll.addWidget(self._salary_control_pagination)
+        root.addWidget(left, 6)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._salary_control_detail_body = QWidget()
+        self._salary_control_detail_body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        dl = QVBoxLayout(self._salary_control_detail_body)
+        dl.setContentsMargins(0, 0, 0, 4)
+        dl.setSpacing(16)
+
+        self._salary_control_detail_heading = QLabel("No faculty selected")
+        self._salary_control_detail_heading.setProperty("role", "section-title")
+        self._salary_control_detail_hint = QLabel("Select a faculty member from the left panel to view and edit.")
+        self._salary_control_detail_hint.setProperty("role", "muted")
+        self._salary_control_detail_hint.setWordWrap(True)
+        dl.addWidget(self._salary_control_detail_heading)
+        dl.addWidget(self._salary_control_detail_hint)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(14)
+        self._salary_control_profile_card = GradientProfileCard("—", "—", "—", show_action=False)
+        self._salary_control_profile_card.setFixedWidth(306)
+        top_row.addWidget(self._salary_control_profile_card)
+
+        overview_card = SurfaceCard()
+        overview_card.body.addWidget(CardTitleBar("Faculty overview"))
+        overview_form = QFormLayout()
+        overview_form.setHorizontalSpacing(16)
+        overview_form.setVerticalSpacing(8)
+        self._salary_control_lbl_name = QLabel("—")
+        self._salary_control_lbl_type = QLabel("—")
+        self._salary_control_lbl_role = QLabel("—")
+        self._salary_control_lbl_monthly = QLabel("—")
+        self._salary_control_lbl_working = QLabel("—")
+        self._salary_control_lbl_status = QLabel("—")
+        self._salary_control_lbl_created = QLabel("—")
+        self._salary_control_lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._salary_control_lbl_status.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._salary_control_lbl_status.setMinimumWidth(84)
+        self._salary_control_lbl_status.setMaximumWidth(124)
+        overview_form.addRow("Faculty name", self._salary_control_lbl_name)
+        overview_form.addRow("Category", self._salary_control_lbl_type)
+        overview_form.addRow("Role", self._salary_control_lbl_role)
+        overview_form.addRow("Monthly salary", self._salary_control_lbl_monthly)
+        overview_form.addRow("Working days", self._salary_control_lbl_working)
+        overview_form.addRow("Status", self._salary_control_lbl_status)
+        overview_form.addRow("Created at", self._salary_control_lbl_created)
+        overview_card.body.addLayout(overview_form)
+        top_row.addWidget(overview_card, 1)
+        top_row.setStretch(0, 4)
+        top_row.setStretch(1, 6)
+        dl.addLayout(top_row)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+        self._salary_control_edit_salary_btn = QPushButton("Edit Salary")
+        style_fee_action_button(self._salary_control_edit_salary_btn)
+        self._salary_control_edit_salary_btn.clicked.connect(self._on_salary_control_edit_salary_clicked)
+        action_row.addWidget(self._salary_control_edit_salary_btn)
+        self._salary_control_edit_profile_btn = QPushButton("Edit Profile")
+        style_fee_action_button(self._salary_control_edit_profile_btn)
+        self._salary_control_edit_profile_btn.clicked.connect(self._on_salary_control_edit_profile_clicked)
+        action_row.addWidget(self._salary_control_edit_profile_btn)
+        action_row.addStretch(1)
+        dl.addLayout(action_row)
+
+        history_card = SurfaceCard()
+        history_card.body.addWidget(CardTitleBar("Salary history (selected faculty)"))
+        self._salary_control_total_label = QLabel("Total paid: ₹0.00")
+        self._salary_control_total_label.setProperty("role", "muted")
+        history_card.body.addWidget(self._salary_control_total_label)
+        self._salary_control_history_table = QTableWidget(0, 5)
+        self._salary_control_history_table.setHorizontalHeaderLabels(
+            ["Date", "Month", "Attendance/Days", "Paid (₹)", "Notes"]
+        )
+        configure_scrollable_data_table(self._salary_control_history_table)
+        self._salary_control_history_table.setProperty("table_variant", "scrollable")
+        self._salary_control_history_table.horizontalHeader().setSectionResizeMode(
+            4, QHeaderView.ResizeMode.Stretch
+        )
+        history_card.body.addWidget(self._salary_control_history_table, 1)
+        dl.addWidget(history_card, 1)
+
+        scroll.setWidget(self._salary_control_detail_body)
+        root.addWidget(scroll, 7)
+
+        self._refresh_salary_control_assignments_table(reset_page=True)
+        self._clear_salary_control_detail_panel()
+        return wrap_page(
+            "Salary Control",
+            breadcrumb_trail("Expenses", "Salary Control"),
+            body,
+        )
+
+    def _style_salary_control_status_badge(self, status_text: str) -> None:
+        badge = getattr(self, "_salary_control_lbl_status", None)
+        if badge is None:
+            return
+        t = theme.current_tokens()
+        status_value = (status_text or "").strip().lower()
+        if status_value == "active":
+            bg = t.primary_soft
+            fg = t.success
+        elif status_value == "inactive":
+            bg = t.bg_section_header
+            fg = t.text_secondary
+        else:
+            bg = t.bg_section_header
+            fg = t.text_primary
+        badge.setText(status_text or "—")
+        badge.setStyleSheet(
+            f"background: {bg}; color: {fg}; padding: 4px 10px; border-radius: 10px; font-weight: 700;"
+        )
+
+    def _clear_salary_control_detail_panel(self) -> None:
+        if hasattr(self, "_salary_control_profile_card"):
+            self._salary_control_profile_card.set_student("No faculty selected", "—", "—")
+        if hasattr(self, "_salary_control_detail_heading"):
+            self._salary_control_detail_heading.setText("No faculty selected")
+        if hasattr(self, "_salary_control_detail_hint"):
+            self._salary_control_detail_hint.setText(
+                "Select a faculty member from the left panel to view and edit."
+            )
+        for attr in (
+            "_salary_control_lbl_name",
+            "_salary_control_lbl_type",
+            "_salary_control_lbl_role",
+            "_salary_control_lbl_monthly",
+            "_salary_control_lbl_working",
+            "_salary_control_lbl_created",
+        ):
+            lbl = getattr(self, attr, None)
+            if lbl is not None:
+                lbl.setText("—")
+        self._style_salary_control_status_badge("—")
+        if hasattr(self, "_salary_control_total_label"):
+            self._salary_control_total_label.setText("Total paid: ₹0.00")
+        table = getattr(self, "_salary_control_history_table", None)
+        if table is not None:
+            table.setRowCount(0)
+        edit_salary_btn = getattr(self, "_salary_control_edit_salary_btn", None)
+        if edit_salary_btn is not None:
+            edit_salary_btn.setEnabled(False)
+        edit_profile_btn = getattr(self, "_salary_control_edit_profile_btn", None)
+        if edit_profile_btn is not None:
+            edit_profile_btn.setEnabled(False)
+
+    def _on_salary_control_refresh_clicked(self) -> None:
+        self._salary_control_selected_faculty_id = None
+        self._clear_salary_control_detail_panel()
+        if hasattr(self, "_salary_control_filter_search"):
+            self._salary_control_filter_search.blockSignals(True)
+            self._salary_control_filter_search.clear()
+            self._salary_control_filter_search.blockSignals(False)
+        if hasattr(self, "_salary_control_filter_type_all"):
+            self._salary_control_filter_type_all.blockSignals(True)
+            self._salary_control_filter_type_all.setChecked(True)
+            self._salary_control_filter_type_all.blockSignals(False)
+        if hasattr(self, "_salary_control_search_by"):
+            self._salary_control_search_by.blockSignals(True)
+            self._salary_control_search_by.setCurrentIndex(0)
+            self._salary_control_search_by.blockSignals(False)
+        self.session.expire_all()
+        self._refresh_salary_control_assignments_table(reset_page=True)
+
+    def _refresh_salary_control_assignments_table(self, *, reset_page: bool = False) -> None:
+        if not hasattr(self, "_salary_control_faculty_list"):
+            return
+        if reset_page:
+            self._salary_control_page = 0
+        type_filter = None
+        if self._salary_control_filter_type_teaching.isChecked():
+            type_filter = "Teaching"
+        elif self._salary_control_filter_type_non_teaching.isChecked():
+            type_filter = "Non Teaching"
+        search_text = (self._salary_control_filter_search.text() or "").strip()
+        search_mode = self._salary_control_search_by.currentData()
+        rows = self.expense_service.list_faculty_salaries(
+            active_only=False,
+            faculty_type=type_filter,
+            search=None,
+        )
+        if search_text:
+            needle = search_text.lower()
+            if str(search_mode or "name").lower() == "role":
+                rows = [r for r in rows if needle in str(getattr(r, "role", "") or "").lower()]
+            else:
+                rows = [r for r in rows if needle in str(getattr(r, "faculty_name", "") or "").lower()]
+        self._salary_control_cache = list(rows or [])
+        count = len(self._salary_control_cache)
+        self._salary_control_match_count_label.setText(f"{count} faculty match")
+        self._salary_control_selection_hint.setText(
+            "Select a faculty from the list" if count else "No faculty match the filters."
+        )
+        all_ids = {int(getattr(r, "id", 0)) for r in self.expense_service.list_faculty_salaries(active_only=False)}
+        if self._salary_control_selected_faculty_id is not None and self._salary_control_selected_faculty_id not in all_ids:
+            self._salary_control_selected_faculty_id = None
+        pages = page_count(len(self._salary_control_cache), self._salary_control_page_size)
+        if self._salary_control_page >= pages:
+            self._salary_control_page = max(0, pages - 1)
+        self._render_salary_control_assignments_page()
+
+    def _render_salary_control_assignments_page(self) -> None:
+        if not hasattr(self, "_salary_control_faculty_list"):
+            return
+        list_widget = self._salary_control_faculty_list
+        rows = slice_page(
+            self._salary_control_cache,
+            self._salary_control_page,
+            self._salary_control_page_size,
+        )
+        selected_row = -1
+        list_widget.blockSignals(True)
+        list_widget.clear()
+        for i, row in enumerate(rows):
+            status = "Active" if bool(getattr(row, "is_active", True)) else "Inactive"
+            item = QListWidgetItem(
+                f"{str(row.faculty_name or '')} ({str(getattr(row, 'faculty_type', '') or 'Teaching')})\n"
+                f"{str(row.role or 'Role not set')} | Monthly ₹{float(row.monthly_salary or 0):,.2f} "
+                f"| Working {int(row.default_working_days or 0)} | {status}"
+            )
+            item.setData(Qt.UserRole, int(row.id))
+            list_widget.addItem(item)
+            if int(getattr(row, "id", 0) or 0) == int(self._salary_control_selected_faculty_id or 0):
+                selected_row = i
+        list_widget.blockSignals(False)
+        if list_widget.count() > 0:
+            if selected_row < 0:
+                selected_row = 0
+            list_widget.setCurrentRow(selected_row)
+            current = list_widget.currentItem()
+            if current is not None:
+                selected_id = current.data(Qt.UserRole)
+                self._salary_control_selected_faculty_id = int(selected_id) if selected_id is not None else None
+                self._on_salary_control_faculty_changed()
+        else:
+            self._salary_control_selected_faculty_id = None
+            self._clear_salary_control_detail_panel()
+        self._animate_widget_fade(list_widget, start=0.78, duration=150)
+        self._salary_control_pagination.update_state(
+            self._salary_control_page,
+            len(self._salary_control_cache),
+            self._salary_control_page_size,
+        )
+
+    def _salary_control_change_page(self, delta: int) -> None:
+        new_page = self._salary_control_page + int(delta)
+        if new_page < 0 or new_page >= page_count(
+            len(self._salary_control_cache),
+            self._salary_control_page_size,
+        ):
+            return
+        self._salary_control_page = new_page
+        self._render_salary_control_assignments_page()
+
+    def _on_salary_control_assignment_selected(self) -> None:
+        if not hasattr(self, "_salary_control_faculty_list"):
+            return
+        current = self._salary_control_faculty_list.currentItem()
+        if current is None:
+            return
+        faculty_id = current.data(Qt.UserRole)
+        if faculty_id is None:
+            return
+        selected_id = int(faculty_id)
+        if self._salary_control_selected_faculty_id != selected_id:
+            self._salary_control_selected_faculty_id = selected_id
+            self._on_salary_control_faculty_changed()
+
+    def _on_salary_control_faculty_changed(self, _=None) -> None:
+        faculty_id = self._salary_control_selected_faculty_id
+        if faculty_id is None:
+            self._clear_salary_control_detail_panel()
+            return
+        faculty = self.expense_service.repo.get_faculty_salary(int(faculty_id))
+        if faculty is None:
+            self._salary_control_selected_faculty_id = None
+            self._clear_salary_control_detail_panel()
+            return
+        self._salary_control_detail_heading.setText(f"{faculty.faculty_name} ({faculty.faculty_type})")
+        self._salary_control_detail_hint.setText("Edit salary and faculty profile details from this tab.")
+        self._salary_control_profile_card.set_student(
+            str(faculty.faculty_name or "—"),
+            str(faculty.faculty_type or "—"),
+            str(faculty.role or "—"),
+        )
+        self._salary_control_lbl_name.setText(str(faculty.faculty_name or "—"))
+        self._salary_control_lbl_type.setText(str(faculty.faculty_type or "—"))
+        self._salary_control_lbl_role.setText(str(faculty.role or "—"))
+        self._salary_control_lbl_monthly.setText(f"₹{float(faculty.monthly_salary or 0.0):,.2f}")
+        self._salary_control_lbl_working.setText(str(int(faculty.default_working_days or 0)))
+        self._salary_control_lbl_created.setText(str(getattr(faculty, "created_at", "—") or "—"))
+        self._style_salary_control_status_badge(
+            "Active" if bool(getattr(faculty, "is_active", True)) else "Inactive"
+        )
+        self._salary_control_edit_salary_btn.setEnabled(True)
+        self._salary_control_edit_profile_btn.setEnabled(True)
+        self._refresh_salary_control_history_table()
+        self._animate_widget_fade(getattr(self, "_salary_control_detail_body", None), start=0.82, duration=190)
+
+    def _refresh_salary_control_history_table(self) -> None:
+        if not hasattr(self, "_salary_control_history_table"):
+            return
+        faculty_id = self._salary_control_selected_faculty_id
+        table = self._salary_control_history_table
+        if faculty_id is None:
+            table.setRowCount(0)
+            self._salary_control_total_label.setText("Total paid: ₹0.00")
+            return
+        try:
+            overview = self.expense_service.faculty_salary_overview(int(faculty_id), history_limit=1000)
+        except Exception:
+            table.setRowCount(0)
+            self._salary_control_total_label.setText("Total paid: ₹0.00")
+            return
+        faculty = overview["faculty"]
+        rows = overview["history"]
+        table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            d = row.expense_date
+            d_text = d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else str(d or "")
+            attendance = float(getattr(row, "attendance_days", 0) or 0)
+            working = float(getattr(row, "working_days", 0) or 0)
+            values = [
+                d_text,
+                str(row.month_label or ""),
+                f"{attendance:.1f}/{working:.1f}",
+                f"{float(row.amount or 0):.2f}",
+                str(row.notes or ""),
+            ]
+            for col, value in enumerate(values):
+                table.setItem(i, col, table_item(value))
+        fit_table_columns_to_contents(table)
+        self._salary_control_total_label.setText(
+            f"Total paid to {faculty.faculty_name}: ₹{float(overview.get('total_paid', 0.0)):.2f}"
+        )
+
+    def _on_salary_control_edit_salary_clicked(self) -> None:
+        faculty_id = self._salary_control_selected_faculty_id
+        if faculty_id is None:
+            theme.message_warning(self, "Missing faculty", "Select a faculty member first.")
+            return
+        self._open_faculty_profile_editor_dialog(
+            int(faculty_id),
+            salary_only=True,
+            on_success=self._on_salary_control_update_success,
+        )
+
+    def _on_salary_control_edit_profile_clicked(self) -> None:
+        faculty_id = self._salary_control_selected_faculty_id
+        if faculty_id is None:
+            theme.message_warning(self, "Missing faculty", "Select a faculty member first.")
+            return
+        self._open_faculty_profile_editor_dialog(
+            int(faculty_id),
+            salary_only=False,
+            on_success=self._on_salary_control_update_success,
+        )
+
+    def _on_salary_control_update_success(self, updated_id: int) -> None:
+        self._salary_control_selected_faculty_id = int(updated_id)
+        self._refresh_salary_control_assignments_table(reset_page=False)
+        self._on_salary_control_faculty_changed()
+        # Keep Salary tab views in sync after profile updates.
+        self._salary_selected_faculty_id = int(updated_id)
+        self._refresh_salary_assignments_table(reset_page=False)
+        self._on_salary_faculty_changed()
+        self._refresh_salary_history_table()
 
     def _on_salary_faculty_changed(self, _=None) -> None:
         faculty_id = self._salary_selected_faculty_id
@@ -1695,6 +2221,11 @@ class MainWindow(QMainWindow):
         self._refresh_salary_assignments_table(reset_page=False)
 
     def _on_salary_assignments_refresh_clicked(self) -> None:
+        # Force a visible right-panel refresh cycle.
+        self._salary_clear_selection_on_next_render = True
+        self._salary_selected_faculty_id = None
+        self._clear_salary_detail_panel()
+        self._animate_widget_fade(getattr(self, "_salary_detail_body", None), start=0.72, duration=120)
         if hasattr(self, "_salary_filter_search"):
             self._salary_filter_search.blockSignals(True)
             self._salary_filter_search.clear()
@@ -1707,6 +2238,14 @@ class MainWindow(QMainWindow):
             self._salary_search_by.blockSignals(True)
             self._salary_search_by.setCurrentIndex(0)
             self._salary_search_by.blockSignals(False)
+        if hasattr(self, "_salary_snapshot_month_edit"):
+            today_qdate = QDate.currentDate()
+            first_of_month = QDate(today_qdate.year(), today_qdate.month(), 1)
+            self._salary_snapshot_month_edit.blockSignals(True)
+            self._salary_snapshot_month_edit.setDate(first_of_month)
+            self._salary_snapshot_month_edit.blockSignals(False)
+        # Force re-read of selected faculty + history/attendance from DB.
+        self.session.expire_all()
         self._refresh_salary_assignments_table(reset_page=True)
 
     def _on_salary_assignments_filter_changed(self, _=None) -> None:
@@ -1788,16 +2327,26 @@ class MainWindow(QMainWindow):
                 selected_row = i
         list_widget.blockSignals(False)
         if list_widget.count() > 0:
-            if selected_row < 0:
-                selected_row = 0
-            list_widget.setCurrentRow(selected_row)
-            current = list_widget.currentItem()
-            if current is not None:
-                selected_id = current.data(Qt.UserRole)
-                self._salary_selected_faculty_id = int(selected_id) if selected_id is not None else None
-                self._on_salary_faculty_changed()
+            if self._salary_clear_selection_on_next_render:
+                list_widget.blockSignals(True)
+                list_widget.clearSelection()
+                list_widget.setCurrentItem(None)
+                list_widget.blockSignals(False)
+                self._salary_selected_faculty_id = None
+                self._clear_salary_detail_panel()
+                self._salary_clear_selection_on_next_render = False
+            else:
+                if selected_row < 0:
+                    selected_row = 0
+                list_widget.setCurrentRow(selected_row)
+                current = list_widget.currentItem()
+                if current is not None:
+                    selected_id = current.data(Qt.UserRole)
+                    self._salary_selected_faculty_id = int(selected_id) if selected_id is not None else None
+                    self._on_salary_faculty_changed()
         else:
             self._salary_selected_faculty_id = None
+            self._salary_clear_selection_on_next_render = False
             self._clear_salary_detail_panel()
         self._animate_widget_fade(list_widget, start=0.78, duration=150)
         if hasattr(self, "_salary_assignments_pagination"):
@@ -1891,27 +2440,21 @@ class MainWindow(QMainWindow):
         month = int(qd.month())
         month_label = f"{year:04d}-{month:02d}"
         try:
-            payload = self.expense_service.get_saved_faculty_attendance(
-                int(faculty_id),
-                year=year,
-                month=month,
-            )
+            overview = self.expense_service.faculty_salary_overview(int(faculty_id), history_limit=500)
+            rows = overview.get("history", [])
+            matching_row = next((row for row in rows if str(getattr(row, "month_label", "")) == month_label), None)
         except Exception:
-            payload = {
-                "attendance": None,
-                "month_label": month_label,
-                "checked_days": 0,
-                "sunday_days": 0,
-                "attendance_days": 0.0,
-                "working_days": 0.0,
-            }
-        self._salary_attendance_month_value.setText(str(payload.get("month_label", month_label)))
-        self._salary_attendance_checked_value.setText(str(int(payload.get("checked_days", 0) or 0)))
-        self._salary_attendance_sunday_value.setText(str(int(payload.get("sunday_days", 0) or 0)))
-        self._salary_attendance_total_value.setText(str(int(float(payload.get("attendance_days", 0) or 0.0))))
-        self._salary_attendance_working_value.setText(str(int(float(payload.get("working_days", 0) or 0.0))))
+            matching_row = None
+
+        attendance_days = float(getattr(matching_row, "attendance_days", 0.0) or 0.0) if matching_row else 0.0
+        working_days = float(getattr(matching_row, "working_days", 0.0) or 0.0) if matching_row else 0.0
+        self._salary_attendance_month_value.setText(month_label)
+        self._salary_attendance_checked_value.setText(str(int(attendance_days)))
+        self._salary_attendance_sunday_value.setText("0")
+        self._salary_attendance_total_value.setText(str(int(attendance_days)))
+        self._salary_attendance_working_value.setText(str(int(working_days)))
         if hasattr(self, "_salary_stat_month"):
-            self._salary_stat_month.setText(str(payload.get("month_label", month_label)))
+            self._salary_stat_month.setText(month_label)
 
     def _on_salary_snapshot_month_changed(self, selected_date: QDate) -> None:
         first_day = QDate(selected_date.year(), selected_date.month(), 1)
@@ -1941,6 +2484,145 @@ class MainWindow(QMainWindow):
             theme.message_warning(self, "Missing faculty", "Select a faculty member first.")
             return
         self._open_salary_faculty_window(int(faculty_id))
+
+    def _open_faculty_profile_editor_dialog(
+        self,
+        faculty_id: int,
+        *,
+        salary_only: bool,
+        on_success=None,
+    ) -> None:
+        faculty = self.expense_service.repo.get_faculty_salary(int(faculty_id))
+        if faculty is None:
+            theme.message_warning(self, "Missing faculty", "Selected faculty does not exist.")
+            return
+
+        popup = QDialog(self)
+        popup.setWindowTitle("Edit Salary" if salary_only else "Edit Faculty Profile")
+        popup.setModal(True)
+        popup.resize(520 if salary_only else 620, 220 if salary_only else 340)
+        theme.apply_dialog_theme(popup)
+
+        popup_layout = QVBoxLayout(popup)
+        popup_layout.setContentsMargins(16, 14, 16, 12)
+        popup_layout.setSpacing(10)
+
+        intro = QLabel(
+            f"Update salary details for {faculty.faculty_name}."
+            if salary_only
+            else f"Update profile details for {faculty.faculty_name}."
+        )
+        intro.setProperty("role", "muted")
+        intro.setWordWrap(True)
+        popup_layout.addWidget(intro)
+
+        form = QFormLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(8)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        name_edit = QLineEdit(str(faculty.faculty_name or ""))
+        type_combo = QComboBox()
+        type_combo.addItem("Teaching", "Teaching")
+        type_combo.addItem("Non Teaching", "Non Teaching")
+        role_edit = QLineEdit(str(faculty.role or ""))
+        monthly_salary_edit = QLineEdit(f"{float(faculty.monthly_salary or 0.0):.2f}")
+        working_days_edit = QLineEdit(str(int(faculty.default_working_days or 0)))
+        status_combo = QComboBox()
+        status_combo.addItem("active", True)
+        status_combo.addItem("inactive", False)
+        faculty_type = str(faculty.faculty_type or "Teaching").strip().lower()
+        type_combo.setCurrentIndex(1 if faculty_type == "non teaching" else 0)
+        status_combo.setCurrentIndex(0 if bool(getattr(faculty, "is_active", True)) else 1)
+
+        if salary_only:
+            form.addRow("Current salary", QLabel(f"₹{float(faculty.monthly_salary or 0.0):.2f}"))
+            monthly_salary_edit.setPlaceholderText("Enter new monthly salary")
+            form.addRow("New salary", monthly_salary_edit)
+        else:
+            form.addRow("Faculty name", name_edit)
+            form.addRow("Category", type_combo)
+            form.addRow("Role / Designation", role_edit)
+            form.addRow("Monthly salary", monthly_salary_edit)
+            form.addRow("Default working days", working_days_edit)
+            form.addRow("Status", status_combo)
+        popup_layout.addLayout(form)
+
+        actions = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        popup_layout.addWidget(actions)
+
+        def _save_changes() -> None:
+            if salary_only:
+                faculty_name = str(faculty.faculty_name or "")
+                faculty_type_value = str(faculty.faculty_type or "Teaching")
+                role_value = str(faculty.role or "")
+                salary_value = (monthly_salary_edit.text() or "").strip()
+                working_days_value = max(1, int(faculty.default_working_days or 1))
+                is_active_value = bool(getattr(faculty, "is_active", True))
+            else:
+                faculty_name = (name_edit.text() or "").strip()
+                faculty_type_value = str(type_combo.currentData() or "Teaching")
+                role_value = (role_edit.text() or "").strip()
+                salary_value = (monthly_salary_edit.text() or "").strip()
+                working_days_raw = (working_days_edit.text() or "").strip()
+                is_active_value = bool(status_combo.currentData())
+                try:
+                    working_days_value = int(float(working_days_raw or 0))
+                except ValueError:
+                    theme.message_warning(
+                        popup,
+                        "Invalid input",
+                        "Default working days must be a valid number.",
+                    )
+                    return
+
+            if not salary_value:
+                theme.message_warning(popup, "Invalid input", "Monthly salary is required.")
+                return
+            try:
+                monthly_salary_value = float(salary_value)
+            except ValueError:
+                theme.message_warning(popup, "Invalid input", "Monthly salary must be a valid number.")
+                return
+
+            try:
+                updated = self.expense_service.update_faculty_profile(
+                    int(faculty.id),
+                    faculty_name=faculty_name,
+                    faculty_type=faculty_type_value,
+                    role=role_value,
+                    monthly_salary=monthly_salary_value,
+                    default_working_days=working_days_value,
+                    is_active=is_active_value,
+                )
+            except ValueError as e:
+                theme.message_warning(popup, "Unable to save", str(e))
+                return
+            except Exception as e:
+                self.session.rollback()
+                theme.message_critical(popup, "Save failed", str(e))
+                return
+
+            self.session.expire_all()
+            if on_success is not None:
+                on_success(int(updated.id))
+            theme.message_information(
+                self,
+                "Updated",
+                (
+                    f"{updated.faculty_name} details were updated."
+                    if not salary_only
+                    else f"Salary updated to ₹{float(updated.monthly_salary or 0.0):.2f}."
+                ),
+            )
+            popup.accept()
+
+        actions.accepted.connect(_save_changes)
+        actions.rejected.connect(popup.reject)
+        popup.exec()
 
     def _open_salary_faculty_window(self, faculty_id: int) -> None:
         try:
@@ -2038,7 +2720,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(summary_box)
 
         record_box = SurfaceCard()
-        record_box.body.addWidget(CardTitleBar("Record salary from attendance"))
+        record_box.body.addWidget(CardTitleBar("Salary calculation inputs"))
         record_form = QFormLayout()
         record_form.setHorizontalSpacing(16)
         record_form.setVerticalSpacing(8)
@@ -2051,14 +2733,10 @@ class MainWindow(QMainWindow):
         attendance_month_edit.setDate(QDate(QDate.currentDate().year(), QDate.currentDate().month(), 1))
         month_label_value = QLabel("-")
         month_label_value.setProperty("role", "muted")
-        working_days_value = QLabel("0")
-        working_days_value.setProperty("role", "muted")
-        attendance_days_value = QLabel("0")
-        attendance_days_value.setProperty("role", "muted")
-        auto_sundays_value = QLabel("0")
-        auto_sundays_value.setProperty("role", "muted")
-        salary_attendance_value = QLabel("0")
-        salary_attendance_value.setProperty("role", "muted")
+        total_working_days_edit = QLineEdit(str(int(faculty.default_working_days or 26)))
+        total_working_days_edit.setPlaceholderText("Total working days")
+        total_present_days_edit = QLineEdit()
+        total_present_days_edit.setPlaceholderText("Total days present")
         payment_date_edit = QDateEdit(QDate.currentDate())
         payment_date_edit.setCalendarPopup(True)
         payment_date_edit.setDisplayFormat("dd/MM/yyyy")
@@ -2067,6 +2745,8 @@ class MainWindow(QMainWindow):
         notes_edit.setPlaceholderText("Notes (optional)")
         attendance_month_edit.setMinimumWidth(220)
         payment_date_edit.setMinimumWidth(220)
+        total_working_days_edit.setMinimumWidth(220)
+        total_present_days_edit.setMinimumWidth(220)
 
         def _theme_date_edit_popup(date_edit: QDateEdit) -> None:
             t = theme.current_tokens()
@@ -2125,182 +2805,29 @@ class MainWindow(QMainWindow):
         _theme_date_edit_popup(payment_date_edit)
         record_form.addRow("Attendance month", attendance_month_edit)
         record_form.addRow("Month label", month_label_value)
-        record_form.addRow("Default working days", working_days_value)
-        record_form.addRow("Checked attendance", attendance_days_value)
-        record_form.addRow("Auto Sundays", auto_sundays_value)
-        record_form.addRow("Salary attendance", salary_attendance_value)
+        record_form.addRow("Total working days", total_working_days_edit)
+        record_form.addRow("Total days present", total_present_days_edit)
         record_form.addRow("Payment date", payment_date_edit)
         record_form.addRow("Notes", notes_edit)
         record_box.body.addLayout(record_form)
         layout.addWidget(record_box)
 
-        attendance_calendar_box = SurfaceCard()
-        attendance_calendar_box.body.addWidget(CardTitleBar("Attendance calendar (week-wise)"))
-        attendance_calendar_layout = QVBoxLayout()
-        attendance_calendar_layout.setContentsMargins(0, 0, 0, 0)
-        attendance_calendar_layout.setSpacing(8)
-        attendance_calendar_hint = QLabel(
-            "Tick each day attended. Every checkbox shows the date and day."
+        preview_lbl = QLabel(
+            "Enter total working days and total days present, then click Calculate Salary or Save Salary."
         )
-        attendance_calendar_hint.setWordWrap(True)
-        attendance_calendar_hint.setProperty("role", "hint")
-        attendance_calendar_layout.addWidget(attendance_calendar_hint)
-        attendance_grid = QGridLayout()
-        attendance_grid.setHorizontalSpacing(10)
-        attendance_grid.setVerticalSpacing(8)
-        for col in range(7):
-            attendance_grid.setColumnStretch(col, 1)
-        attendance_calendar_layout.addLayout(attendance_grid)
-        attendance_calendar_box.body.addLayout(attendance_calendar_layout)
-        layout.addWidget(attendance_calendar_box)
-
-        preview_lbl = QLabel("Salary is not calculated yet. Mark attendance first, then click Save Salary Entry.")
         preview_lbl.setProperty("role", "muted")
         layout.addWidget(preview_lbl)
-
-        attendance_checkboxes: dict[int, QCheckBox] = {}
-        weekday_headers = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        attendance_dirty = False
-
-        def _attendance_checked_days() -> int:
-            return sum(1 for cb in attendance_checkboxes.values() if cb.isChecked())
 
         def _selected_attendance_month() -> tuple[int, int]:
             selected = attendance_month_edit.date()
             return int(selected.year()), int(selected.month())
 
-        def _attendance_salary_parts() -> tuple[float, float, int, int, list[int], str]:
+        def _month_label_text() -> str:
             year, month = _selected_attendance_month()
-            total_days = calendar.monthrange(year, month)[1]
-            marked_days = sorted(
-                [int(day_num) for day_num, cb in attendance_checkboxes.items() if cb.isChecked() and cb.isEnabled()]
-            )
-            checked_days = _attendance_checked_days()
-            sunday_days = max(0, total_days - self._default_working_days_for_month(year, month))
-            effective_attendance = checked_days + sunday_days
-            month_label = f"{year:04d}-{month:02d}"
-            return (
-                float(effective_attendance),
-                float(total_days),
-                int(sunday_days),
-                int(checked_days),
-                marked_days,
-                month_label,
-            )
+            return f"{year:04d}-{month:02d}"
 
-        def _set_attendance_count_labels(attendance_days: float, working_days: float, sunday_days: int, checked_days: int) -> None:
-            attendance_days_value.setText(str(int(checked_days)))
-            auto_sundays_value.setText(str(int(sunday_days)))
-            salary_attendance_value.setText(str(int(attendance_days)))
-            working_days_value.setText(str(int(working_days)))
-
-        def _on_attendance_checkbox_changed(_state: int) -> None:
-            nonlocal attendance_dirty
-            attendance_dirty = True
-            attendance_days, working_days, sunday_days, checked_days, _marked_days, _month_label = _attendance_salary_parts()
-            _set_attendance_count_labels(attendance_days, working_days, sunday_days, checked_days)
-            preview_lbl.setText("Attendance changed. Click Mark Attendance to save it.")
-
-        def _clear_attendance_grid() -> None:
-            while attendance_grid.count():
-                item = attendance_grid.takeAt(0)
-                widget = item.widget()
-                if widget is not None:
-                    widget.deleteLater()
-
-        def _rebuild_attendance_calendar() -> None:
-            nonlocal attendance_dirty
-            attendance_checkboxes.clear()
-            _clear_attendance_grid()
-            for col, label_text in enumerate(weekday_headers):
-                header = QLabel(label_text)
-                header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                header.setProperty("role", "muted")
-                attendance_grid.addWidget(header, 0, col)
-
-            year, month = _selected_attendance_month()
-            month_label_value.setText(f"{year:04d}-{month:02d}")
-            working_days = self._default_working_days_for_month(year, month)
-            working_days_value.setText(str(int(working_days)))
-
-            month_calendar = calendar.Calendar(firstweekday=0)
-            weeks = month_calendar.monthdayscalendar(year, month)
-            for week_index, week_days in enumerate(weeks, start=1):
-                for weekday_index, day_num in enumerate(week_days):
-                    if day_num <= 0:
-                        attendance_grid.addWidget(QLabel(""), week_index, weekday_index)
-                        continue
-                    day_date = date(year, month, day_num)
-                    day_name = day_date.strftime("%a")
-                    checkbox = QCheckBox(f"{day_num:02d} {day_name}")
-                    if day_date.weekday() == 6:
-                        checkbox.setEnabled(False)
-                        checkbox.setStyleSheet(
-                            """
-                            QCheckBox {
-                                color: #7b8ca8;
-                            }
-                            QCheckBox::indicator {
-                                width: 14px;
-                                height: 14px;
-                                border-radius: 3px;
-                            }
-                            QCheckBox::indicator:disabled:unchecked {
-                                border: 0px;
-                                background-color: #1abc9c;
-                            }
-                            QCheckBox::indicator:disabled:checked {
-                                border: 0px;
-                                background-color: #1abc9c;
-                            }
-                            """
-                        )
-                        checkbox.setToolTip("Sunday is auto-counted in salary and cannot be selected.")
-                    checkbox.stateChanged.connect(_on_attendance_checkbox_changed)
-                    attendance_checkboxes[int(day_num)] = checkbox
-                    attendance_grid.addWidget(checkbox, week_index, weekday_index)
-
-            attendance_dirty = False
-            attendance_days, working_days, sunday_days, checked_days, _marked_days, _month_label = _attendance_salary_parts()
-            _set_attendance_count_labels(attendance_days, working_days, sunday_days, checked_days)
-
-        def _load_saved_attendance_for_month() -> None:
-            nonlocal attendance_dirty
-            year, month = _selected_attendance_month()
-            try:
-                payload = self.expense_service.get_saved_faculty_attendance(
-                    int(faculty.id),
-                    year=year,
-                    month=month,
-                )
-            except ValueError as e:
-                theme.message_warning(dialog, "Attendance load failed", str(e))
-                return
-            except Exception as e:
-                self.session.rollback()
-                theme.message_critical(dialog, "Attendance load failed", str(e))
-                return
-
-            marked_days = {int(day) for day in payload.get("marked_days", [])}
-            for day_num, cb in attendance_checkboxes.items():
-                should_check = cb.isEnabled() and day_num in marked_days
-                cb.blockSignals(True)
-                cb.setChecked(bool(should_check))
-                cb.blockSignals(False)
-
-            checked_days = int(payload.get("checked_days", 0) or 0)
-            sunday_days = int(payload.get("sunday_days", 0) or 0)
-            attendance_days = float(payload.get("attendance_days", checked_days + sunday_days) or 0.0)
-            working_days = float(payload.get("working_days", 0.0) or 0.0)
-            _set_attendance_count_labels(attendance_days, working_days, sunday_days, checked_days)
-            attendance_dirty = False
-            if payload.get("attendance") is None:
-                preview_lbl.setText("No attendance marked yet for this month. Tick days and click Mark Attendance.")
-            else:
-                preview_lbl.setText(
-                    f"Attendance marked for {payload.get('month_label', '')}. "
-                    "Salary is not calculated yet."
-                )
+        def _refresh_month_label_value() -> None:
+            month_label_value.setText(_month_label_text())
 
         def _on_attendance_month_changed(selected_date: QDate) -> None:
             # Keep month picker anchored to day 1 so month transitions remain predictable.
@@ -2309,19 +2836,19 @@ class MainWindow(QMainWindow):
                 attendance_month_edit.blockSignals(True)
                 attendance_month_edit.setDate(first_day)
                 attendance_month_edit.blockSignals(False)
-            _rebuild_attendance_calendar()
-            _load_saved_attendance_for_month()
+            _refresh_month_label_value()
 
         attendance_month_edit.dateChanged.connect(_on_attendance_month_changed)
+        _refresh_month_label_value()
 
         record_actions = QHBoxLayout()
         record_actions.addStretch(1)
-        save_salary_btn = QPushButton("Save Salary Entry")
+        save_salary_btn = QPushButton("Calculate Salary")
         style_fee_action_button(save_salary_btn)
         record_actions.addWidget(save_salary_btn)
-        mark_attendance_btn = QPushButton("Mark Attendence")
-        style_fee_action_button(mark_attendance_btn)
-        record_actions.addWidget(mark_attendance_btn)
+        save_salary_entry_btn = QPushButton("Save Salary")
+        style_fee_action_button(save_salary_entry_btn)
+        record_actions.addWidget(save_salary_entry_btn)
         layout.addLayout(record_actions)
 
         table_card = SurfaceCard()
@@ -2373,58 +2900,49 @@ class MainWindow(QMainWindow):
                     table.setItem(i, col, table_item(value))
             fit_table_columns_to_contents(table)
 
-        def _mark_attendance_from_window() -> None:
-            nonlocal attendance_dirty
+        def _salary_inputs_from_window() -> dict:
+            year, month = _selected_attendance_month()
+            month_label = _month_label_text()
+            working_text = (total_working_days_edit.text() or "").strip()
+            present_text = (total_present_days_edit.text() or "").strip()
+            if not working_text:
+                raise ValueError("Enter total working days.")
+            if not present_text:
+                raise ValueError("Enter total days present.")
             try:
-                year, month = _selected_attendance_month()
-                attendance_days, working_days, sunday_days, checked_days, marked_days, month_label = _attendance_salary_parts()
-                payload = self.expense_service.save_faculty_attendance(
-                    int(faculty.id),
-                    year=year,
-                    month=month,
-                    marked_days=marked_days,
-                )
-            except ValueError as e:
-                theme.message_warning(dialog, "Attendance not saved", str(e))
-                return
-            except Exception as e:
-                self.session.rollback()
-                theme.message_critical(dialog, "Attendance save failed", str(e))
-                return
-
-            _set_attendance_count_labels(
-                float(payload.get("attendance_days", attendance_days) or attendance_days),
-                float(payload.get("working_days", working_days) or working_days),
-                int(payload.get("sunday_days", sunday_days) or sunday_days),
-                int(payload.get("checked_days", checked_days) or checked_days),
-            )
-            attendance_dirty = False
-            preview_lbl.setText(
-                f"Attendance marked for {month_label} "
-                f"({checked_days} checked + {sunday_days} Sundays). Salary not calculated yet."
-            )
-            theme.message_information(
-                dialog,
-                "Attendance marked",
-                f"Attendance marked for {faculty.faculty_name} ({month_label}).",
-            )
+                working_days = float(working_text)
+            except ValueError:
+                raise ValueError("Total working days must be a valid number.")
+            try:
+                present_days = float(present_text)
+            except ValueError:
+                raise ValueError("Total days present must be a valid number.")
+            if working_days <= 0:
+                raise ValueError("Total working days must be greater than zero.")
+            if present_days < 0:
+                raise ValueError("Total days present cannot be negative.")
+            if present_days > working_days:
+                raise ValueError("Total days present cannot be greater than total working days.")
+            qd = payment_date_edit.date()
+            payment_date = date(qd.year(), qd.month(), qd.day())
+            notes = (notes_edit.text() or "").strip()
+            return {
+                "year": int(year),
+                "month": int(month),
+                "month_label": month_label,
+                "working_days": float(working_days),
+                "present_days": float(present_days),
+                "payment_date": payment_date,
+                "notes": notes,
+            }
 
         def _save_salary_entry_from_window() -> None:
             try:
-                year, month = _selected_attendance_month()
-                if attendance_dirty:
-                    raise ValueError("Attendance changed. Click Mark Attendance before calculating salary.")
-                payload = self.expense_service.get_saved_faculty_attendance(
-                    int(faculty.id),
-                    year=year,
-                    month=month,
-                )
-                if payload.get("attendance") is None:
-                    raise ValueError("No saved attendance found for this month. Click Mark Attendance first.")
+                payload = _salary_inputs_from_window()
                 calc = self.expense_service.calculate_salary_for_faculty(
                     int(faculty.id),
-                    float(payload.get("attendance_days", 0.0) or 0.0),
-                    working_days=float(payload.get("working_days", 0.0) or 0.0),
+                    float(payload["present_days"]),
+                    working_days=float(payload["working_days"]),
                 )
             except ValueError as e:
                 theme.message_warning(dialog, "Invalid salary calculation", str(e))
@@ -2435,26 +2953,73 @@ class MainWindow(QMainWindow):
                 return
 
             payable_amount = float(calc.get("payable_amount", 0.0) or 0.0)
-            attendance_days = float(payload.get("attendance_days", 0.0) or 0.0)
-            working_days = float(payload.get("working_days", 0.0) or 0.0)
-            checked_days = int(payload.get("checked_days", 0) or 0)
-            sunday_days = int(payload.get("sunday_days", 0) or 0)
-            month_label = str(payload.get("month_label", f"{year:04d}-{month:02d}"))
             preview_lbl.setText(
                 f"Payable amount: ₹{payable_amount:.2f} "
-                f"({checked_days} checked + {sunday_days} Sundays = {int(attendance_days)}/{int(working_days)} days)"
+                f"({float(payload['present_days']):.1f}/{float(payload['working_days']):.1f} days)"
             )
             theme.message_information(
                 dialog,
                 "Salary calculated",
-                f"Calculated salary for {faculty.faculty_name} ({month_label}) is ₹{payable_amount:.2f}. "
+                f"Calculated salary for {faculty.faculty_name} ({payload['month_label']}) is ₹{payable_amount:.2f}. "
                 "This amount is only calculated and not saved to history.",
             )
 
-        mark_attendance_btn.clicked.connect(_mark_attendance_from_window)
+        def _save_salary_to_history_from_window() -> None:
+            try:
+                payload = _salary_inputs_from_window()
+                calc = self.expense_service.calculate_salary_for_faculty(
+                    int(faculty.id),
+                    float(payload["present_days"]),
+                    working_days=float(payload["working_days"]),
+                )
+                payable_amount = float(calc.get("payable_amount", 0.0) or 0.0)
+                confirmed = theme.message_question(
+                    dialog,
+                    "Confirm salary save",
+                    (
+                        f"Save salary entry for {faculty.faculty_name}?\n\n"
+                        f"Month: {payload['month_label']}\n"
+                        f"Payment date: {payload['payment_date'].strftime('%d/%m/%Y')}\n"
+                        f"Attendance: {float(payload['present_days']):.1f}/{float(payload['working_days']):.1f} days\n"
+                        f"Amount paid: ₹{payable_amount:.2f}"
+                    ),
+                    buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    default_button=QMessageBox.StandardButton.No,
+                )
+                if confirmed != QMessageBox.StandardButton.Yes:
+                    return
+                row = self.expense_service.record_salary_from_attendance(
+                    int(faculty.id),
+                    float(payload["present_days"]),
+                    working_days=float(payload["working_days"]),
+                    month_label=str(payload["month_label"]),
+                    expense_date=payload["payment_date"],
+                    notes=str(payload["notes"]),
+                )
+            except ValueError as e:
+                theme.message_warning(dialog, "Salary save error", str(e))
+                return
+            except Exception as e:
+                self.session.rollback()
+                theme.message_critical(dialog, "Salary save failed", str(e))
+                return
+
+            preview_lbl.setText(f"Payable amount: ₹{float(row.amount or 0.0):.2f} (saved to salary history)")
+            notes_edit.clear()
+            _reload_dialog_salary_data()
+            self._refresh_salary_history_table()
+            theme.message_information(
+                dialog,
+                "Salary saved",
+                (
+                    f"Salary saved for {row.person_name}.\n"
+                    f"Month: {row.month_label}\n"
+                    f"Amount paid: ₹{float(row.amount or 0.0):.2f}"
+                ),
+            )
+
         save_salary_btn.clicked.connect(_save_salary_entry_from_window)
-        _rebuild_attendance_calendar()
-        _load_saved_attendance_for_month()
+        save_salary_entry_btn.clicked.connect(_save_salary_to_history_from_window)
         _reload_dialog_salary_data()
 
         actions = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -2668,7 +3233,9 @@ class MainWindow(QMainWindow):
         student_name = str(payment_row.get("student_name") or "")
         class_name = str(payment_row.get("class_name") or "")
         section = str(payment_row.get("section") or "")
-        guardian_name = str(payment_row.get("guardian_name") or "")
+        guardian_name = str(
+            payment_row.get("father_name") or payment_row.get("guardian_name") or ""
+        )
         amount = float(payment_row.get("amount", 0) or 0)
         discount = float(payment_row.get("discount", 0) or 0)
         net_paid = max(0.0, amount - discount)
@@ -2874,11 +3441,14 @@ class MainWindow(QMainWindow):
         placeholder_map = {
             "Roll Number": "Enter student roll number",
             "Name": "Enter student name",
-            "Phone": "Enter student phone",
+            "Mobile Number 1": "Enter mobile number 1",
+            "Mobile Number 2": "Enter mobile number 2",
             "Village": "Enter village name",
             "Class-Section": "Enter class-section (example: I-A or 10-B)",
             "Status": "Enter student status",
-            "Guardian Name": "Enter guardian name",
+            "Father Name": "Enter father name",
+            "Mother Name": "Enter mother name",
+            "Aadhaar": "Enter aadhaar number",
         }
         tab.student_search.setPlaceholderText(placeholder_map.get(basis, ""))
         self._refresh_details_tab(reset_page=True)
@@ -2916,15 +3486,15 @@ class MainWindow(QMainWindow):
             if self._payment_student_matches(s, criteria, q)
             and (not active_only or str(s.status or "").lower() == "active")
         ]
-        candidate_ids = [s.id for s in candidates]
+        candidate_ids = [s.student_id for s in candidates]
         due_map = (
             self.payment_service.get_students_due_breakdown(candidate_ids)
             if candidate_ids
             else {}
         )
         if outstanding_only:
-            candidates = [s for s in candidates if float(due_map.get(s.id, {}).get("total", 0) or 0) > 0.01]
-        self._details_filtered_ids = [s.id for s in candidates]
+            candidates = [s for s in candidates if float(due_map.get(s.student_id, {}).get("total", 0) or 0) > 0.01]
+        self._details_filtered_ids = [s.student_id for s in candidates]
         self._details_due_map = due_map
 
     def _refresh_details_tab(self, reset_page: bool = False) -> None:
@@ -2935,7 +3505,7 @@ class MainWindow(QMainWindow):
             self._details_page_index = 0
         self._rebuild_details_filtered_ids()
         self._render_details_list()
-        if self.selected_student and self.selected_student.id in self._details_filtered_ids:
+        if self.selected_student and self.selected_student.student_id in self._details_filtered_ids:
             self._show_details_for_student(self.selected_student)
         elif not tab.student_results.currentItem():
             tab.clear_detail()
@@ -2946,9 +3516,9 @@ class MainWindow(QMainWindow):
             return
         ids = slice_page(self._details_filtered_ids, self._details_page_index)
         self._ensure_payment_students_loaded()
-        by_id = {s.id: s for s in self._all_payment_students}
+        by_id = {s.student_id: s for s in self._all_payment_students}
         due_map = getattr(self, "_details_due_map", {})
-        current_id = self.selected_student.id if self.selected_student else None
+        current_id = self.selected_student.student_id if self.selected_student else None
         tab.match_count_label.setText(f"{len(self._details_filtered_ids)} students match")
         tab.student_results.blockSignals(True)
         tab.student_results.clear()
@@ -2968,11 +3538,11 @@ class MainWindow(QMainWindow):
                 f"Class {s.class_name}-{s.section} | {status.title()} | {transport_tag} | {due_tag}"
             )
             item = QListWidgetItem(line)
-            item.setData(Qt.UserRole, s.id)
+            item.setData(Qt.UserRole, s.student_id)
             if total > 0.01:
                 item.setForeground(Qt.GlobalColor.darkRed)
             tab.student_results.addItem(item)
-            if current_id and s.id == current_id:
+            if current_id and s.student_id == current_id:
                 selected_item = item
         if selected_item:
             tab.student_results.setCurrentItem(selected_item)
@@ -2994,7 +3564,7 @@ class MainWindow(QMainWindow):
         student_id = item.data(Qt.UserRole)
         if not student_id:
             return
-        s = self.session.get(Student, int(student_id))
+        s = self.session.get(Student, str(student_id))
         if not s:
             return
         self.selected_student = s
@@ -3004,7 +3574,7 @@ class MainWindow(QMainWindow):
         tab = self._student_details_tab
         if tab is None:
             return
-        due = self.payment_service.get_student_due_breakdown(student.id)
+        due = self.payment_service.get_student_due_breakdown(student.student_id)
         roll = str(getattr(student, "student_id", None) or "")
         recent = [
             p
@@ -3042,16 +3612,22 @@ class MainWindow(QMainWindow):
             return q in str(student.student_id or "").lower()
         if criteria == "Name":
             return q in str(student.full_name or "").lower()
-        if criteria == "Phone":
-            return q in str(student.phone or "").lower()
+        if criteria == "Mobile Number 1":
+            return q in str(getattr(student, "mobile_number_1", None) or student.phone or "").lower()
+        if criteria == "Mobile Number 2":
+            return q in str(getattr(student, "mobile_number_2", None) or "").lower()
         if criteria == "Village":
             return q in str(getattr(student, "village", None) or "").lower()
         if criteria == "Class-Section":
             return class_section_matches_query(student.class_name, student.section, q)
         if criteria == "Status":
             return q in str(student.status or "").lower()
-        if criteria == "Guardian Name":
-            return q in str(student.guardian_name or "").lower()
+        if criteria == "Father Name":
+            return q in str(getattr(student, "father_name", None) or student.guardian_name or "").lower()
+        if criteria == "Mother Name":
+            return q in str(getattr(student, "mother_name", None) or "").lower()
+        if criteria == "Aadhaar":
+            return q in str(getattr(student, "aadhaar", None) or "").lower()
         return True
 
     def _rebuild_payment_filtered_ids(self, pane_id: str) -> None:
@@ -3060,7 +3636,7 @@ class MainWindow(QMainWindow):
         q = (pane.student_search.text() or "").strip().lower()
         criteria = pane.search_by.currentText()
         pane.filtered_ids = [
-            s.id
+            s.student_id
             for s in self._all_payment_students
             if self._payment_student_matches(s, criteria, q)
         ]
@@ -3094,9 +3670,9 @@ class MainWindow(QMainWindow):
         pane = self._payment_panes[pane_id]
         ids = slice_page(pane.filtered_ids, pane.page_index)
         self._ensure_payment_students_loaded()
-        by_id = {s.id: s for s in self._all_payment_students}
+        by_id = {s.student_id: s for s in self._all_payment_students}
         due_map = self.payment_service.get_students_due_breakdown(ids) if ids else {}
-        current_student_id = self.selected_student.id if self.selected_student else None
+        current_student_id = self.selected_student.student_id if self.selected_student else None
         pane.student_results.blockSignals(True)
         pane.student_results.clear()
         selected_item = None
@@ -3106,18 +3682,18 @@ class MainWindow(QMainWindow):
                 continue
             due = due_map.get(sid, {})
             total_due = float(due.get("total", 0) or 0)
-            phone = str(s.phone or "—")
+            phone = str(getattr(s, "mobile_number_1", None) or s.phone or "—")
             status = str(s.status or "active").title()
             due_tag = "Paid up" if total_due <= 0.01 else f"Due ₹{total_due:.2f}"
             item = QListWidgetItem(
                 f"{s.student_id} - {s.full_name}\n"
                 f"Class {s.class_name}-{s.section} | {phone} | {status} | {due_tag}"
             )
-            item.setData(Qt.UserRole, s.id)
+            item.setData(Qt.UserRole, s.student_id)
             if total_due > 0.01:
                 item.setForeground(QColor(theme.current_tokens().danger))
             pane.student_results.addItem(item)
-            if current_student_id and s.id == current_student_id:
+            if current_student_id and s.student_id == current_student_id:
                 selected_item = item
         if selected_item:
             pane.student_results.setCurrentItem(selected_item)
@@ -3132,9 +3708,9 @@ class MainWindow(QMainWindow):
             if selected_summary is None and self.selected_student is not None:
                 selected_summary = self.selected_student
         if selected_summary is not None:
-            selected_due = due_map.get(selected_summary.id)
+            selected_due = due_map.get(selected_summary.student_id)
             if selected_due is None:
-                selected_due = self.payment_service.get_student_due_breakdown(selected_summary.id)
+                selected_due = self.payment_service.get_student_due_breakdown(selected_summary.student_id)
             self._set_payment_preview_student(pane, selected_summary, selected_due)
         else:
             self._set_payment_preview_idle(pane)
@@ -3156,11 +3732,14 @@ class MainWindow(QMainWindow):
         placeholder_map = {
             "Roll Number": "Enter student roll number",
             "Name": "Enter student name",
-            "Phone": "Enter student phone",
+            "Mobile Number 1": "Enter mobile number 1",
+            "Mobile Number 2": "Enter mobile number 2",
             "Village": "Enter village name",
             "Class-Section": "Enter class-section (example: I-A or 10-B)",
             "Status": "Enter student status",
-            "Guardian Name": "Enter guardian name",
+            "Father Name": "Enter father name",
+            "Mother Name": "Enter mother name",
+            "Aadhaar": "Enter aadhaar number",
         }
         pane.student_search.setPlaceholderText(placeholder_map.get(basis, ""))
         self._refresh_payment_pane(pane_id, reset_page=True)
@@ -3173,12 +3752,12 @@ class MainWindow(QMainWindow):
             if pane is not None:
                 self._set_payment_preview_idle(pane)
             return
-        s = self.session.get(Student, int(student_id))
+        s = self.session.get(Student, str(student_id))
         if not s:
             return
         self.selected_student = s
         if pane is not None:
-            self._set_payment_preview_student(pane, s, self.payment_service.get_student_due_breakdown(s.id))
+            self._set_payment_preview_student(pane, s, self.payment_service.get_student_due_breakdown(s.student_id))
 
     def _on_payment_student_double_clicked(self, pane_id, item):
         if not item:
@@ -3229,7 +3808,7 @@ class MainWindow(QMainWindow):
         sub_heading.setProperty("role", "muted")
         layout.addWidget(heading)
         layout.addWidget(sub_heading)
-        due_init = self.payment_service.get_student_due_breakdown(student.id)
+        due_init = self.payment_service.get_student_due_breakdown(student.student_id)
 
         content_scroll = QScrollArea()
         content_scroll.setWidgetResizable(True)
@@ -3284,17 +3863,18 @@ class MainWindow(QMainWindow):
 
         details_box = QGroupBox("Student Information")
         details_layout = QFormLayout(details_box)
-        lbl_pk = QLabel(str(student.id))
         lbl_created = QLabel(str(student.created_at or "-"))
 
-        edit_student_id = edit_name = edit_class = edit_section = edit_phone = edit_guardian = None
+        edit_student_id = edit_name = edit_class = edit_section = edit_mobile_1 = edit_mobile_2 = None
+        edit_gender = edit_father_name = edit_mother_name = edit_dob = edit_caste = edit_aadhaar = None
         edit_village = edit_transport = None
         lbl_school_fees_editable = None
         lbl_van_fees_editable = None
         edit_status = None
         lbl_van_fees = None
         lbl_school_fees = None
-        ro_student_id = ro_name = ro_class = ro_section = ro_phone = ro_village = ro_transport = ro_guardian = ro_status = None
+        ro_student_id = ro_name = ro_class = ro_section = ro_mobile_1 = ro_mobile_2 = None
+        ro_village = ro_transport = ro_gender = ro_father_name = ro_mother_name = ro_dob = ro_caste = ro_aadhaar = ro_status = None
 
         if student_fields_editable:
             edit_student_id = QLineEdit(str(student.student_id or ""))
@@ -3311,8 +3891,14 @@ class MainWindow(QMainWindow):
                 getattr(student, "section", None),
                 canonical=self._canonical_section_for_combo,
             )
-            edit_phone = QLineEdit(normalize_phone_text(str(student.phone or "")))
-            configure_phone_line_edit(edit_phone)
+            edit_mobile_1 = QLineEdit(
+                normalize_phone_text(str(getattr(student, "mobile_number_1", None) or student.phone or ""))
+            )
+            configure_phone_line_edit(edit_mobile_1)
+            edit_mobile_2 = QLineEdit(
+                normalize_phone_text(str(getattr(student, "mobile_number_2", None) or ""))
+            )
+            configure_phone_line_edit(edit_mobile_2)
             edit_village = QComboBox()
             self._populate_village_combo(edit_village)
             key = self.village_van_fee_service.resolve_village_key(getattr(student, "village", None))
@@ -3332,7 +3918,24 @@ class MainWindow(QMainWindow):
             edit_transport.addItem("Own transport", "own")
             tm = (getattr(student, "transport_mode", None) or "van").strip().lower()
             edit_transport.setCurrentIndex(1 if tm == "own" else 0)
-            edit_guardian = QLineEdit(str(student.guardian_name or ""))
+            edit_gender = QComboBox()
+            edit_gender.addItems(["Male", "Female", "Other"])
+            edit_gender.setCurrentText(self._gender_for_combo(getattr(student, "gender", None)))
+            edit_father_name = QLineEdit(
+                str(getattr(student, "father_name", None) or getattr(student, "guardian_name", None) or "")
+            )
+            edit_mother_name = QLineEdit(str(getattr(student, "mother_name", None) or ""))
+            dob_value = getattr(student, "date_of_birth", None)
+            if isinstance(dob_value, datetime):
+                dob_text = dob_value.strftime("%d/%m/%Y")
+            elif isinstance(dob_value, date):
+                dob_text = dob_value.strftime("%d/%m/%Y")
+            else:
+                dob_text = str(dob_value or "")
+            edit_dob = QLineEdit(dob_text)
+            edit_dob.setPlaceholderText("DD/MM/YYYY")
+            edit_caste = QLineEdit(str(getattr(student, "caste", None) or ""))
+            edit_aadhaar = QLineEdit(str(getattr(student, "aadhaar", None) or ""))
             lbl_van_fees_editable = QLabel(f"{float(getattr(student, 'van_fees', 0) or 0):.2f}")
             lbl_van_fees_editable.setToolTip("Van fee tariff is managed under Fee Control (by village).")
             lbl_school_fees_editable = QLabel(f"{float(getattr(student, 'school_fees', 0) or 0):.2f}")
@@ -3343,16 +3946,21 @@ class MainWindow(QMainWindow):
             status_index = edit_status.findText(current_status, Qt.MatchFixedString)
             if status_index >= 0:
                 edit_status.setCurrentIndex(status_index)
-            details_layout.addRow("PK", lbl_pk)
             details_layout.addRow("Created At", lbl_created)
             details_layout.addRow("Student ID", edit_student_id)
             details_layout.addRow("Name", edit_name)
+            details_layout.addRow("Gender", edit_gender)
+            details_layout.addRow("Father Name", edit_father_name)
+            details_layout.addRow("Mother Name", edit_mother_name)
             details_layout.addRow("Class", edit_class)
             details_layout.addRow("Section", edit_section)
-            details_layout.addRow("Phone", edit_phone)
+            details_layout.addRow("Mobile Number 1", edit_mobile_1)
+            details_layout.addRow("Mobile Number 2", edit_mobile_2)
+            details_layout.addRow("Date of Birth", edit_dob)
+            details_layout.addRow("Caste", edit_caste)
+            details_layout.addRow("Aadhaar", edit_aadhaar)
             details_layout.addRow("Village", edit_village)
             details_layout.addRow("Transport", edit_transport)
-            details_layout.addRow("Guardian Name", edit_guardian)
             details_layout.addRow("Van Fees (read-only)", lbl_van_fees_editable)
             details_layout.addRow("School Fees (read-only)", lbl_school_fees_editable)
             details_layout.addRow("Status", edit_status)
@@ -3374,24 +3982,44 @@ class MainWindow(QMainWindow):
         else:
             ro_student_id = QLabel(str(student.student_id or "-"))
             ro_name = QLabel(str(student.full_name or "-"))
+            ro_gender = QLabel(self._gender_display(getattr(student, "gender", None)) or "-")
+            ro_father_name = QLabel(
+                str(getattr(student, "father_name", None) or getattr(student, "guardian_name", None) or "-")
+            )
+            ro_mother_name = QLabel(str(getattr(student, "mother_name", None) or "-"))
             ro_class = QLabel(str(student.class_name or "-"))
             ro_section = QLabel(str(student.section or "-"))
-            ro_phone = QLabel(str(student.phone or "-"))
+            ro_mobile_1 = QLabel(str(getattr(student, "mobile_number_1", None) or student.phone or "-"))
+            ro_mobile_2 = QLabel(str(getattr(student, "mobile_number_2", None) or "-"))
+            dob_value = getattr(student, "date_of_birth", None)
+            if isinstance(dob_value, datetime):
+                ro_dob = QLabel(dob_value.strftime("%d/%m/%Y"))
+            elif isinstance(dob_value, date):
+                ro_dob = QLabel(dob_value.strftime("%d/%m/%Y"))
+            else:
+                ro_dob = QLabel(str(dob_value or "-"))
+            ro_caste = QLabel(str(getattr(student, "caste", None) or "-"))
+            ro_aadhaar = QLabel(str(getattr(student, "aadhaar", None) or "-"))
             ro_village = QLabel(str(getattr(student, "village", None) or "-"))
             tm_ro = (getattr(student, "transport_mode", None) or "van").strip().lower()
             ro_transport = QLabel("Own transport" if tm_ro == "own" else "Van transport")
-            ro_guardian = QLabel(str(student.guardian_name or "-"))
             ro_status = QLabel(str(student.status or "-"))
             lbl_van_fees = QLabel(f"{float(getattr(student, 'van_fees', 0) or 0):.2f}")
             lbl_school_fees = QLabel(f"{float(getattr(student, 'school_fees', 0) or 0):.2f}")
             details_layout.addRow("Student ID", ro_student_id)
             details_layout.addRow("Name", ro_name)
+            details_layout.addRow("Gender", ro_gender)
+            details_layout.addRow("Father Name", ro_father_name)
+            details_layout.addRow("Mother Name", ro_mother_name)
             details_layout.addRow("Class", ro_class)
             details_layout.addRow("Section", ro_section)
-            details_layout.addRow("Phone", ro_phone)
+            details_layout.addRow("Mobile Number 1", ro_mobile_1)
+            details_layout.addRow("Mobile Number 2", ro_mobile_2)
+            details_layout.addRow("Date of Birth", ro_dob)
+            details_layout.addRow("Caste", ro_caste)
+            details_layout.addRow("Aadhaar", ro_aadhaar)
             details_layout.addRow("Village", ro_village)
             details_layout.addRow("Transport", ro_transport)
-            details_layout.addRow("Guardian Name", ro_guardian)
             details_layout.addRow("Van Fees", lbl_van_fees)
             details_layout.addRow("School Fees", lbl_school_fees)
             details_layout.addRow("Status", ro_status)
@@ -3547,29 +4175,60 @@ class MainWindow(QMainWindow):
                 heading.setText(f"{s.full_name} ({s.student_id})")
                 ro_student_id.setText(str(s.student_id or "-"))
                 ro_name.setText(str(s.full_name or "-"))
+                if ro_gender is not None:
+                    ro_gender.setText(self._gender_display(getattr(s, "gender", None)) or "-")
+                if ro_father_name is not None:
+                    ro_father_name.setText(
+                        str(getattr(s, "father_name", None) or getattr(s, "guardian_name", None) or "-")
+                    )
+                if ro_mother_name is not None:
+                    ro_mother_name.setText(str(getattr(s, "mother_name", None) or "-"))
                 ro_class.setText(str(s.class_name or "-"))
                 ro_section.setText(str(s.section or "-"))
-                ro_phone.setText(str(s.phone or "-"))
+                if ro_mobile_1 is not None:
+                    ro_mobile_1.setText(str(getattr(s, "mobile_number_1", None) or s.phone or "-"))
+                if ro_mobile_2 is not None:
+                    ro_mobile_2.setText(str(getattr(s, "mobile_number_2", None) or "-"))
+                if ro_dob is not None:
+                    dob_value = getattr(s, "date_of_birth", None)
+                    if isinstance(dob_value, datetime):
+                        ro_dob.setText(dob_value.strftime("%d/%m/%Y"))
+                    elif isinstance(dob_value, date):
+                        ro_dob.setText(dob_value.strftime("%d/%m/%Y"))
+                    else:
+                        ro_dob.setText(str(dob_value or "-"))
+                if ro_caste is not None:
+                    ro_caste.setText(str(getattr(s, "caste", None) or "-"))
+                if ro_aadhaar is not None:
+                    ro_aadhaar.setText(str(getattr(s, "aadhaar", None) or "-"))
                 ro_village.setText(str(getattr(s, "village", None) or "-"))
                 if ro_transport is not None:
                     tm2 = (getattr(s, "transport_mode", None) or "van").strip().lower()
                     ro_transport.setText("Own transport" if tm2 == "own" else "Van transport")
-                ro_guardian.setText(str(s.guardian_name or "-"))
                 ro_status.setText(str(s.status or "-"))
                 if lbl_van_fees is not None:
                     lbl_van_fees.setText(f"{float(getattr(s, 'van_fees', 0) or 0):.2f}")
                 if lbl_school_fees is not None:
                     lbl_school_fees.setText(f"{float(getattr(s, 'school_fees', 0) or 0):.2f}")
-                d = self.payment_service.get_student_due_breakdown(s.id)
+                d = self.payment_service.get_student_due_breakdown(s.student_id)
                 _apply_due_breakdown(d, s)
-                lbl_pk.setText(str(s.id))
                 lbl_created.setText(str(s.created_at or "-"))
 
         def on_save():
-            phone_error = phone_validation_message(edit_phone.text())
-            if phone_error:
-                theme.message_warning(dialog, "Validation", phone_error)
+            mobile_1_error = phone_validation_message(edit_mobile_1.text())
+            if mobile_1_error:
+                theme.message_warning(
+                    dialog,
+                    "Validation",
+                    mobile_1_error.replace("Phone", "Mobile number 1"),
+                )
                 return
+            mobile_2_text = (edit_mobile_2.text() or "").strip()
+            if mobile_2_text:
+                mobile_2_error = phone_validation_message(mobile_2_text)
+                if mobile_2_error:
+                    theme.message_warning(dialog, "Validation", mobile_2_error.replace("Phone", "Mobile number 2"))
+                    return
             try:
                 updated = self.student_service.update_student(
                     student,
@@ -3577,13 +4236,21 @@ class MainWindow(QMainWindow):
                     edit_name.text(),
                     edit_class.currentText(),
                     edit_section.currentText(),
-                    edit_phone.text(),
+                    edit_mobile_1.text(),
                     edit_village.currentText(),
-                    edit_guardian.text(),
+                    edit_father_name.text(),
                     edit_status.currentText(),
                     transport_mode=edit_transport.currentData() or "van",
                     village_fee_service=self.village_van_fee_service,
                     class_fee_service=self.class_fee_service,
+                    gender=edit_gender.currentText(),
+                    father_name=edit_father_name.text(),
+                    mother_name=edit_mother_name.text(),
+                    mobile_number_1=edit_mobile_1.text(),
+                    mobile_number_2=edit_mobile_2.text(),
+                    date_of_birth=edit_dob.text(),
+                    caste=edit_caste.text(),
+                    aadhaar=edit_aadhaar.text(),
                 )
                 self.selected_student = updated
                 self._invalidate_payment_student_cache()
@@ -3594,11 +4261,17 @@ class MainWindow(QMainWindow):
                 lbl_van_fees_editable.setText(f"{float(updated.van_fees):.2f}")
                 if lbl_school_fees_editable is not None:
                     lbl_school_fees_editable.setText(f"{float(updated.school_fees):.2f}")
-                d = self.payment_service.get_student_due_breakdown(updated.id)
+                d = self.payment_service.get_student_due_breakdown(updated.student_id)
                 _apply_due_breakdown(d, updated)
+            except ValueError as e:
+                theme.message_warning(dialog, "Validation", str(e))
             except IntegrityError:
                 self.session.rollback()
-                theme.message_warning(dialog, "Duplicate value", "Student ID or phone already exists. Please use unique values.")
+                theme.message_warning(
+                    dialog,
+                    "Duplicate value",
+                    "Student ID, mobile number 1, mobile number 2, or aadhaar already exists. Please use unique values.",
+                )
             except Exception as e:
                 self.session.rollback()
                 theme.message_critical(dialog, "Update error", str(e))
@@ -3616,7 +4289,7 @@ class MainWindow(QMainWindow):
 
         def _finalize_after_payment_saved(pay_date: date | None = None):
             self.session.refresh(student)
-            d = self.payment_service.get_student_due_breakdown(student.id)
+            d = self.payment_service.get_student_due_breakdown(student.student_id)
             _apply_due_breakdown(d, student)
             _refresh_read_only_student_widgets(student)
             popup_school_pay.clear()
@@ -3678,7 +4351,7 @@ class MainWindow(QMainWindow):
                         roll_number=str(student.student_id or ""),
                         class_name=str(student.class_name or ""),
                         section=str(student.section or ""),
-                        guardian_name=str(student.guardian_name or ""),
+                        guardian_name=str(getattr(student, "father_name", None) or student.guardian_name or ""),
                         school_fees_paid=school_amt,
                         van_fees_paid=van_amt,
                         discount=disc_amt,
@@ -3735,7 +4408,7 @@ class MainWindow(QMainWindow):
 
     def _update_search_sort_indicator(self) -> None:
         header = self.student_table.horizontalHeader()
-        col = _SEARCH_SORTABLE_COLUMNS.get(self._search_sort_column, 1)
+        col = _SEARCH_SORTABLE_COLUMNS.get(self._search_sort_column, 0)
         order = Qt.SortOrder.AscendingOrder if self._search_sort_ascending else Qt.SortOrder.DescendingOrder
         header.setSortIndicator(col, order)
 
@@ -3770,8 +4443,15 @@ class MainWindow(QMainWindow):
         placeholders = {
             "Roll Number": "Enter student roll number",
             "Name": "Enter student name",
+            "Gender": "Enter gender",
+            "Father Name": "Enter father name",
+            "Mother Name": "Enter mother name",
+            "Mobile Number 1": "Enter mobile number 1",
+            "Mobile Number 2": "Enter mobile number 2",
+            "Aadhaar": "Enter aadhaar number",
             "Village": "Enter village name",
             "Class": "Enter class",
+            "Caste": "Enter caste",
         }
         self.search_input.setPlaceholderText(placeholders.get(basis, "Enter search text"))
         self._run_student_search_now(reset_page=True)
@@ -3781,6 +4461,20 @@ class MainWindow(QMainWindow):
             return q in str(student.student_id or "").lower()
         if basis == "Village":
             return q in str(getattr(student, "village", None) or "").lower()
+        if basis == "Gender":
+            return q in str(getattr(student, "gender", None) or "").lower()
+        if basis == "Father Name":
+            return q in str(getattr(student, "father_name", None) or getattr(student, "guardian_name", None) or "").lower()
+        if basis == "Mother Name":
+            return q in str(getattr(student, "mother_name", None) or "").lower()
+        if basis == "Mobile Number 1":
+            return q in str(getattr(student, "mobile_number_1", None) or student.phone or "").lower()
+        if basis == "Mobile Number 2":
+            return q in str(getattr(student, "mobile_number_2", None) or "").lower()
+        if basis == "Aadhaar":
+            return q in str(getattr(student, "aadhaar", None) or "").lower()
+        if basis == "Caste":
+            return q in str(getattr(student, "caste", None) or "").lower()
         if basis == "Class":
             return class_name_matches_query(student.class_name, q)
         return q in str(student.full_name or "").lower()
@@ -3795,7 +4489,7 @@ class MainWindow(QMainWindow):
             return [s for s in students if self._student_matches_search_basis(s, search_basis, q)]
         return list(students)
 
-    def _fee_maps_for_ids(self, student_ids: list[int]) -> dict:
+    def _fee_maps_for_ids(self, student_ids: list[str]) -> dict:
         if not student_ids:
             return {
                 "summaries": {},
@@ -3832,7 +4526,7 @@ class MainWindow(QMainWindow):
             due_map = self._search_fee_maps.get("due_map", {})
             discount_map = self._search_fee_maps.get("discount_map", {})
         else:
-            page_maps = self._fee_maps_for_ids([s.id for s in students])
+            page_maps = self._fee_maps_for_ids([s.student_id for s in students])
             summaries = page_maps["summaries"]
             van_summaries = page_maps["van_summaries"]
             due_map = page_maps["due_map"]
@@ -3842,10 +4536,10 @@ class MainWindow(QMainWindow):
             self.student_table.setRowCount(len(students))
             danger = theme.current_tokens().danger
             for i, s in enumerate(students):
-                summary = summaries.get(s.id, {"fee_paid": 0.0, "fee_due": 0.0, "total_fees": 0.0})
-                van_s = van_summaries.get(s.id, {"van_paid": 0.0, "van_due": 0.0})
+                summary = summaries.get(s.student_id, {"fee_paid": 0.0, "fee_due": 0.0, "total_fees": 0.0})
+                van_s = van_summaries.get(s.student_id, {"van_paid": 0.0, "van_due": 0.0})
                 due = due_map.get(
-                    s.id,
+                    s.student_id,
                     {
                         "van_due": 0.0,
                         "fee_due": 0.0,
@@ -3856,17 +4550,28 @@ class MainWindow(QMainWindow):
                         "school_current": 0.0,
                     },
                 )
-                disc = float(discount_map.get(s.id, 0.0) or 0.0)
+                disc = float(discount_map.get(s.student_id, 0.0) or 0.0)
                 v_text = str(getattr(s, "village", None) or "")
-                g_text = str(getattr(s, "guardian_name", None) or "")
+                dob_value = getattr(s, "date_of_birth", None)
+                if isinstance(dob_value, datetime):
+                    dob_text = dob_value.strftime("%d/%m/%Y")
+                elif isinstance(dob_value, date):
+                    dob_text = dob_value.strftime("%d/%m/%Y")
+                else:
+                    dob_text = str(dob_value or "")
                 row_cells = [
-                    str(s.id),
                     s.student_id,
                     s.full_name,
+                    self._gender_display(getattr(s, "gender", None)),
+                    str(getattr(s, "father_name", None) or getattr(s, "guardian_name", None) or ""),
+                    str(getattr(s, "mother_name", None) or ""),
                     str(s.class_name),
                     str(s.section),
-                    s.phone,
-                    g_text,
+                    str(getattr(s, "mobile_number_1", None) or s.phone or ""),
+                    str(getattr(s, "mobile_number_2", None) or ""),
+                    dob_text,
+                    str(getattr(s, "caste", None) or ""),
+                    str(getattr(s, "aadhaar", None) or ""),
                     v_text,
                     s.status,
                     f"{float(getattr(s, 'van_fees', 0) or 0):.2f}",
@@ -3883,11 +4588,11 @@ class MainWindow(QMainWindow):
                 ]
                 for col, text in enumerate(row_cells):
                     self.student_table.setItem(
-                        i, col, table_item(text, bold=(col in (1, 2)))
+                        i, col, table_item(text, bold=(col in (0, 1)))
                     )
                 total_due = float(due.get("total", 0) or 0)
                 if total_due > 0.01:
-                    due_item = self.student_table.item(i, 19)
+                    due_item = self.student_table.item(i, len(_SEARCH_TABLE_HEADERS) - 1)
                     if due_item:
                         due_item.setForeground(QColor(danger))
         finally:
@@ -3911,10 +4616,10 @@ class MainWindow(QMainWindow):
     def on_student_selected(self,row,_):
         item=self.student_table.item(row,0)
         if not item: return
-        s=self.session.get(Student,int(item.text()))
+        s=self.session.get(Student,str(item.text()))
         if not s: return
         self.selected_student = s
-        d = self.payment_service.get_student_due_breakdown(s.id)
+        d = self.payment_service.get_student_due_breakdown(s.student_id)
         self.student_info.setText(
             f"Selected: {s.full_name} ({s.student_id}) — {self._format_fee_due_lines(d)}"
         )
@@ -3994,30 +4699,50 @@ class MainWindow(QMainWindow):
                 self.add_student_name.text(),
                 self.add_student_class.currentText(),
                 self.add_student_section.currentText(),
-                self.add_student_phone.text(),
+                self.add_student_mobile_number_1.text(),
                 self.add_student_village.currentText(),
-                self.add_student_guardian.text(),
+                self.add_student_father_name.text(),
                 self.add_student_status.currentText(),
                 transport_mode=self.add_student_transport.currentData() or "van",
                 village_fee_service=self.village_van_fee_service,
                 class_fee_service=self.class_fee_service,
+                gender=self.add_student_gender.currentText(),
+                father_name=self.add_student_father_name.text(),
+                mother_name=self.add_student_mother_name.text(),
+                mobile_number_1=self.add_student_mobile_number_1.text(),
+                mobile_number_2=self.add_student_mobile_number_2.text(),
+                date_of_birth=self.add_student_date_of_birth.text(),
+                caste=self.add_student_caste.text(),
+                aadhaar=self.add_student_aadhaar.text(),
             )
             self.add_student_id.clear()
             self.add_student_name.clear()
+            self.add_student_gender.setCurrentIndex(0)
+            self.add_student_father_name.clear()
+            self.add_student_mother_name.clear()
             self.add_student_class.setCurrentIndex(FIXED_CLASS_KEYS.index("1"))
             self.add_student_section.setCurrentIndex(0)
-            self.add_student_phone.clear()
+            self.add_student_mobile_number_1.clear()
+            self.add_student_mobile_number_2.clear()
+            self.add_student_date_of_birth.clear()
+            self.add_student_caste.clear()
+            self.add_student_aadhaar.clear()
             self.add_student_village.setCurrentIndex(0)
             self.add_student_transport.setCurrentIndex(0)
-            self.add_student_guardian.clear()
             self.add_student_status.setCurrentIndex(0)
             self._load_report_filter_values()
             self._invalidate_payment_student_cache()
             self.perform_search(reset_page=True)
             theme.message_information(self, "Student added", f"Student {st.full_name} ({st.student_id}) added successfully.")
+        except ValueError as e:
+            theme.message_warning(self, "Validation", str(e))
         except IntegrityError:
             self.session.rollback()
-            theme.message_warning(self, "Duplicate value", "Student ID or phone already exists. Please use unique values.")
+            theme.message_warning(
+                self,
+                "Duplicate value",
+                "Student ID, mobile number 1, mobile number 2, or aadhaar already exists. Please use unique values.",
+            )
         except Exception as e:
             self.session.rollback()
             theme.message_critical(self, "Add student error", str(e))

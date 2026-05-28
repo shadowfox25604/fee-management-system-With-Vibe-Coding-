@@ -46,6 +46,75 @@ def test_faculty_lists_can_filter_by_type(db_session):
     assert non_teaching[0].faculty_name == "Nisha Paul"
 
 
+def test_update_faculty_profile_updates_salary_and_details(db_session):
+    svc = ExpenseService(db_session)
+    faculty = svc.assign_faculty_salary(
+        "Meena Kumari",
+        24000.0,
+        faculty_type="Teaching",
+        role="Hindi",
+        default_working_days=26,
+        is_active=True,
+    )
+
+    updated = svc.update_faculty_profile(
+        faculty.id,
+        faculty_name="Meena K.",
+        faculty_type="Non Teaching",
+        role="Office Admin",
+        monthly_salary=27500.0,
+        default_working_days=24,
+        is_active=False,
+    )
+
+    assert updated.id == faculty.id
+    assert updated.faculty_name == "Meena K."
+    assert updated.faculty_type == "Non Teaching"
+    assert updated.role == "Office Admin"
+    assert float(updated.monthly_salary) == pytest.approx(27500.0, abs=0.01)
+    assert int(updated.default_working_days) == 24
+    assert bool(updated.is_active) is False
+
+
+def test_update_faculty_profile_renames_salary_history_person_name(db_session):
+    svc = ExpenseService(db_session)
+    faculty = svc.assign_faculty_salary(
+        "Ravi Kumar",
+        30000.0,
+        role="English",
+        default_working_days=25,
+    )
+    svc.record_salary_from_attendance(
+        faculty.id,
+        attendance_days=20,
+        working_days=25,
+        month_label="2026-05",
+        expense_date=date(2026, 5, 31),
+        notes="May payout",
+    )
+
+    updated = svc.update_faculty_profile(
+        faculty.id,
+        faculty_name="Ravi K.",
+        faculty_type="Teaching",
+        role="Senior English",
+        monthly_salary=32000.0,
+        default_working_days=25,
+        is_active=True,
+    )
+
+    rows = db_session.scalars(
+        select(Expense).where(
+            Expense.expense_type == "salary",
+            Expense.month_label == "2026-05",
+        )
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].person_name == "Ravi K."
+    overview = svc.faculty_salary_overview(updated.id, history_limit=20)
+    assert len(overview["history"]) == 1
+    assert overview["history"][0].person_name == "Ravi K."
+
 def test_record_salary_from_attendance_creates_salary_expense(db_session):
     svc = ExpenseService(db_session)
     faculty = svc.assign_faculty_salary(
@@ -68,6 +137,48 @@ def test_record_salary_from_attendance_creates_salary_expense(db_session):
     assert entry.person_name == "Ravi Kumar"
     assert float(entry.base_amount) == 30000.0
     assert float(entry.amount) == 24000.0
+    assert svc.salary_total("2026-05") == pytest.approx(24000.0, abs=0.01)
+
+
+def test_salary_save_replaces_existing_entry_for_same_faculty_month(db_session):
+    svc = ExpenseService(db_session)
+    faculty = svc.assign_faculty_salary(
+        "Ravi Kumar",
+        30000.0,
+        role="English",
+        default_working_days=25,
+    )
+    first = svc.record_salary_from_attendance(
+        faculty.id,
+        attendance_days=10,
+        working_days=25,
+        month_label="2026-05",
+        expense_date=date(2026, 5, 20),
+        notes="Initial save",
+    )
+    second = svc.record_salary_from_attendance(
+        faculty.id,
+        attendance_days=20,
+        working_days=25,
+        month_label="2026-05",
+        expense_date=date(2026, 5, 28),
+        notes="Replaced save",
+    )
+
+    rows = db_session.scalars(
+        select(Expense).where(
+            Expense.expense_type == "salary",
+            Expense.person_name == "Ravi Kumar",
+            Expense.month_label == "2026-05",
+        )
+    ).all()
+    assert len(rows) == 1
+    saved = rows[0]
+    assert saved.id == first.id
+    assert saved.id == second.id
+    assert float(saved.amount) == pytest.approx(24000.0, abs=0.01)
+    assert saved.expense_date == date(2026, 5, 28)
+    assert saved.notes == "Replaced save"
     assert svc.salary_total("2026-05") == pytest.approx(24000.0, abs=0.01)
 
 

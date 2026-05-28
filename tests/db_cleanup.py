@@ -68,11 +68,11 @@ def is_test_student_record(student: Student) -> bool:
     return is_test_student_roll(student.student_id)
 
 
-def delete_student_and_related(session: Session, student_pk: int | None) -> None:
+def delete_student_and_related(session: Session, student_pk: str | None) -> None:
     """Remove one student row and payments, allocations, invoices, fee plans, year fees."""
     if student_pk is None:
         return
-    exists = session.scalar(select(Student.id).where(Student.id == student_pk))
+    exists = session.scalar(select(Student.student_id).where(Student.student_id == student_pk))
     if exists is None:
         return
     pay_ids = list(session.scalars(select(Payment.id).where(Payment.student_id_fk == student_pk)).all())
@@ -82,11 +82,11 @@ def delete_student_and_related(session: Session, student_pk: int | None) -> None
     session.execute(delete(Invoice).where(Invoice.student_id_fk == student_pk))
     session.execute(delete(FeePlan).where(FeePlan.student_id_fk == student_pk))
     session.execute(delete(StudentAcademicYearFee).where(StudentAcademicYearFee.student_id_fk == student_pk))
-    session.execute(delete(Student).where(Student.id == student_pk))
+    session.execute(delete(Student).where(Student.student_id == student_pk))
     session.commit()
 
 
-def cleanup_test_students(session: Session, student_pks: list[int | None]) -> None:
+def cleanup_test_students(session: Session, student_pks: list[str | None]) -> None:
     """Rollback dangling txns, then remove students newest-first."""
     try:
         session.rollback()
@@ -96,9 +96,9 @@ def cleanup_test_students(session: Session, student_pks: list[int | None]) -> No
         delete_student_and_related(session, pk)
 
 
-def find_test_student_ids(session: Session) -> list[int]:
+def find_test_student_ids(session: Session) -> list[str]:
     rows = session.scalars(select(Student)).all()
-    return [int(s.id) for s in rows if is_test_student_record(s)]
+    return [str(s.student_id) for s in rows if is_test_student_record(s)]
 
 
 def remove_all_test_students(session: Session) -> int:

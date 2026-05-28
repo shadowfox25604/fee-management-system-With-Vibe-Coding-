@@ -23,6 +23,7 @@ GUARDIAN_FIRST_NAMES = [
 
 VILLAGES = list(FIXED_VILLAGE_KEYS)
 CLASS_POOL = list(FIXED_CLASS_KEYS)
+GENDERS = ["Male", "Female"]
 def _unique_student_values(idx, used_ids, used_phones):
     student_id = f"STU{idx:04d}"
     while student_id in used_ids:
@@ -62,10 +63,6 @@ def seed(target_students=200):
 
         existing_count = s.query(Student).count()
         to_create = max(0, target_students - existing_count)
-        if to_create == 0:
-            s.commit()
-            return
-
         used_ids = {sid for (sid,) in s.query(Student.student_id).all()}
         used_phones = {ph for (ph,) in s.query(Student.phone).all()}
 
@@ -79,6 +76,7 @@ def seed(target_students=200):
                 Student(
                     student_id=student_id,
                     full_name=full_name,
+                    gender=random.choice(GENDERS),
                     class_name=class_num,
                     section=section,
                     phone=phone,
@@ -87,20 +85,28 @@ def seed(target_students=200):
                 )
             )
 
-        s.add_all(students)
-        s.flush()
+        if students:
+            s.add_all(students)
+            s.flush()
 
         for st in s.query(Student).all():
             if not (getattr(st, "village", None) or "").strip():
                 st.village = random.choice(VILLAGES)
+            gender_text = str(getattr(st, "gender", None) or "").strip().lower()
+            if gender_text in ("boy", "male"):
+                st.gender = "Male"
+            elif gender_text in ("girl", "female"):
+                st.gender = "Female"
+            elif not gender_text:
+                st.gender = random.choice(GENDERS)
 
         for st in students:
-            s.add(FeePlan(student_id_fk=st.id, fee_head_id=t.id, amount=2000, concession_amount=0))
-            s.add(FeePlan(student_id_fk=st.id, fee_head_id=tr.id, amount=500, concession_amount=0))
+            s.add(FeePlan(student_id_fk=st.student_id, fee_head_id=t.id, amount=2000, concession_amount=0))
+            s.add(FeePlan(student_id_fk=st.student_id, fee_head_id=tr.id, amount=500, concession_amount=0))
             for idx in range(1, 4):
                 d = date.today() - timedelta(days=30 * idx)
-                s.add(Invoice(student_id_fk=st.id, fee_head_id=t.id, period_label=f"2026-{idx:02d}", due_date=d, amount_due=2000, amount_paid=0))
-                s.add(Invoice(student_id_fk=st.id, fee_head_id=tr.id, period_label=f"2026-{idx:02d}", due_date=d, amount_due=500, amount_paid=0))
+                s.add(Invoice(student_id_fk=st.student_id, fee_head_id=t.id, period_label=f"2026-{idx:02d}", due_date=d, amount_due=2000, amount_paid=0))
+                s.add(Invoice(student_id_fk=st.student_id, fee_head_id=tr.id, period_label=f"2026-{idx:02d}", due_date=d, amount_due=500, amount_paid=0))
         s.commit()
     finally:
         s.close()

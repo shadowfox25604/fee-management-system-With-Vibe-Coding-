@@ -68,7 +68,7 @@ class VillageVanFeeRepository:
             select(FeeHead).where(_van_fee_head_filter()).order_by(FeeHead.id.asc()).limit(1)
         ).first()
 
-    def _van_invoices_ordered(self, student_id: int) -> list[Invoice]:
+    def _van_invoices_ordered(self, student_id: str) -> list[Invoice]:
         return list(
             self.session.scalars(
                 select(Invoice)
@@ -78,13 +78,13 @@ class VillageVanFeeRepository:
             ).all()
         )
 
-    def _total_van_paid(self, student_id: int) -> float:
+    def _total_van_paid(self, student_id: str) -> float:
         invs = self._van_invoices_ordered(student_id)
         return sum(float(i.amount_paid or 0.0) for i in invs)
 
     def _adjust_van_invoices(self, student: Student, old_tariff: float, new_tariff: float) -> None:
         eps = 1e-6
-        invs = self._van_invoices_ordered(student.id)
+        invs = self._van_invoices_ordered(student.student_id)
         total_paid = sum(float(i.amount_paid or 0.0) for i in invs)
         if new_tariff + eps < total_paid:
             raise ValueError(
@@ -103,7 +103,7 @@ class VillageVanFeeRepository:
             year_row = AcademicYearRepository(self.session).get_current()
             self.session.add(
                 Invoice(
-                    student_id_fk=student.id,
+                    student_id_fk=student.student_id,
                     academic_year_id=year_row.id if year_row else None,
                     fee_head_id=fh.id,
                     period_label=f"Van tariff {date.today().isoformat()}",
@@ -158,7 +158,7 @@ class VillageVanFeeRepository:
         students = self.students_in_fixed_village(vk)
         van_students = [st for st in students if (getattr(st, "transport_mode", None) or "van") != "own"]
         for st in van_students:
-            paid = self._total_van_paid(st.id)
+            paid = self._total_van_paid(st.student_id)
             if new_amount + 1e-6 < paid:
                 raise ValueError(
                     f"Student {st.student_id} ({st.full_name}): new van fee {new_amount:.2f} is below transport "

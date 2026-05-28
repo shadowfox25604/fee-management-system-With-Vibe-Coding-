@@ -31,7 +31,7 @@ class PaymentService:
     def collect_payment(self, student, amount, mode="cash", operator_name="admin", payment_date: date | None = None):
         if amount <= 0:
             raise ValueError("Payment amount must be positive")
-        bal = self.repo.get_student_balance(student.id)
+        bal = self.repo.get_student_balance(student.student_id)
         if bal <= 0:
             raise ValueError("No outstanding amount for this student")
         if amount > bal:
@@ -55,7 +55,7 @@ class PaymentService:
             raise ValueError("Payment amounts cannot be negative")
         if va + sa <= 0:
             raise ValueError("At least one payment amount must be positive")
-        due = self.repo.get_student_due_breakdown(student.id)
+        due = self.repo.get_student_due_breakdown(student.student_id)
         if due["total"] <= 0:
             raise ValueError("No outstanding amount for this student")
         return self.repo.create_split_payment(student, va, sa, mode, operator_name, disc, payment_date)

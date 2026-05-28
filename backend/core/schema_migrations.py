@@ -104,6 +104,38 @@ def apply_sqlite_column_migrations(engine) -> None:
             conn.execute(
                 text("ALTER TABLE students ADD COLUMN village VARCHAR(80) NOT NULL DEFAULT ''")
             )
+        if "gender" not in col_names:
+            conn.execute(
+                text("ALTER TABLE students ADD COLUMN gender VARCHAR(20) NOT NULL DEFAULT ''")
+            )
+        if "father_name" not in col_names:
+            conn.execute(
+                text("ALTER TABLE students ADD COLUMN father_name VARCHAR(120) NOT NULL DEFAULT ''")
+            )
+        if "mother_name" not in col_names:
+            conn.execute(
+                text("ALTER TABLE students ADD COLUMN mother_name VARCHAR(120) NOT NULL DEFAULT ''")
+            )
+        if "mobile_number_1" not in col_names:
+            conn.execute(
+                text("ALTER TABLE students ADD COLUMN mobile_number_1 VARCHAR(20) NOT NULL DEFAULT ''")
+            )
+        if "mobile_number_2" not in col_names:
+            conn.execute(
+                text("ALTER TABLE students ADD COLUMN mobile_number_2 VARCHAR(20) NOT NULL DEFAULT ''")
+            )
+        if "date_of_birth" not in col_names:
+            conn.execute(
+                text("ALTER TABLE students ADD COLUMN date_of_birth DATE")
+            )
+        if "caste" not in col_names:
+            conn.execute(
+                text("ALTER TABLE students ADD COLUMN caste VARCHAR(80) NOT NULL DEFAULT ''")
+            )
+        if "aadhaar" not in col_names:
+            conn.execute(
+                text("ALTER TABLE students ADD COLUMN aadhaar VARCHAR(20) NOT NULL DEFAULT ''")
+            )
         col_names2 = {c["name"] for c in inspect(engine).get_columns("students")}
         if "transport_mode" not in col_names2:
             conn.execute(
@@ -250,7 +282,7 @@ def apply_sqlite_data_migrations(engine) -> None:
                 conn.execute(
                     text(
                         """
-                        UPDATE students SET village = CASE (ABS(id) % 16)
+                        UPDATE students SET village = CASE (ABS(length(COALESCE(student_id, '')) + length(COALESCE(full_name, ''))) % 16)
                             WHEN 0 THEN 'Rampur'
                             WHEN 1 THEN 'Bisrakh'
                             WHEN 2 THEN 'Dadri'
@@ -302,7 +334,7 @@ def apply_sqlite_data_migrations(engine) -> None:
                 conn.execute(
                     text(
                         f"""
-                        UPDATE students SET village = CASE (ABS(COALESCE(id, 0)) % 15)
+                        UPDATE students SET village = CASE (ABS(length(COALESCE(student_id, '')) + length(COALESCE(full_name, ''))) % 15)
                             WHEN 0 THEN 'Nagaram'
                             WHEN 1 THEN 'Kamalapur'
                             WHEN 2 THEN 'Dharmapuri'
@@ -326,8 +358,278 @@ def apply_sqlite_data_migrations(engine) -> None:
                 conn.execute(
                     text("INSERT INTO app_migrations (name) VALUES ('migrate_student_villages_to_fixed_list_v1')")
                 )
+
+            row_gender = conn.execute(
+                text("SELECT 1 FROM app_migrations WHERE name = :n"),
+                {"n": "normalize_student_gender_male_female_v1"},
+            ).fetchone()
+            if not row_gender and "gender" in col_now:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE students
+                        SET gender = CASE lower(trim(COALESCE(gender, '')))
+                            WHEN 'boy' THEN 'Male'
+                            WHEN 'male' THEN 'Male'
+                            WHEN 'girl' THEN 'Female'
+                            WHEN 'female' THEN 'Female'
+                            ELSE gender
+                        END
+                        """
+                    )
+                )
+                conn.execute(
+                    text("INSERT INTO app_migrations (name) VALUES ('normalize_student_gender_male_female_v1')")
+                )
+
+            row_student_pk = conn.execute(
+                text("SELECT 1 FROM app_migrations WHERE name = :n"),
+                {"n": "students_student_id_primary_v1"},
+            ).fetchone()
+            if not row_student_pk:
+                col_after = {c[1] for c in conn.execute(text("PRAGMA table_info(students)")).fetchall()}
+                if "id" in col_after:
+                    _migrate_students_student_id_primary_sqlite(conn)
+                conn.execute(
+                    text("INSERT INTO app_migrations (name) VALUES ('students_student_id_primary_v1')")
+                )
     finally:
         _migrate_payments_receipt_to_uuid_reference(engine)
+
+
+def _migrate_students_student_id_primary_sqlite(conn) -> None:
+    """Rebuild student-linked tables to use students.student_id as the primary key."""
+    conn.execute(text("PRAGMA foreign_keys=OFF"))
+    conn.execute(text("DROP TABLE IF EXISTS students_backup_mig"))
+    conn.execute(text("DROP TABLE IF EXISTS student_id_map_mig"))
+    conn.execute(text("DROP TABLE IF EXISTS invoices_backup_mig"))
+    conn.execute(text("DROP TABLE IF EXISTS payments_backup_sid_mig"))
+    conn.execute(text("DROP TABLE IF EXISTS fee_plans_backup_mig"))
+    conn.execute(text("DROP TABLE IF EXISTS student_year_fees_backup_mig"))
+
+    conn.execute(text("CREATE TABLE students_backup_mig AS SELECT * FROM students"))
+    conn.execute(
+        text(
+            "CREATE TABLE student_id_map_mig AS "
+            "SELECT id AS old_id, student_id FROM students_backup_mig"
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE TABLE students_new (
+                student_id VARCHAR(20) NOT NULL PRIMARY KEY,
+                full_name VARCHAR(120) NOT NULL,
+                gender VARCHAR(20) NOT NULL DEFAULT '',
+                father_name VARCHAR(120) NOT NULL DEFAULT '',
+                mother_name VARCHAR(120) NOT NULL DEFAULT '',
+                class_name VARCHAR(20) NOT NULL,
+                section VARCHAR(10) DEFAULT '',
+                phone VARCHAR(20) NOT NULL,
+                mobile_number_1 VARCHAR(20) NOT NULL DEFAULT '',
+                mobile_number_2 VARCHAR(20) NOT NULL DEFAULT '',
+                date_of_birth DATE,
+                caste VARCHAR(80) NOT NULL DEFAULT '',
+                aadhaar VARCHAR(20) NOT NULL DEFAULT '',
+                village VARCHAR(80) NOT NULL DEFAULT '',
+                guardian_name VARCHAR(120) DEFAULT '',
+                status VARCHAR(20) DEFAULT 'active',
+                transport_mode VARCHAR(20) NOT NULL DEFAULT 'van',
+                van_fees REAL NOT NULL DEFAULT 0.0,
+                school_fees REAL NOT NULL DEFAULT 20000.0,
+                created_at DATETIME
+            )
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            INSERT INTO students_new (
+                student_id, full_name, gender, father_name, mother_name,
+                class_name, section, phone, mobile_number_1, mobile_number_2,
+                date_of_birth, caste, aadhaar, village, guardian_name, status,
+                transport_mode, van_fees, school_fees, created_at
+            )
+            SELECT
+                student_id,
+                full_name,
+                COALESCE(gender, ''),
+                COALESCE(father_name, ''),
+                COALESCE(mother_name, ''),
+                class_name,
+                COALESCE(section, ''),
+                COALESCE(phone, ''),
+                COALESCE(mobile_number_1, COALESCE(phone, '')),
+                COALESCE(mobile_number_2, ''),
+                date_of_birth,
+                COALESCE(caste, ''),
+                COALESCE(aadhaar, ''),
+                COALESCE(village, ''),
+                COALESCE(guardian_name, ''),
+                COALESCE(status, 'active'),
+                COALESCE(transport_mode, 'van'),
+                COALESCE(van_fees, 0.0),
+                COALESCE(school_fees, 20000.0),
+                created_at
+            FROM students_backup_mig
+            """
+        )
+    )
+    conn.execute(text("DROP TABLE students"))
+    conn.execute(text("ALTER TABLE students_new RENAME TO students"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_students_name ON students(full_name)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_students_phone ON students(phone)"))
+
+    has_invoices = conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='invoices'")
+    ).fetchone()
+    if has_invoices:
+        conn.execute(text("CREATE TABLE invoices_backup_mig AS SELECT * FROM invoices"))
+        conn.execute(text("DROP TABLE invoices"))
+        conn.execute(
+            text(
+                """
+                CREATE TABLE invoices (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    student_id_fk VARCHAR(20) NOT NULL REFERENCES students(student_id),
+                    academic_year_id INTEGER REFERENCES academic_years(id),
+                    fee_head_id INTEGER NOT NULL REFERENCES fee_heads(id),
+                    period_label VARCHAR(20) NOT NULL,
+                    due_date DATE NOT NULL,
+                    amount_due FLOAT NOT NULL,
+                    amount_paid FLOAT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO invoices
+                (id, student_id_fk, academic_year_id, fee_head_id, period_label, due_date, amount_due, amount_paid)
+                SELECT
+                    i.id, m.student_id, i.academic_year_id, i.fee_head_id, i.period_label,
+                    i.due_date, i.amount_due, i.amount_paid
+                FROM invoices_backup_mig i
+                JOIN student_id_map_mig m ON m.old_id = i.student_id_fk
+                """
+            )
+        )
+        conn.execute(text("DROP TABLE invoices_backup_mig"))
+
+    has_payments = conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='payments'")
+    ).fetchone()
+    if has_payments:
+        conn.execute(text("CREATE TABLE payments_backup_sid_mig AS SELECT * FROM payments"))
+        conn.execute(text("DROP TABLE payments"))
+        conn.execute(
+            text(
+                """
+                CREATE TABLE payments (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    student_id_fk VARCHAR(20) NOT NULL REFERENCES students(student_id),
+                    payment_date DATE NOT NULL,
+                    amount FLOAT NOT NULL,
+                    school_amount REAL NOT NULL DEFAULT 0.0,
+                    van_amount REAL NOT NULL DEFAULT 0.0,
+                    discount_amount REAL NOT NULL DEFAULT 0.0,
+                    mode VARCHAR(20) NOT NULL,
+                    reference_no VARCHAR(16),
+                    operator_name VARCHAR(60) NOT NULL,
+                    is_reverted BOOLEAN NOT NULL DEFAULT 0,
+                    reverted_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO payments
+                (id, student_id_fk, payment_date, amount, school_amount, van_amount, discount_amount, mode, reference_no, operator_name, is_reverted, reverted_at)
+                SELECT
+                    p.id, m.student_id, p.payment_date, p.amount,
+                    COALESCE(p.school_amount, 0.0), COALESCE(p.van_amount, 0.0), COALESCE(p.discount_amount, 0.0),
+                    p.mode, p.reference_no, p.operator_name, COALESCE(p.is_reverted, 0), p.reverted_at
+                FROM payments_backup_sid_mig p
+                JOIN student_id_map_mig m ON m.old_id = p.student_id_fk
+                """
+            )
+        )
+        conn.execute(text("DROP TABLE payments_backup_sid_mig"))
+
+    has_fee_plans = conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fee_plans'")
+    ).fetchone()
+    if has_fee_plans:
+        conn.execute(text("CREATE TABLE fee_plans_backup_mig AS SELECT * FROM fee_plans"))
+        conn.execute(text("DROP TABLE fee_plans"))
+        conn.execute(
+            text(
+                """
+                CREATE TABLE fee_plans (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    student_id_fk VARCHAR(20) NOT NULL REFERENCES students(student_id),
+                    fee_head_id INTEGER NOT NULL REFERENCES fee_heads(id),
+                    amount FLOAT NOT NULL,
+                    concession_amount FLOAT,
+                    effective_from DATE,
+                    CONSTRAINT uq_student_fee_head UNIQUE (student_id_fk, fee_head_id)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO fee_plans
+                (id, student_id_fk, fee_head_id, amount, concession_amount, effective_from)
+                SELECT fp.id, m.student_id, fp.fee_head_id, fp.amount, fp.concession_amount, fp.effective_from
+                FROM fee_plans_backup_mig fp
+                JOIN student_id_map_mig m ON m.old_id = fp.student_id_fk
+                """
+            )
+        )
+        conn.execute(text("DROP TABLE fee_plans_backup_mig"))
+
+    has_year_fees = conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='student_academic_year_fees'")
+    ).fetchone()
+    if has_year_fees:
+        conn.execute(text("CREATE TABLE student_year_fees_backup_mig AS SELECT * FROM student_academic_year_fees"))
+        conn.execute(text("DROP TABLE student_academic_year_fees"))
+        conn.execute(
+            text(
+                """
+                CREATE TABLE student_academic_year_fees (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    student_id_fk VARCHAR(20) NOT NULL REFERENCES students(student_id),
+                    academic_year_id INTEGER NOT NULL REFERENCES academic_years(id),
+                    school_fees REAL NOT NULL DEFAULT 0.0,
+                    van_fees REAL NOT NULL DEFAULT 0.0,
+                    CONSTRAINT uq_student_academic_year UNIQUE (student_id_fk, academic_year_id)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO student_academic_year_fees
+                (id, student_id_fk, academic_year_id, school_fees, van_fees)
+                SELECT sy.id, m.student_id, sy.academic_year_id, sy.school_fees, sy.van_fees
+                FROM student_year_fees_backup_mig sy
+                JOIN student_id_map_mig m ON m.old_id = sy.student_id_fk
+                """
+            )
+        )
+        conn.execute(text("DROP TABLE student_year_fees_backup_mig"))
+
+    conn.execute(text("DROP TABLE student_id_map_mig"))
+    conn.execute(text("DROP TABLE students_backup_mig"))
+    conn.execute(text("PRAGMA foreign_keys=ON"))
 
 
 def _sqlite_rebuild_payments_strip_receipt(conn) -> None:
@@ -358,7 +660,7 @@ def _sqlite_rebuild_payments_strip_receipt(conn) -> None:
             """
             CREATE TABLE payments (
                 id INTEGER NOT NULL,
-                student_id_fk INTEGER NOT NULL,
+                student_id_fk VARCHAR(20) NOT NULL,
                 payment_date DATE NOT NULL,
                 amount FLOAT NOT NULL,
                 school_amount REAL NOT NULL DEFAULT 0.0,
@@ -370,7 +672,7 @@ def _sqlite_rebuild_payments_strip_receipt(conn) -> None:
                 is_reverted BOOLEAN NOT NULL DEFAULT 0,
                 reverted_at DATETIME,
                 PRIMARY KEY (id),
-                FOREIGN KEY (student_id_fk) REFERENCES students (id)
+                FOREIGN KEY (student_id_fk) REFERENCES students (student_id)
             )
             """
         )
@@ -534,7 +836,7 @@ def _migrate_academic_years_v1(conn) -> None:
             """
             CREATE TABLE IF NOT EXISTS student_academic_year_fees (
                 id INTEGER NOT NULL PRIMARY KEY,
-                student_id_fk INTEGER NOT NULL REFERENCES students(id),
+                student_id_fk VARCHAR(20) NOT NULL REFERENCES students(student_id),
                 academic_year_id INTEGER NOT NULL REFERENCES academic_years(id),
                 school_fees REAL NOT NULL DEFAULT 0.0,
                 van_fees REAL NOT NULL DEFAULT 0.0,
@@ -563,7 +865,7 @@ def _migrate_academic_years_v1(conn) -> None:
         )
 
     students = conn.execute(
-        text("SELECT id, school_fees, van_fees FROM students")
+        text("SELECT student_id, school_fees, van_fees FROM students")
     ).fetchall()
     years = conn.execute(text("SELECT id FROM academic_years ORDER BY start_date ASC")).fetchall()
     for st_id, school_fees, van_fees in students:
@@ -573,7 +875,7 @@ def _migrate_academic_years_v1(conn) -> None:
                     "SELECT 1 FROM student_academic_year_fees "
                     "WHERE student_id_fk = :sid AND academic_year_id = :yid"
                 ),
-                {"sid": int(st_id), "yid": int(yid)},
+                {"sid": str(st_id), "yid": int(yid)},
             ).fetchone()
             if not exists:
                 conn.execute(
@@ -583,7 +885,7 @@ def _migrate_academic_years_v1(conn) -> None:
                         "VALUES (:sid, :yid, :sf, :vf)"
                     ),
                     {
-                        "sid": int(st_id),
+                        "sid": str(st_id),
                         "yid": int(yid),
                         "sf": float(school_fees or 0.0),
                         "vf": float(van_fees or 0.0),

@@ -149,6 +149,56 @@ class ExpenseRepository:
     def get_faculty_salary(self, faculty_id: int) -> FacultySalary | None:
         return self.session.get(FacultySalary, int(faculty_id))
 
+    def update_faculty_profile(
+        self,
+        faculty_id: int,
+        *,
+        faculty_name: str,
+        faculty_type: str,
+        role: str,
+        monthly_salary: float,
+        default_working_days: int,
+        is_active: bool,
+    ) -> FacultySalary | None:
+        row = self.session.get(FacultySalary, int(faculty_id))
+        if row is None:
+            return None
+        new_name = (faculty_name or "").strip()
+        if not new_name:
+            raise ValueError("Faculty name is required.")
+        existing = self.session.scalars(
+            select(FacultySalary)
+            .where(
+                func.lower(FacultySalary.faculty_name) == new_name.lower(),
+                FacultySalary.id != int(faculty_id),
+            )
+            .limit(1)
+        ).first()
+        if existing is not None:
+            raise ValueError("Another faculty with this name already exists.")
+
+        old_name = str(row.faculty_name or "").strip()
+        row.faculty_name = new_name
+        row.faculty_type = self._normalize_faculty_type(faculty_type)
+        row.role = (role or "").strip()
+        row.monthly_salary = float(monthly_salary)
+        row.default_working_days = int(default_working_days)
+        row.is_active = bool(is_active)
+
+        if old_name and old_name.lower() != new_name.lower():
+            salary_rows = self.session.scalars(
+                select(Expense).where(
+                    Expense.expense_type == "salary",
+                    func.lower(Expense.person_name) == old_name.lower(),
+                )
+            ).all()
+            for salary_row in salary_rows:
+                salary_row.person_name = new_name
+
+        self.session.commit()
+        self.session.refresh(row)
+        return row
+
     def list_faculty_salaries(
         self,
         *,
@@ -184,20 +234,47 @@ class ExpenseRepository:
         description: str = "",
         notes: str = "",
     ) -> Expense:
-        row = Expense(
-            expense_type="salary",
-            category="Salary",
-            person_name=person_name.strip(),
-            description=description.strip(),
-            amount=float(amount),
-            expense_date=expense_date,
-            month_label=month_label.strip(),
-            attendance_days=float(attendance_days),
-            working_days=float(working_days),
-            base_amount=float(base_amount),
-            notes=notes.strip(),
-        )
-        self.session.add(row)
+        person_text = person_name.strip()
+        month_text = month_label.strip()
+        existing_rows = self.session.scalars(
+            select(Expense)
+            .where(
+                Expense.expense_type == "salary",
+                func.lower(Expense.person_name) == person_text.lower(),
+                Expense.month_label == month_text,
+            )
+            .order_by(Expense.id.desc())
+        ).all()
+        if existing_rows:
+            # Keep one row and overwrite it with latest salary payload.
+            row = existing_rows[0]
+            row.category = "Salary"
+            row.person_name = person_text
+            row.description = description.strip()
+            row.amount = float(amount)
+            row.expense_date = expense_date
+            row.month_label = month_text
+            row.attendance_days = float(attendance_days)
+            row.working_days = float(working_days)
+            row.base_amount = float(base_amount)
+            row.notes = notes.strip()
+            for duplicate in existing_rows[1:]:
+                self.session.delete(duplicate)
+        else:
+            row = Expense(
+                expense_type="salary",
+                category="Salary",
+                person_name=person_text,
+                description=description.strip(),
+                amount=float(amount),
+                expense_date=expense_date,
+                month_label=month_text,
+                attendance_days=float(attendance_days),
+                working_days=float(working_days),
+                base_amount=float(base_amount),
+                notes=notes.strip(),
+            )
+            self.session.add(row)
         self.session.commit()
         self.session.refresh(row)
         return row

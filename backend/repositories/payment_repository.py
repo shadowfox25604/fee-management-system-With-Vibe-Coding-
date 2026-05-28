@@ -55,7 +55,7 @@ class PaymentRepository:
             .where(Payment.student_id_fk.in_(student_ids), self._not_reverted_filter())
             .group_by(Payment.student_id_fk)
         ).all()
-        return {int(r[0]): float(r[1] or 0.0) for r in rows}
+        return {str(r[0]): float(r[1] or 0.0) for r in rows}
 
     def _allocate_to_invoices(self, payment_id: int, amount: float, invoices) -> float:
         rem = float(amount or 0.0)
@@ -85,7 +85,7 @@ class PaymentRepository:
 
     def get_student_due_breakdown(self, student_id_fk):
         """Display/payment caps: max(tariff remaining, open invoice balance) per bucket."""
-        sid = int(student_id_fk)
+        sid = str(student_id_fk)
         return self.get_students_due_breakdown([sid]).get(
             sid, {"van_due": 0.0, "fee_due": 0.0, "total": 0.0}
         )
@@ -95,8 +95,9 @@ class PaymentRepository:
 
     def get_student_invoice_bucket_outstanding(self, student_id_fk):
         """Unpaid invoice totals split by van/transport fee heads vs all other heads (what split payments can clear)."""
-        m = self.get_students_invoice_bucket_outstanding([int(student_id_fk)])
-        return m.get(int(student_id_fk), {"van": 0.0, "school": 0.0, "total": 0.0})
+        sid = str(student_id_fk)
+        m = self.get_students_invoice_bucket_outstanding([sid])
+        return m.get(sid, {"van": 0.0, "school": 0.0, "total": 0.0})
 
     def get_students_invoice_bucket_outstanding(self, student_ids):
         """Batch: open balance per student for transport vs school invoice buckets."""
@@ -107,9 +108,9 @@ class PaymentRepository:
             .join(FeeHead, FeeHead.id == Invoice.fee_head_id)
             .where(Invoice.student_id_fk.in_(student_ids))
         ).all()
-        acc = {int(sid): {"van": 0.0, "school": 0.0} for sid in student_ids}
+        acc = {str(sid): {"van": 0.0, "school": 0.0} for sid in student_ids}
         for student_id_fk, amount_due, amount_paid, head_name in rows:
-            sid = int(student_id_fk)
+            sid = str(student_id_fk)
             if sid not in acc:
                 continue
             bal = float(amount_due or 0.0) - float(amount_paid or 0.0)
@@ -175,7 +176,7 @@ class PaymentRepository:
         if d > date.today():
             raise ValueError("Payment date cannot be in the future")
         payment = Payment(
-            student_id_fk=student.id,
+            student_id_fk=student.student_id,
             payment_date=d,
             amount=amount,
             school_amount=amount,
@@ -191,7 +192,7 @@ class PaymentRepository:
         invoices = self.session.scalars(
             select(Invoice)
             .outerjoin(AcademicYear, AcademicYear.id == Invoice.academic_year_id)
-            .where(Invoice.student_id_fk == student.id)
+            .where(Invoice.student_id_fk == student.student_id)
             .order_by(*self._invoice_year_order())
         ).all()
         rem = self._allocate_to_invoices(payment.id, rem, invoices)
@@ -221,7 +222,7 @@ class PaymentRepository:
             raise ValueError("At least one payment amount must be positive")
         if discount_amount < 0:
             raise ValueError("Discount cannot be negative")
-        due = self.get_student_due_breakdown(student.id)
+        due = self.get_student_due_breakdown(student.student_id)
         if due["total"] <= 0:
             raise ValueError("No outstanding amount for this student")
         eps = 1e-6
@@ -256,7 +257,7 @@ class PaymentRepository:
         school_allocate = school_amount + discount_amount
         self._ensure_split_payment_invoice_capacity(student, van_amount, school_allocate, d)
         payment = Payment(
-            student_id_fk=student.id,
+            student_id_fk=student.student_id,
             payment_date=d,
             amount=payment_total,
             school_amount=school_amount,
@@ -274,14 +275,14 @@ class PaymentRepository:
             select(Invoice)
             .join(FeeHead, FeeHead.id == Invoice.fee_head_id)
             .outerjoin(AcademicYear, AcademicYear.id == Invoice.academic_year_id)
-            .where(Invoice.student_id_fk == student.id, _van_fee_head_filter())
+            .where(Invoice.student_id_fk == student.student_id, _van_fee_head_filter())
             .order_by(*self._invoice_year_order())
         ).all()
         school_invoices = self.session.scalars(
             select(Invoice)
             .join(FeeHead, FeeHead.id == Invoice.fee_head_id)
             .outerjoin(AcademicYear, AcademicYear.id == Invoice.academic_year_id)
-            .where(Invoice.student_id_fk == student.id, not_(_van_fee_head_filter()))
+            .where(Invoice.student_id_fk == student.student_id, not_(_van_fee_head_filter()))
             .order_by(*self._invoice_year_order())
         ).all()
         rem_v = self._allocate_to_invoices(payment.id, van_amount, van_invoices)
@@ -294,40 +295,40 @@ class PaymentRepository:
         self.session.refresh(payment)
         return payment
 
-    def _student_school_invoices(self, student_id: int) -> list[Invoice]:
+    def _student_school_invoices(self, student_id: str) -> list[Invoice]:
         return list(
             self.session.scalars(
                 select(Invoice)
                 .join(FeeHead, FeeHead.id == Invoice.fee_head_id)
                 .outerjoin(AcademicYear, AcademicYear.id == Invoice.academic_year_id)
-                .where(Invoice.student_id_fk == int(student_id), not_(_van_fee_head_filter()))
+                .where(Invoice.student_id_fk == str(student_id), not_(_van_fee_head_filter()))
                 .order_by(*self._invoice_year_order())
             ).all()
         )
 
-    def _student_van_invoices(self, student_id: int) -> list[Invoice]:
+    def _student_van_invoices(self, student_id: str) -> list[Invoice]:
         return list(
             self.session.scalars(
                 select(Invoice)
                 .join(FeeHead, FeeHead.id == Invoice.fee_head_id)
                 .outerjoin(AcademicYear, AcademicYear.id == Invoice.academic_year_id)
-                .where(Invoice.student_id_fk == int(student_id), _van_fee_head_filter())
+                .where(Invoice.student_id_fk == str(student_id), _van_fee_head_filter())
                 .order_by(*self._invoice_year_order())
             ).all()
         )
 
-    def _student_all_invoices(self, student_id: int) -> list[Invoice]:
+    def _student_all_invoices(self, student_id: str) -> list[Invoice]:
         return list(
             self.session.scalars(
                 select(Invoice)
                 .outerjoin(AcademicYear, AcademicYear.id == Invoice.academic_year_id)
-                .where(Invoice.student_id_fk == int(student_id))
+                .where(Invoice.student_id_fk == str(student_id))
                 .order_by(*self._invoice_year_order())
             ).all()
         )
 
-    def _rebuild_student_allocations(self, student_id: int) -> None:
-        student_id = int(student_id)
+    def _rebuild_student_allocations(self, student_id: str) -> None:
+        student_id = str(student_id)
         for inv in self._student_all_invoices(student_id):
             inv.amount_paid = 0.0
 
@@ -382,7 +383,7 @@ class PaymentRepository:
 
         payment.is_reverted = True
         payment.reverted_at = datetime.now()
-        self._rebuild_student_allocations(int(payment.student_id_fk))
+        self._rebuild_student_allocations(str(payment.student_id_fk))
         self.session.commit()
         self.session.refresh(payment)
         return payment
@@ -503,7 +504,7 @@ class PaymentRepository:
         include_reverted: bool = False,
     ):
         """Newest first: reference, student, amounts, mode, operator. Optional case-insensitive search substring."""
-        stmt = select(Payment, Student).join(Student, Student.id == Payment.student_id_fk)
+        stmt = select(Payment, Student).join(Student, Student.student_id == Payment.student_id_fk)
         if not include_reverted:
             stmt = stmt.where(self._not_reverted_filter())
         needle = (search or "").strip()
@@ -527,7 +528,9 @@ class PaymentRepository:
                     "student_name": s.full_name or "",
                     "class_name": s.class_name or "",
                     "section": s.section or "",
-                    "guardian_name": s.guardian_name or "",
+                    "father_name": getattr(s, "father_name", None) or "",
+                    "mother_name": getattr(s, "mother_name", None) or "",
+                    "guardian_name": getattr(s, "father_name", None) or s.guardian_name or "",
                     "amount": float(p.amount or 0.0),
                     "discount": float(p.discount_amount or 0.0),
                     "mode": p.mode or "",

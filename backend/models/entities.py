@@ -15,7 +15,7 @@ class AcademicYear(Base):
 class StudentAcademicYearFee(Base):
     __tablename__ = "student_academic_year_fees"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    student_id_fk: Mapped[int] = mapped_column(ForeignKey("students.id"), nullable=False)
+    student_id_fk: Mapped[str] = mapped_column(String(20), ForeignKey("students.student_id"), nullable=False)
     academic_year_id: Mapped[int] = mapped_column(ForeignKey("academic_years.id"), nullable=False)
     school_fees: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     van_fees: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
@@ -26,12 +26,19 @@ class StudentAcademicYearFee(Base):
 
 class Student(Base):
     __tablename__ = "students"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    student_id: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    student_id: Mapped[str] = mapped_column(String(20), primary_key=True)
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    gender: Mapped[str] = mapped_column(String(20), default="", nullable=False)
+    father_name: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    mother_name: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     class_name: Mapped[str] = mapped_column(String(20), nullable=False)
     section: Mapped[str] = mapped_column(String(10), default="")
     phone: Mapped[str] = mapped_column(String(20), nullable=False)
+    mobile_number_1: Mapped[str] = mapped_column(String(20), default="", nullable=False)
+    mobile_number_2: Mapped[str] = mapped_column(String(20), default="", nullable=False)
+    date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
+    caste: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    aadhaar: Mapped[str] = mapped_column(String(20), default="", nullable=False)
     village: Mapped[str] = mapped_column(String(80), default="", nullable=False)
     guardian_name: Mapped[str] = mapped_column(String(120), default="")
     status: Mapped[str] = mapped_column(String(20), default="active")
@@ -54,7 +61,7 @@ class FeeHead(Base):
 class Invoice(Base):
     __tablename__ = "invoices"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    student_id_fk: Mapped[int] = mapped_column(ForeignKey("students.id"), nullable=False)
+    student_id_fk: Mapped[str] = mapped_column(String(20), ForeignKey("students.student_id"), nullable=False)
     academic_year_id: Mapped[int | None] = mapped_column(ForeignKey("academic_years.id"), nullable=True)
     fee_head_id: Mapped[int] = mapped_column(ForeignKey("fee_heads.id"), nullable=False)
     period_label: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -66,7 +73,7 @@ class Invoice(Base):
 class Payment(Base):
     __tablename__ = "payments"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    student_id_fk: Mapped[int] = mapped_column(ForeignKey("students.id"), nullable=False)
+    student_id_fk: Mapped[str] = mapped_column(String(20), ForeignKey("students.student_id"), nullable=False)
     payment_date: Mapped[date] = mapped_column(Date, default=date.today)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     school_amount: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
@@ -141,7 +148,7 @@ class Expense(Base):
 class FeePlan(Base):
     __tablename__ = "fee_plans"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    student_id_fk: Mapped[int] = mapped_column(ForeignKey("students.id"), nullable=False)
+    student_id_fk: Mapped[str] = mapped_column(String(20), ForeignKey("students.student_id"), nullable=False)
     fee_head_id: Mapped[int] = mapped_column(ForeignKey("fee_heads.id"), nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     concession_amount: Mapped[float] = mapped_column(Float, default=0.0)

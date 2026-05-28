@@ -65,7 +65,18 @@ class StudentDetailsTab(QWidget):
         tool.addWidget(QLabel("Search by"))
         self.search_by = QComboBox()
         self.search_by.addItems(
-            ["Roll Number", "Name", "Phone", "Village", "Class-Section", "Status", "Guardian Name"]
+            [
+                "Roll Number",
+                "Name",
+                "Mobile Number 1",
+                "Mobile Number 2",
+                "Village",
+                "Class-Section",
+                "Status",
+                "Father Name",
+                "Mother Name",
+                "Aadhaar",
+            ]
         )
         self.search_by.setCurrentIndex(1)
         tool.addWidget(self.search_by, 1)
@@ -186,13 +197,25 @@ class StudentDetailsTab(QWidget):
         contact_form.setHorizontalSpacing(16)
         contact_form.setVerticalSpacing(8)
         self.lbl_phone = QLabel("—")
+        self.lbl_mobile_2 = QLabel("—")
         self.lbl_village = QLabel("—")
         self.lbl_transport = QLabel("—")
-        self.lbl_guardian = QLabel("—")
-        contact_form.addRow("Phone", self.lbl_phone)
+        self.lbl_gender = QLabel("—")
+        self.lbl_father_name = QLabel("—")
+        self.lbl_mother_name = QLabel("—")
+        self.lbl_date_of_birth = QLabel("—")
+        self.lbl_caste = QLabel("—")
+        self.lbl_aadhaar = QLabel("—")
+        contact_form.addRow("Mobile number 1", self.lbl_phone)
+        contact_form.addRow("Mobile number 2", self.lbl_mobile_2)
         contact_form.addRow("Village", self.lbl_village)
         contact_form.addRow("Transport", self.lbl_transport)
-        contact_form.addRow("Guardian", self.lbl_guardian)
+        contact_form.addRow("Gender", self.lbl_gender)
+        contact_form.addRow("Father name", self.lbl_father_name)
+        contact_form.addRow("Mother name", self.lbl_mother_name)
+        contact_form.addRow("Date of birth", self.lbl_date_of_birth)
+        contact_form.addRow("Caste", self.lbl_caste)
+        contact_form.addRow("Aadhaar", self.lbl_aadhaar)
         contact_card.body.addLayout(contact_form)
         middle_row.addWidget(contact_card, 1)
 
@@ -387,6 +410,16 @@ class StudentDetailsTab(QWidget):
             return value.strftime("%d/%m/%Y")
         return str(value or "—")
 
+    @staticmethod
+    def format_gender(value) -> str:
+        text = str(value or "").strip()
+        lower = text.lower()
+        if lower in ("male", "boy"):
+            return "Male"
+        if lower in ("female", "girl"):
+            return "Female"
+        return text or "—"
+
     def clear_detail(self) -> None:
         self._profile_card.set_student("No student selected", "—", "—")
         self.detail_heading.setText("No student selected")
@@ -396,9 +429,15 @@ class StudentDetailsTab(QWidget):
         self.lbl_class.setText("—")
         self.lbl_joining.setText("—")
         self.lbl_phone.setText("—")
+        self.lbl_mobile_2.setText("—")
         self.lbl_village.setText("—")
         self.lbl_transport.setText("—")
-        self.lbl_guardian.setText("—")
+        self.lbl_gender.setText("—")
+        self.lbl_father_name.setText("—")
+        self.lbl_mother_name.setText("—")
+        self.lbl_date_of_birth.setText("—")
+        self.lbl_caste.setText("—")
+        self.lbl_aadhaar.setText("—")
         self.lbl_stat_total.setText("—")
         self.lbl_stat_school.setText("—")
         self.lbl_stat_van.setText("—")
@@ -449,14 +488,30 @@ class StudentDetailsTab(QWidget):
         self.lbl_name.setText(str(student.full_name or "—"))
         self.lbl_class.setText(class_section)
         self.lbl_joining.setText(self.format_joining_date(getattr(student, "created_at", None)))
-        self.lbl_phone.setText(str(student.phone or "—"))
+        self.lbl_phone.setText(
+            str(getattr(student, "mobile_number_1", None) or getattr(student, "phone", None) or "—")
+        )
+        self.lbl_mobile_2.setText(str(getattr(student, "mobile_number_2", None) or "—"))
         self.lbl_village.setText(str(getattr(student, "village", None) or "—"))
         self.lbl_transport.setText(
             "Own transport"
             if str(getattr(student, "transport_mode", "van") or "van").lower() == "own"
             else "Van transport"
         )
-        self.lbl_guardian.setText(str(student.guardian_name or "—"))
+        self.lbl_gender.setText(self.format_gender(getattr(student, "gender", None)))
+        self.lbl_father_name.setText(
+            str(getattr(student, "father_name", None) or getattr(student, "guardian_name", None) or "—")
+        )
+        self.lbl_mother_name.setText(str(getattr(student, "mother_name", None) or "—"))
+        dob = getattr(student, "date_of_birth", None)
+        if isinstance(dob, datetime):
+            self.lbl_date_of_birth.setText(dob.strftime("%d/%m/%Y"))
+        elif isinstance(dob, date):
+            self.lbl_date_of_birth.setText(dob.strftime("%d/%m/%Y"))
+        else:
+            self.lbl_date_of_birth.setText(str(dob or "—"))
+        self.lbl_caste.setText(str(getattr(student, "caste", None) or "—"))
+        self.lbl_aadhaar.setText(str(getattr(student, "aadhaar", None) or "—"))
 
         self.lbl_fee_year.setText(year_label)
         self.lbl_school_pending.setText(_money(school_pending))

@@ -62,6 +62,39 @@ class ExpenseService:
             search=search,
         )
 
+    def update_faculty_profile(
+        self,
+        faculty_id: int,
+        *,
+        faculty_name: str,
+        faculty_type: str,
+        role: str,
+        monthly_salary: float,
+        default_working_days: int,
+        is_active: bool,
+    ):
+        name = (faculty_name or "").strip()
+        if not name:
+            raise ValueError("Faculty name is required.")
+        salary = float(monthly_salary or 0.0)
+        if salary <= 0:
+            raise ValueError("Monthly salary must be greater than zero.")
+        working_days = int(float(default_working_days or 0))
+        if working_days <= 0:
+            raise ValueError("Working days must be greater than zero.")
+        row = self.repo.update_faculty_profile(
+            int(faculty_id),
+            faculty_name=name,
+            faculty_type=self.normalize_faculty_type(faculty_type),
+            role=(role or "").strip(),
+            monthly_salary=salary,
+            default_working_days=working_days,
+            is_active=bool(is_active),
+        )
+        if row is None:
+            raise ValueError("Selected faculty does not exist.")
+        return row
+
     @staticmethod
     def calculate_salary_amount(
         monthly_salary: float,

@@ -1,3 +1,5 @@
+from datetime import date, datetime
+
 from backend.repositories.student_repository import StudentRepository
 
 
@@ -40,10 +42,46 @@ class StudentService:
     def _validate_phone(phone: str) -> str:
         value = (phone or "").strip()
         if not value:
-            raise ValueError("Phone is required")
+            raise ValueError("Mobile number 1 is required")
         if not value.isdigit() or len(value) != 10:
-            raise ValueError("Phone must be exactly 10 digits")
+            raise ValueError("Mobile number 1 must be exactly 10 digits")
         return value
+
+    @staticmethod
+    def _validate_optional_phone(phone: str) -> str:
+        value = (phone or "").strip()
+        if not value:
+            return ""
+        if not value.isdigit() or len(value) != 10:
+            raise ValueError("Mobile number 2 must be exactly 10 digits")
+        return value
+
+    @staticmethod
+    def _validate_aadhaar(aadhaar: str) -> str:
+        value = (aadhaar or "").strip()
+        if not value:
+            return ""
+        if not value.isdigit() or len(value) != 12:
+            raise ValueError("Aadhaar must be exactly 12 digits")
+        return value
+
+    @staticmethod
+    def _parse_date_of_birth(value) -> date | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        text = str(value or "").strip()
+        if not text:
+            return None
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+        raise ValueError("Date of Birth must be in DD/MM/YYYY format")
 
     def create_student(
         self,
@@ -59,6 +97,14 @@ class StudentService:
         van_fees=None,
         village_fee_service=None,
         class_fee_service=None,
+        gender="",
+        father_name="",
+        mother_name="",
+        mobile_number_1="",
+        mobile_number_2="",
+        date_of_birth=None,
+        caste="",
+        aadhaar="",
     ):
         if not (student_id or "").strip():
             raise ValueError("Student ID is required")
@@ -68,9 +114,16 @@ class StudentService:
             raise ValueError("Class is required")
         if not (section or "").strip():
             raise ValueError("Section is required")
-        phone = self._validate_phone(phone)
-        if not (guardian_name or "").strip():
-            raise ValueError("Guardian name is required")
+        primary_mobile = self._validate_phone(mobile_number_1 or phone)
+        secondary_mobile = self._validate_optional_phone(mobile_number_2)
+        father = (father_name or guardian_name or "").strip()
+        mother = (mother_name or "").strip()
+        gender_value = (gender or "").strip() or "Other"
+        caste_value = (caste or "").strip()
+        if not father:
+            raise ValueError("Father name is required")
+        aadhaar_value = self._validate_aadhaar(aadhaar)
+        dob_value = self._parse_date_of_birth(date_of_birth)
         if not (village or "").strip():
             raise ValueError("Village is required")
         if not (status or "").strip():
@@ -93,13 +146,21 @@ class StudentService:
             full_name,
             class_name,
             section,
-            phone,
+            primary_mobile,
             village,
-            guardian_name,
+            father,
             status,
             vf,
             sf,
             transport_mode=tm,
+            gender=gender_value,
+            father_name=father,
+            mother_name=mother,
+            mobile_number_1=primary_mobile,
+            mobile_number_2=secondary_mobile,
+            date_of_birth=dob_value,
+            caste=caste_value,
+            aadhaar=aadhaar_value,
         )
 
     def update_student(
@@ -117,6 +178,14 @@ class StudentService:
         van_fees=None,
         village_fee_service=None,
         class_fee_service=None,
+        gender="",
+        father_name="",
+        mother_name="",
+        mobile_number_1="",
+        mobile_number_2="",
+        date_of_birth=None,
+        caste="",
+        aadhaar="",
     ):
         if not student:
             raise ValueError("Student is required")
@@ -128,9 +197,16 @@ class StudentService:
             raise ValueError("Class is required")
         if not (section or "").strip():
             raise ValueError("Section is required")
-        phone = self._validate_phone(phone)
-        if not (guardian_name or "").strip():
-            raise ValueError("Guardian name is required")
+        primary_mobile = self._validate_phone(mobile_number_1 or phone)
+        secondary_mobile = self._validate_optional_phone(mobile_number_2)
+        father = (father_name or guardian_name or "").strip()
+        mother = (mother_name or "").strip()
+        gender_value = (gender or "").strip() or "Other"
+        caste_value = (caste or "").strip()
+        if not father:
+            raise ValueError("Father name is required")
+        aadhaar_value = self._validate_aadhaar(aadhaar)
+        dob_value = self._parse_date_of_birth(date_of_birth)
         tm = self._normalize_transport_mode(transport_mode)
         old_tm = (getattr(student, "transport_mode", None) or "van").strip().lower()
         if tm == "own":
@@ -154,11 +230,19 @@ class StudentService:
             full_name,
             class_name,
             section,
-            phone,
+            primary_mobile,
             village,
-            guardian_name,
+            father,
             status,
             vf,
             sf,
             transport_mode=tm,
+            gender=gender_value,
+            father_name=father,
+            mother_name=mother,
+            mobile_number_1=primary_mobile,
+            mobile_number_2=secondary_mobile,
+            date_of_birth=dob_value,
+            caste=caste_value,
+            aadhaar=aadhaar_value,
         )

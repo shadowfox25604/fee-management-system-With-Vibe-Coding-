@@ -60,6 +60,7 @@ DEFAULT_NAV: list[NavGroup] = [
         "💸",
         children=[
             NavLeaf("Salary", "Salary"),
+            NavLeaf("Salary Control", "Salary Control"),
             NavLeaf("Other", "Other"),
             NavLeaf("Add Faculty", "Add Faculty"),
         ],
@@ -78,6 +79,7 @@ _HIDE_TOP_SEARCH: frozenset[str] = frozenset(
         "Collect Payment",
         "Payment History",
         "Salary",
+        "Salary Control",
         "Other",
         "Add Faculty",
     }
@@ -91,6 +93,7 @@ _HIDE_TOP_BAR: frozenset[str] = frozenset(
         "Collect Payment",
         "Payment History",
         "Salary",
+        "Salary Control",
         "Other",
         "Add Faculty",
     }

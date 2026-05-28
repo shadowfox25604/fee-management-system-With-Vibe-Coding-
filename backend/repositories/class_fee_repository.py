@@ -67,7 +67,7 @@ class ClassFeeRepository:
                 return h
         return None
 
-    def _school_invoices_ordered(self, student_id: int) -> list[Invoice]:
+    def _school_invoices_ordered(self, student_id: str) -> list[Invoice]:
         return list(
             self.session.scalars(
                 select(Invoice)
@@ -77,13 +77,13 @@ class ClassFeeRepository:
             ).all()
         )
 
-    def _total_school_paid(self, student_id: int) -> float:
+    def _total_school_paid(self, student_id: str) -> float:
         invs = self._school_invoices_ordered(student_id)
         return sum(float(i.amount_paid or 0.0) for i in invs)
 
     def _adjust_school_invoices(self, student: Student, old_tariff: float, new_tariff: float) -> None:
         eps = 1e-6
-        invs = self._school_invoices_ordered(student.id)
+        invs = self._school_invoices_ordered(student.student_id)
         total_paid = sum(float(i.amount_paid or 0.0) for i in invs)
         if new_tariff + eps < total_paid:
             raise ValueError(
@@ -102,7 +102,7 @@ class ClassFeeRepository:
             year_id = AcademicYearRepository(self.session).get_current()
             self.session.add(
                 Invoice(
-                    student_id_fk=student.id,
+                    student_id_fk=student.student_id,
                     academic_year_id=year_id.id if year_id else None,
                     fee_head_id=fh.id,
                     period_label=f"School tariff {date.today().isoformat()}",
@@ -139,7 +139,7 @@ class ClassFeeRepository:
 
         students = self.students_in_fixed_class(class_key)
         for st in students:
-            paid = self._total_school_paid(st.id)
+            paid = self._total_school_paid(st.student_id)
             if new_amount + 1e-6 < paid:
                 raise ValueError(
                     f"Student {st.student_id} ({st.full_name}): new fee {new_amount:.2f} is below school "
