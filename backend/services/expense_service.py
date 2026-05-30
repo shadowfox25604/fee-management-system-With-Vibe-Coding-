@@ -256,6 +256,7 @@ class ExpenseService:
         month_label: str = "",
         expense_date: date | None = None,
         notes: str = "",
+        operator_name: str = "",
     ):
         calc = self.calculate_salary_for_faculty(
             faculty_id,
@@ -276,10 +277,26 @@ class ExpenseService:
             base_amount=float(calc["monthly_salary"]),
             description=description,
             notes=notes or "",
+            operator_name=operator_name or "",
+            faculty_type=str(faculty.faculty_type or ""),
         )
 
-    def list_salary_expenses(self, *, limit: int = 500):
-        return self.repo.list_salary_expenses(limit=limit)
+    def list_salary_expenses(self, *, limit: int = 500, include_reverted: bool = False):
+        return self.repo.list_salary_expenses(limit=limit, include_reverted=include_reverted)
+
+    def list_salary_history(
+        self,
+        limit: int = 5000,
+        search: str | None = None,
+        *,
+        include_reverted: bool = True,
+    ):
+        return self.repo.list_salary_history(
+            limit=limit, search=search, include_reverted=include_reverted
+        )
+
+    def undo_salary_payment(self, reference_no: str):
+        return self.repo.undo_salary_expense(reference_no)
 
     def faculty_salary_overview(self, faculty_id: int, *, history_limit: int = 100) -> dict:
         faculty = self.repo.get_faculty_salary(int(faculty_id))
@@ -328,3 +345,7 @@ class ExpenseService:
             "total": self.repo.sum_other_expenses(),
             "by_category": by_category,
         }
+
+    def purge_faculty_by_name(self, faculty_name: str) -> dict[str, int]:
+        """Delete faculty (if present), attendance, and salary history rows for this name."""
+        return self.repo.purge_faculty_by_name(faculty_name)

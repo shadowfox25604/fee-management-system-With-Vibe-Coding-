@@ -1,6 +1,10 @@
 from datetime import date
-from sqlalchemy import and_, func, select
+
+from sqlalchemy import and_, func, or_, select
+
 from backend.models import Invoice, Student
+
+
 class ReportRepository:
     def __init__(self, session):
         self.session = session
@@ -21,3 +25,19 @@ class ReportRepository:
         return [r[0] for r in self.session.execute(select(Student.class_name).distinct().order_by(Student.class_name)).all() if r[0] is not None]
     def distinct_sections(self):
         return [r[0] for r in self.session.execute(select(Student.section).distinct().order_by(Student.section)).all() if r[0] is not None]
+
+    def list_students_for_report(
+        self, student_query=None, class_name=None, section=None
+    ):
+        stmt = select(Student).order_by(Student.class_name, Student.section, Student.student_id)
+        q = (student_query or "").strip()
+        if q:
+            p = f"%{q}%"
+            stmt = stmt.where(
+                or_(Student.student_id.ilike(p), Student.full_name.ilike(p))
+            )
+        if class_name:
+            stmt = stmt.where(Student.class_name == str(class_name))
+        if section:
+            stmt = stmt.where(Student.section == str(section))
+        return list(self.session.scalars(stmt).all())

@@ -1,15 +1,40 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
+from backend.core.salary_reference import allocate_unique_salary_reference
 from backend.models import Expense, FacultyAttendance, FacultySalary
 
 
 class ExpenseRepository:
     def __init__(self, session):
         self.session = session
+
+    @staticmethod
+    def _salary_not_reverted_filter():
+        return or_(Expense.is_reverted.is_(False), Expense.is_reverted.is_(None))
+
+    def lookup_faculty_type(self, person_name: str) -> str:
+        name = (person_name or "").strip()
+        if not name:
+            return ""
+        row = self.session.scalars(
+            select(FacultySalary.faculty_type)
+            .where(func.lower(func.trim(FacultySalary.faculty_name)) == name.lower())
+            .limit(1)
+        ).first()
+        return self._normalize_faculty_type(row) if row else ""
+
+    def new_salary_reference(self) -> str:
+        def exists(cand: str) -> bool:
+            hit = self.session.scalar(
+                select(func.count(Expense.id)).where(Expense.reference_no == cand)
+            )
+            return int(hit or 0) > 0
+
+        return allocate_unique_salary_reference(exists)
 
     @staticmethod
     def _normalize_month_label(month_label: str) -> str:
@@ -194,6 +219,7 @@ class ExpenseRepository:
             ).all()
             for salary_row in salary_rows:
                 salary_row.person_name = new_name
+                salary_row.faculty_type = self._normalize_faculty_type(row.faculty_type)
 
         self.session.commit()
         self.session.refresh(row)
@@ -233,48 +259,31 @@ class ExpenseRepository:
         base_amount: float,
         description: str = "",
         notes: str = "",
+        operator_name: str = "",
+        faculty_type: str = "",
     ) -> Expense:
         person_text = person_name.strip()
         month_text = month_label.strip()
-        existing_rows = self.session.scalars(
-            select(Expense)
-            .where(
-                Expense.expense_type == "salary",
-                func.lower(Expense.person_name) == person_text.lower(),
-                Expense.month_label == month_text,
-            )
-            .order_by(Expense.id.desc())
-        ).all()
-        if existing_rows:
-            # Keep one row and overwrite it with latest salary payload.
-            row = existing_rows[0]
-            row.category = "Salary"
-            row.person_name = person_text
-            row.description = description.strip()
-            row.amount = float(amount)
-            row.expense_date = expense_date
-            row.month_label = month_text
-            row.attendance_days = float(attendance_days)
-            row.working_days = float(working_days)
-            row.base_amount = float(base_amount)
-            row.notes = notes.strip()
-            for duplicate in existing_rows[1:]:
-                self.session.delete(duplicate)
-        else:
-            row = Expense(
-                expense_type="salary",
-                category="Salary",
-                person_name=person_text,
-                description=description.strip(),
-                amount=float(amount),
-                expense_date=expense_date,
-                month_label=month_text,
-                attendance_days=float(attendance_days),
-                working_days=float(working_days),
-                base_amount=float(base_amount),
-                notes=notes.strip(),
-            )
-            self.session.add(row)
+        category_text = self._normalize_faculty_type(faculty_type) or self.lookup_faculty_type(person_text)
+        row = Expense(
+            expense_type="salary",
+            category="Salary",
+            person_name=person_text,
+            faculty_type=category_text,
+            description=description.strip(),
+            amount=float(amount),
+            expense_date=expense_date,
+            month_label=month_text,
+            attendance_days=float(attendance_days),
+            working_days=float(working_days),
+            base_amount=float(base_amount),
+            notes=notes.strip(),
+            reference_no=self.new_salary_reference(),
+            operator_name=(operator_name or "").strip(),
+            is_reverted=False,
+            reverted_at=None,
+        )
+        self.session.add(row)
         self.session.commit()
         self.session.refresh(row)
         return row
@@ -301,29 +310,112 @@ class ExpenseRepository:
         self.session.refresh(row)
         return row
 
-    def list_salary_expenses(self, *, limit: int = 500) -> list[Expense]:
-        stmt = (
-            select(Expense)
-            .where(Expense.expense_type == "salary")
-            .order_by(Expense.expense_date.desc(), Expense.id.desc())
-            .limit(int(limit))
-        )
+    def list_salary_expenses(
+        self, *, limit: int = 500, include_reverted: bool = False
+    ) -> list[Expense]:
+        stmt = select(Expense).where(Expense.expense_type == "salary")
+        if not include_reverted:
+            stmt = stmt.where(self._salary_not_reverted_filter())
+        stmt = stmt.order_by(Expense.expense_date.desc(), Expense.id.desc()).limit(int(limit))
         return list(self.session.scalars(stmt).all())
 
-    def list_salary_expenses_for_faculty(self, faculty_name: str, *, limit: int = 500) -> list[Expense]:
+    def list_salary_expenses_for_faculty(
+        self,
+        faculty_name: str,
+        *,
+        limit: int = 500,
+        include_reverted: bool = True,
+    ) -> list[Expense]:
         name = (faculty_name or "").strip()
         if not name:
             return []
-        stmt = (
-            select(Expense)
-            .where(
-                Expense.expense_type == "salary",
-                func.lower(Expense.person_name) == name.lower(),
-            )
-            .order_by(Expense.expense_date.desc(), Expense.id.desc())
-            .limit(int(limit))
+        stmt = select(Expense).where(
+            Expense.expense_type == "salary",
+            func.lower(Expense.person_name) == name.lower(),
         )
+        if not include_reverted:
+            stmt = stmt.where(self._salary_not_reverted_filter())
+        stmt = stmt.order_by(Expense.expense_date.desc(), Expense.id.desc()).limit(int(limit))
         return list(self.session.scalars(stmt).all())
+
+    def list_salary_history(
+        self,
+        limit: int = 5000,
+        search: str | None = None,
+        *,
+        include_reverted: bool = True,
+    ) -> list[dict]:
+        stmt = (
+            select(Expense, FacultySalary)
+            .outerjoin(
+                FacultySalary,
+                func.lower(FacultySalary.faculty_name) == func.lower(Expense.person_name),
+            )
+            .where(Expense.expense_type == "salary")
+        )
+        if not include_reverted:
+            stmt = stmt.where(self._salary_not_reverted_filter())
+        needle = (search or "").strip()
+        if needle:
+            pat = f"%{needle.lower()}%"
+            stmt = stmt.where(
+                or_(
+                    func.lower(Expense.reference_no).like(pat),
+                    func.lower(Expense.person_name).like(pat),
+                    func.lower(Expense.month_label).like(pat),
+                    func.lower(FacultySalary.role).like(pat),
+                    func.lower(Expense.notes).like(pat),
+                )
+            )
+        stmt = stmt.order_by(Expense.expense_date.desc(), Expense.id.desc()).limit(int(limit))
+        out: list[dict] = []
+        for exp, faculty in self.session.execute(stmt).all():
+            reverted = bool(getattr(exp, "is_reverted", False))
+            stored_type = (getattr(exp, "faculty_type", None) or "").strip()
+            if not stored_type and faculty is not None:
+                stored_type = str(getattr(faculty, "faculty_type", None) or "").strip()
+            if not stored_type:
+                stored_type = self.lookup_faculty_type(exp.person_name or "")
+            out.append(
+                {
+                    "expense_id": exp.id,
+                    "expense_date": exp.expense_date,
+                    "reference_no": exp.reference_no or "",
+                    "faculty_name": exp.person_name or "",
+                    "faculty_type": stored_type or "—",
+                    "role": getattr(faculty, "role", "") or "",
+                    "month_label": exp.month_label or "",
+                    "attendance_days": float(exp.attendance_days or 0.0),
+                    "working_days": float(exp.working_days or 0.0),
+                    "base_amount": float(exp.base_amount or 0.0),
+                    "amount": float(exp.amount or 0.0),
+                    "notes": exp.notes or "",
+                    "operator": getattr(exp, "operator_name", "") or "",
+                    "is_reverted": reverted,
+                    "status": "Salary reverted" if reverted else "Paid",
+                }
+            )
+        return out
+
+    def undo_salary_expense(self, reference_no: str) -> Expense:
+        ref = (reference_no or "").strip()
+        if not ref:
+            raise ValueError("Salary reference is required.")
+        row = self.session.scalars(
+            select(Expense).where(
+                Expense.expense_type == "salary",
+                Expense.reference_no == ref,
+            ).limit(1)
+        ).first()
+        if row is None:
+            raise ValueError("Salary payment not found.")
+        if bool(getattr(row, "is_reverted", False)):
+            raise ValueError("This salary payment is already reverted.")
+        row.is_reverted = True
+        row.reverted_at = datetime.now()
+        self.session.commit()
+        self.session.refresh(row)
+        return row
 
     def list_other_expenses(self, *, limit: int = 500) -> list[Expense]:
         stmt = (
@@ -336,7 +428,8 @@ class ExpenseRepository:
 
     def sum_salary_expenses(self, month_label: str | None = None) -> float:
         stmt = select(func.coalesce(func.sum(Expense.amount), 0.0)).where(
-            Expense.expense_type == "salary"
+            Expense.expense_type == "salary",
+            self._salary_not_reverted_filter(),
         )
         if month_label:
             stmt = stmt.where(Expense.month_label == month_label.strip())
@@ -351,6 +444,7 @@ class ExpenseRepository:
                 select(func.coalesce(func.sum(Expense.amount), 0.0)).where(
                     Expense.expense_type == "salary",
                     func.lower(Expense.person_name) == name.lower(),
+                    self._salary_not_reverted_filter(),
                 )
             )
             or 0.0
@@ -374,3 +468,45 @@ class ExpenseRepository:
             .order_by(Expense.category.asc())
         ).all()
         return {str(category): float(total or 0.0) for category, total in rows}
+
+    def purge_faculty_by_name(self, faculty_name: str) -> dict[str, int]:
+        """Remove faculty profile, attendance, and all salary payouts for this name."""
+        needle = (faculty_name or "").strip().lower()
+        if not needle:
+            raise ValueError("Faculty name is required.")
+        faculty = self.session.scalars(
+            select(FacultySalary)
+            .where(func.lower(func.trim(FacultySalary.faculty_name)) == needle)
+            .limit(1)
+        ).first()
+        attendance_deleted = 0
+        faculty_deleted = 0
+        if faculty is not None:
+            attendance_rows = list(
+                self.session.scalars(
+                    select(FacultyAttendance).where(
+                        FacultyAttendance.faculty_id_fk == int(faculty.id)
+                    )
+                ).all()
+            )
+            for row in attendance_rows:
+                self.session.delete(row)
+            attendance_deleted = len(attendance_rows)
+            self.session.delete(faculty)
+            faculty_deleted = 1
+        expense_rows = list(
+            self.session.scalars(
+                select(Expense).where(
+                    Expense.expense_type == "salary",
+                    func.lower(func.trim(Expense.person_name)) == needle,
+                )
+            ).all()
+        )
+        for row in expense_rows:
+            self.session.delete(row)
+        self.session.commit()
+        return {
+            "faculty_deleted": faculty_deleted,
+            "attendance_deleted": attendance_deleted,
+            "salary_expenses_deleted": len(expense_rows),
+        }

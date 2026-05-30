@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from frontend.ui.edudash_widgets import CardTitleBar, GradientProfileCard, SurfaceCard
 from frontend.ui.table_style import style_fee_action_button
+from backend.core.fee_due_display import pending_fees
 from frontend.ui import theme
 
 
@@ -225,18 +226,16 @@ class StudentDetailsTab(QWidget):
         fee_form.setHorizontalSpacing(16)
         fee_form.setVerticalSpacing(8)
         self.lbl_fee_year = QLabel("—")
-        self.lbl_school_pending = QLabel("—")
+        self.lbl_pending_fees = QLabel("—")
         self.lbl_school_current = QLabel("—")
         self.lbl_school_payable = QLabel("—")
-        self.lbl_van_pending = QLabel("—")
         self.lbl_van_current = QLabel("—")
         self.lbl_van_payable = QLabel("—")
         self.lbl_total_payable = QLabel("—")
         fee_form.addRow("Academic year", self.lbl_fee_year)
-        fee_form.addRow("Pending school fees", self.lbl_school_pending)
+        fee_form.addRow("Pending fees", self.lbl_pending_fees)
         fee_form.addRow("School due (current)", self.lbl_school_current)
         fee_form.addRow("School payable", self.lbl_school_payable)
-        fee_form.addRow("Pending van fees", self.lbl_van_pending)
         fee_form.addRow("Van due (current)", self.lbl_van_current)
         fee_form.addRow("Van payable", self.lbl_van_payable)
         fee_form.addRow("Total payable", self.lbl_total_payable)
@@ -443,10 +442,9 @@ class StudentDetailsTab(QWidget):
         self.lbl_stat_van.setText("—")
         self.lbl_stat_year.setText("—")
         self.lbl_fee_year.setText("—")
-        self.lbl_school_pending.setText("—")
+        self.lbl_pending_fees.setText("—")
         self.lbl_school_current.setText("—")
         self.lbl_school_payable.setText("—")
-        self.lbl_van_pending.setText("—")
         self.lbl_van_current.setText("—")
         self.lbl_van_payable.setText("—")
         self.lbl_total_payable.setText("—")
@@ -467,12 +465,11 @@ class StudentDetailsTab(QWidget):
         class_section = f"{class_name}-{section}" if section else class_name
         status = str(student.status or "—")
 
-        school_pending = float(due.get("school_pending", 0) or 0)
+        pending_total = pending_fees(due)
         school_current = float(due.get("fee_due", 0) or 0)
-        school_payable = float(due.get("school_payable", school_pending + school_current) or 0)
-        van_pending = float(due.get("van_pending", 0) or 0)
+        school_payable = float(due.get("school_payable", 0) or 0)
         van_current = float(due.get("van_due", 0) or 0)
-        van_payable = float(due.get("van_payable", van_pending + van_current) or 0)
+        van_payable = float(due.get("van_payable", 0) or 0)
         total_payable = float(due.get("total", school_payable + van_payable) or 0)
         year_label = str(due.get("current_year_label") or "—")
 
@@ -514,10 +511,9 @@ class StudentDetailsTab(QWidget):
         self.lbl_aadhaar.setText(str(getattr(student, "aadhaar", None) or "—"))
 
         self.lbl_fee_year.setText(year_label)
-        self.lbl_school_pending.setText(_money(school_pending))
+        self.lbl_pending_fees.setText(_money(pending_total))
         self.lbl_school_current.setText(_money(school_current))
         self.lbl_school_payable.setText(_money(school_payable))
-        self.lbl_van_pending.setText(_money(van_pending))
         self.lbl_van_current.setText(_money(van_current))
         self.lbl_van_payable.setText(_money(van_payable))
         self.lbl_total_payable.setText(_money(total_payable))

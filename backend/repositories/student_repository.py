@@ -1,5 +1,6 @@
 from sqlalchemy import func, or_, select
 
+from backend.core.student_enrollment import student_skips_academic_year_fee_provisioning
 from backend.models import Student
 
 
@@ -227,13 +228,12 @@ class StudentRepository:
         from backend.core.fee_control_constants import (
             PASSED_OUT_CLASS_KEY,
             canonical_class_for_student_class,
-            is_passed_out_class,
             next_class_key,
         )
 
         promoted = 0
         for student in self.session.scalars(select(Student)).all():
-            if is_passed_out_class(student.class_name):
+            if student_skips_academic_year_fee_provisioning(student):
                 continue
             current = canonical_class_for_student_class(student.class_name)
             if current is None:

@@ -231,6 +231,36 @@ def apply_sqlite_column_migrations(engine) -> None:
                 conn.execute(
                     text("ALTER TABLE expenses ADD COLUMN base_amount REAL NOT NULL DEFAULT 0.0")
                 )
+            if "reference_no" not in exp_cols:
+                conn.execute(text("ALTER TABLE expenses ADD COLUMN reference_no VARCHAR(16)"))
+            if "operator_name" not in exp_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE expenses ADD COLUMN operator_name VARCHAR(80) NOT NULL DEFAULT ''"
+                    )
+                )
+            if "is_reverted" not in exp_cols:
+                conn.execute(
+                    text("ALTER TABLE expenses ADD COLUMN is_reverted BOOLEAN NOT NULL DEFAULT 0")
+                )
+            if "reverted_at" not in exp_cols:
+                conn.execute(text("ALTER TABLE expenses ADD COLUMN reverted_at DATETIME"))
+            if "faculty_type" not in exp_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE expenses ADD COLUMN faculty_type VARCHAR(20) NOT NULL DEFAULT ''"
+                    )
+                )
+        _backfill_salary_expense_references(engine)
+        _backfill_salary_expense_faculty_type(engine)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_expenses_salary_reference_no "
+                    "ON expenses(reference_no) WHERE reference_no IS NOT NULL "
+                    "AND TRIM(reference_no) != ''"
+                )
+            )
 
 
 def _default_academic_year_bounds(as_of):
@@ -393,6 +423,7 @@ def apply_sqlite_data_migrations(engine) -> None:
                 conn.execute(
                     text("INSERT INTO app_migrations (name) VALUES ('students_student_id_primary_v1')")
                 )
+
     finally:
         _migrate_payments_receipt_to_uuid_reference(engine)
 
@@ -933,3 +964,100 @@ def _migrate_payments_to_compact_reference_sqlite(conn) -> None:
         reserved.add(cand)
 
     conn.execute(text("INSERT INTO app_migrations (name) VALUES ('payments_alnum_reference_v1')"))
+
+
+def _backfill_salary_expense_references(engine) -> None:
+    """Assign reference_no to existing salary expense rows."""
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("expenses"):
+        return
+    from backend.core.salary_reference import allocate_unique_salary_reference
+
+    with engine.begin() as conn:
+        exp_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(expenses)")).fetchall()}
+        if "reference_no" not in exp_cols:
+            return
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        row_done = conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "salary_expense_reference_v1"},
+        ).fetchone()
+        if row_done:
+            return
+        rows = conn.execute(
+            text(
+                "SELECT id FROM expenses WHERE expense_type = 'salary' "
+                "AND (reference_no IS NULL OR TRIM(COALESCE(reference_no, '')) = '')"
+            )
+        ).fetchall()
+        reserved = {
+            (r[0] or "").strip()
+            for r in conn.execute(
+                text(
+                    "SELECT reference_no FROM expenses "
+                    "WHERE reference_no IS NOT NULL AND TRIM(reference_no) != ''"
+                )
+            ).fetchall()
+            if r[0]
+        }
+
+        def _exists(c: str, _conn=conn, _res=reserved) -> bool:
+            if c in _res:
+                return True
+            return (
+                _conn.execute(
+                    text("SELECT 1 FROM expenses WHERE reference_no = :c"), {"c": c}
+                ).fetchone()
+                is not None
+            )
+
+        for (eid,) in rows:
+            cand = allocate_unique_salary_reference(_exists)
+            conn.execute(
+                text("UPDATE expenses SET reference_no = :c WHERE id = :id"),
+                {"c": cand, "id": int(eid)},
+            )
+            reserved.add(cand)
+        conn.execute(text("INSERT INTO app_migrations (name) VALUES ('salary_expense_reference_v1')"))
+
+
+def _backfill_salary_expense_faculty_type(engine) -> None:
+    """Copy faculty category onto salary expense rows for reliable history display."""
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("expenses") or not insp.has_table("faculty_salaries"):
+        return
+    with engine.begin() as conn:
+        exp_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(expenses)")).fetchall()}
+        if "faculty_type" not in exp_cols:
+            return
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        row_done = conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "salary_expense_faculty_type_v1"},
+        ).fetchone()
+        if row_done:
+            return
+        conn.execute(
+            text(
+                """
+                UPDATE expenses
+                SET faculty_type = (
+                    SELECT fs.faculty_type
+                    FROM faculty_salaries fs
+                    WHERE lower(trim(fs.faculty_name)) = lower(trim(expenses.person_name))
+                    LIMIT 1
+                )
+                WHERE expense_type = 'salary'
+                  AND (faculty_type IS NULL OR trim(faculty_type) = '')
+                  AND EXISTS (
+                    SELECT 1 FROM faculty_salaries fs
+                    WHERE lower(trim(fs.faculty_name)) = lower(trim(expenses.person_name))
+                  )
+                """
+            )
+        )
+        conn.execute(text("INSERT INTO app_migrations (name) VALUES ('salary_expense_faculty_type_v1')"))

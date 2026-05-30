@@ -7,11 +7,13 @@ from sqlalchemy import func, not_, select
 from backend.models import AcademicYear, FeeHead, Invoice, Student
 from backend.repositories.academic_year_repository import AcademicYearRepository
 from backend.core.fee_heads import van_fee_head_name_match
+from backend.core.student_enrollment import student_skips_academic_year_fee_provisioning
 from backend.repositories.student_year_fee_repository import StudentYearFeeRepository
 
 
 def _empty_due() -> dict:
     return {
+        "pending_fees": 0.0,
         "van_pending": 0.0,
         "van_current": 0.0,
         "van_due": 0.0,
@@ -51,6 +53,8 @@ class FeeBalanceService:
         row = self.year_fee_repo.get(student.student_id, yr.id)
         if row is not None:
             return float(row.school_fees or 0.0), float(row.van_fees or 0.0)
+        if student_skips_academic_year_fee_provisioning(student):
+            return 0.0, 0.0
         join_year = self.year_repo.get_for_date(joining_date)
         if join_year is not None and join_year.id == yr.id:
             return float(student.school_fees or 0.0), float(student.van_fees or 0.0)
@@ -247,7 +251,9 @@ class FeeBalanceService:
             van_due = max(0.0, float(van_current))
             school_payable = max(0.0, school_pending + school_current - disc)
             van_payable = van_pending + van_current
+            pending_fees_total = school_pending + van_pending
             out[i] = {
+                "pending_fees": pending_fees_total,
                 "van_pending": van_pending,
                 "van_current": van_current,
                 "van_due": van_due,

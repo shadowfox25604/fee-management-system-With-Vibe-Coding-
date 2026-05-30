@@ -134,6 +134,7 @@ class Expense(Base):
     expense_type: Mapped[str] = mapped_column(String(20), nullable=False)  # salary | other
     category: Mapped[str] = mapped_column(String(80), nullable=False)
     person_name: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    faculty_type: Mapped[str] = mapped_column(String(20), default="", nullable=False)
     description: Mapped[str] = mapped_column(String(240), default="", nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     expense_date: Mapped[date] = mapped_column(Date, nullable=False, default=date.today)
@@ -142,6 +143,10 @@ class Expense(Base):
     working_days: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     base_amount: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    reference_no: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    operator_name: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    is_reverted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    reverted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

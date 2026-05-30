@@ -39,7 +39,6 @@ from backend.core.fee_control_constants import (
     FIXED_CLASS_KEYS,
     FIXED_SECTION_KEYS,
     canonical_class_for_student_class,
-    class_name_matches_query,
     class_section_matches_query,
 )
 from backend.models import Student
@@ -49,6 +48,16 @@ from backend.services.class_fee_service import ClassFeeService
 from backend.services.village_van_fee_service import VillageVanFeeService
 from backend.services.expense_service import ExpenseService
 from backend.services.payment_service import PaymentService
+from backend.core.fee_due_display import pending_fees
+from backend.core.student_search_match import SEARCH_PLACEHOLDERS, student_matches_search
+from backend.core.report_fee_constants import (
+    FEE_FILTER_CURRENT_YEAR,
+    FEE_FILTER_PAID,
+    FEE_FILTER_PENDING_DUE,
+    REPORT_FEE_FILTER_LABELS,
+    REPORT_FEE_FILTER_ORDER,
+    report_amount_column_label,
+)
 from backend.services.report_service import ReportService
 from backend.services.student_service import StudentService
 from frontend.ui.academic_year_dialog import AcademicYearDialog
@@ -98,12 +107,11 @@ _SEARCH_TABLE_HEADERS = [
     "Status",
     "Van Fees",
     "Van Paid",
-    "Van Pending",
     "Van Due (current)",
     "School Fees",
     "School Paid",
     "Discount",
-    "School Pending",
+    "Pending fees",
     "School Due (current)",
     "School Payable (total)",
     "Total Due",
@@ -162,6 +170,7 @@ class MainWindow(QMainWindow):
         self._search_sort_ascending = True
         self._report_page = 0
         self._report_defaulter_rows: list = []
+        self._report_fee_status: str | None = None
         self._payment_history_page = 0
         self._payment_history_cache: list = []
         self._salary_assignments_page = 0
@@ -173,6 +182,8 @@ class MainWindow(QMainWindow):
         self._salary_control_cache: list = []
         self._salary_control_page_size = 15
         self._salary_control_selected_faculty_id: int | None = None
+        self._salary_history_tab_page = 0
+        self._salary_history_tab_cache: list = []
         self._all_payment_students = None
         self._details_page_index = 0
         self._details_filtered_ids: list[str] = []
@@ -182,6 +193,12 @@ class MainWindow(QMainWindow):
         self._student_search_timer = QTimer(self)
         self._student_search_timer.setSingleShot(True)
         self._student_search_timer.setInterval(200)
+        self._report_search_timer = QTimer(self)
+        self._report_search_timer.setSingleShot(True)
+        self._report_search_timer.setInterval(200)
+        self._report_search_timer.timeout.connect(
+            lambda: self.load_defaulters(reset_page=True)
+        )
         self._student_search_timer.timeout.connect(
             lambda: self.perform_search(reset_page=True)
         )
@@ -199,6 +216,7 @@ class MainWindow(QMainWindow):
             "Payment History",
             "Salary",
             "Salary Control",
+            "Salary History",
             "Other",
             "Add Faculty",
             "Add Student",
@@ -214,6 +232,7 @@ class MainWindow(QMainWindow):
             self._build_payment_history_tab,
             self._build_salary_tab,
             self._build_salary_control_tab,
+            self._build_salary_history_tab,
             self._build_other_expense_tab,
             self._build_add_faculty_tab,
             self._build_add_student_tab,
@@ -233,6 +252,8 @@ class MainWindow(QMainWindow):
                 self._salary_tab_index = idx
             if key == "Salary Control":
                 self._salary_control_tab_index = idx
+            if key == "Salary History":
+                self._salary_history_tab_index = idx
             if key == "Other":
                 self._other_expense_tab_index = idx
             if key == "Add Faculty":
@@ -442,8 +463,7 @@ class MainWindow(QMainWindow):
         labels = pane.fee_labels or {}
         for key in (
             "academic_year",
-            "school_pending",
-            "van_pending",
+            "pending_fees",
             "school_due",
             "van_due",
             "school_payable",
@@ -489,8 +509,7 @@ class MainWindow(QMainWindow):
         labels = pane.fee_labels or {}
         mappings = {
             "academic_year": str(d.get("current_year_label") or "—"),
-            "school_pending": f"{float(d.get('school_pending', 0) or 0):.2f}",
-            "van_pending": f"{float(d.get('van_pending', 0) or 0):.2f}",
+            "pending_fees": f"{pending_fees(d):.2f}",
             "school_due": f"{float(d.get('fee_due', 0) or 0):.2f}",
             "van_due": f"{float(d.get('van_due', 0) or 0):.2f}",
             "school_payable": f"{float(d.get('school_payable', 0) or 0):.2f}",
@@ -854,8 +873,7 @@ class MainWindow(QMainWindow):
         fees_form.setVerticalSpacing(8)
         fee_labels = {
             "academic_year": QLabel("—"),
-            "school_pending": QLabel("—"),
-            "van_pending": QLabel("—"),
+            "pending_fees": QLabel("—"),
             "school_due": QLabel("—"),
             "van_due": QLabel("—"),
             "school_payable": QLabel("—"),
@@ -863,8 +881,7 @@ class MainWindow(QMainWindow):
             "total": QLabel("—"),
         }
         fees_form.addRow("Academic year", fee_labels["academic_year"])
-        fees_form.addRow("Pending school", fee_labels["school_pending"])
-        fees_form.addRow("Pending van", fee_labels["van_pending"])
+        fees_form.addRow("Pending fees", fee_labels["pending_fees"])
         fees_form.addRow("School due (year)", fee_labels["school_due"])
         fees_form.addRow("Van due (year)", fee_labels["van_due"])
         fees_form.addRow("Payable school", fee_labels["school_payable"])
@@ -1130,14 +1147,26 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
         toolbar = QHBoxLayout()
+        self.report_search_by = QComboBox()
+        self.report_search_by.addItems(["Roll Number", "Name", "Village"])
+        self.report_search_by.setCurrentIndex(1)
+        self.report_search_by.currentIndexChanged.connect(self._on_report_search_basis_changed)
         self.report_student_input = QLineEdit()
-        self.report_student_input.setPlaceholderText("Student ID or name")
+        self.report_student_input.setPlaceholderText("Enter student name")
+        self.report_student_input.textChanged.connect(lambda _: self._schedule_report_search())
         self.report_class = QComboBox()
         self.report_class.addItem("All Classes", None)
         self.report_section = QComboBox()
         self.report_section.addItem("All Sections", None)
+        self.report_fee_filter = QComboBox()
+        self.report_fee_filter.addItem("All students", None)
+        for key in REPORT_FEE_FILTER_ORDER:
+            self.report_fee_filter.addItem(REPORT_FEE_FILTER_LABELS[key], key)
         self._load_report_filter_values()
-        a = QPushButton("Load defaulters")
+        report_refresh_btn = QPushButton("Refresh")
+        style_fee_action_button(report_refresh_btn)
+        report_refresh_btn.clicked.connect(self._on_report_refresh_clicked)
+        a = QPushButton("Load report")
         style_fee_action_button(a)
         a.clicked.connect(lambda: self.load_defaulters(reset_page=True))
         b = QPushButton("Export Excel")
@@ -1149,9 +1178,14 @@ class MainWindow(QMainWindow):
         self._load_defaulters_btn = a
         self._export_excel_btn = b
         self._export_pdf_btn = c
+        self._report_refresh_btn = report_refresh_btn
+        toolbar.addWidget(report_refresh_btn)
+        toolbar.addWidget(QLabel("Search by"))
+        toolbar.addWidget(self.report_search_by)
         toolbar.addWidget(self.report_student_input, 1)
         toolbar.addWidget(self.report_class)
         toolbar.addWidget(self.report_section)
+        toolbar.addWidget(self.report_fee_filter)
         toolbar.addWidget(a)
         toolbar.addWidget(b)
         toolbar.addWidget(c)
@@ -1159,7 +1193,7 @@ class MainWindow(QMainWindow):
         card = SurfaceCard()
         self.report_table = QTableWidget(0, 5)
         self.report_table.setHorizontalHeaderLabels(
-            ["Student ID", "Name", "Class", "Section", "Outstanding"]
+            ["Student ID", "Name", "Class", "Section", "Total due"]
         )
         configure_scrollable_data_table(self.report_table)
         self.report_table.setProperty("table_variant", "scrollable")
@@ -1175,12 +1209,21 @@ class MainWindow(QMainWindow):
         return wrap_page("Reports", breadcrumb_trail("Reports"), body)
     def _load_report_filter_values(self):
         values = self.report_service.get_report_filter_values()
-        self.report_class.clear(); self.report_class.addItem("All Classes", None)
-        self.report_section.clear(); self.report_section.addItem("All Sections", None)
-        for c in values.get("classes", []):
-            self.report_class.addItem(str(c), str(c))
-        for s in values.get("sections", []):
-            self.report_section.addItem(str(s), str(s))
+        self.report_class.blockSignals(True)
+        self.report_section.blockSignals(True)
+        try:
+            self.report_class.clear()
+            self.report_class.addItem("All Classes", None)
+            self.report_section.clear()
+            self.report_section.addItem("All Sections", None)
+            for c in values.get("classes", []):
+                self.report_class.addItem(str(c), str(c))
+            for s in values.get("sections", []):
+                self.report_section.addItem(str(s), str(s))
+        finally:
+            self.report_class.blockSignals(False)
+            self.report_section.blockSignals(False)
+
     def _build_backup_tab(self):
         body = QWidget()
         layout = QVBoxLayout(body)
@@ -1238,7 +1281,8 @@ class MainWindow(QMainWindow):
         self._manage_years_btn = manage_years_btn
         manage_years_btn.setToolTip(
             "Add or edit academic year date ranges (DD/MM/YYYY). "
-            "Adding a new forward year promotes students one class (Class 10→Passed Out, inactive) and provisions fees."
+            "Adding a new forward year promotes active students one class (Class 10→Passed Out). "
+            "Inactive students are skipped; old pending fees remain."
         )
         manage_years_btn.clicked.connect(self._on_manage_academic_years_clicked)
         academic_years_row.addWidget(manage_years_btn)
@@ -1309,8 +1353,9 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _format_fee_due_lines(due: dict) -> str:
         return (
-            f"Van pending: {due.get('van_pending', 0):.2f} | Van due (current): {due.get('van_due', 0):.2f} — "
-            f"School pending: {due.get('school_pending', 0):.2f} | School due (current): {due.get('fee_due', 0):.2f} | "
+            f"Pending fees: {pending_fees(due):.2f} | "
+            f"School due (current): {due.get('fee_due', 0):.2f} | "
+            f"Van due (current): {due.get('van_due', 0):.2f} | "
             f"Total payable: {due.get('total', 0):.2f}"
         )
 
@@ -1417,6 +1462,10 @@ class MainWindow(QMainWindow):
         if index == getattr(self, "_salary_control_tab_index", -1):
             self._refresh_salary_control_assignments_table(reset_page=False)
             self._refresh_salary_control_history_table()
+        if index == getattr(self, "_salary_history_tab_index", -1):
+            self._refresh_salary_history_tab_table(reset_page=False)
+            if hasattr(self, "_salary_history_tab_pagination"):
+                self._salary_history_tab_pagination.refresh_theme()
         if index == getattr(self, "_other_expense_tab_index", -1):
             self._refresh_other_expense_table()
         if tab_name == "Student Details":
@@ -1483,6 +1532,172 @@ class MainWindow(QMainWindow):
             breadcrumb_trail("Fees Collection", "Payment History"),
             body,
         )
+
+    def _build_salary_history_tab(self):
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
+        hint = QLabel(
+            "Recorded faculty salary payouts (newest first). Filter by reference, faculty name, "
+            "month, role, or notes. Undo removes the payout from salary totals while keeping the row in history."
+        )
+        hint.setWordWrap(True)
+        hint.setProperty("role", "hint")
+        layout.addWidget(hint)
+        toolbar = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        style_fee_action_button(refresh_btn)
+        refresh_btn.clicked.connect(self._on_salary_history_tab_refresh_clicked)
+        toolbar.addWidget(refresh_btn)
+        toolbar.addWidget(QLabel("Filter"))
+        self._salary_history_tab_filter = QLineEdit()
+        self._salary_history_tab_filter.setPlaceholderText("Reference, faculty, month, role, notes…")
+        self._salary_history_tab_filter.textChanged.connect(
+            lambda _: self._refresh_salary_history_tab_table(reset_page=True)
+        )
+        toolbar.addWidget(self._salary_history_tab_filter, 1)
+        layout.addLayout(toolbar)
+        card = SurfaceCard()
+        self._salary_history_tab_table = QTableWidget(0, 11)
+        self._salary_history_tab_table.setHorizontalHeaderLabels(
+            [
+                "Date",
+                "Reference",
+                "Faculty",
+                "Type",
+                "Month",
+                "Attendance/Days",
+                "Base (₹)",
+                "Paid (₹)",
+                "Notes",
+                "Status",
+                "Undo",
+            ]
+        )
+        configure_scrollable_data_table(self._salary_history_tab_table)
+        self._salary_history_tab_table.setProperty("table_variant", "scrollable")
+        card.body.addWidget(self._salary_history_tab_table, 1)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        card.setMinimumHeight(0)
+        layout.addWidget(card, 1)
+        self._salary_history_tab_pagination = PaginationBar(
+            lambda: self._salary_history_tab_change_page(-1),
+            lambda: self._salary_history_tab_change_page(1),
+            green_style=True,
+        )
+        self._salary_history_tab_pagination.refresh_theme()
+        layout.addWidget(self._salary_history_tab_pagination)
+        return wrap_page(
+            "Salary History",
+            breadcrumb_trail("Expenses", "Salary History"),
+            body,
+        )
+
+    def _on_salary_history_tab_refresh_clicked(self) -> None:
+        if hasattr(self, "_salary_history_tab_filter"):
+            self._salary_history_tab_filter.blockSignals(True)
+            try:
+                self._salary_history_tab_filter.clear()
+            finally:
+                self._salary_history_tab_filter.blockSignals(False)
+        clear_data_table_selection(getattr(self, "_salary_history_tab_table", None))
+        self._refresh_salary_history_tab_table(reset_page=True)
+
+    def _refresh_salary_history_tab_table(self, reset_page: bool = False) -> None:
+        if not hasattr(self, "_salary_history_tab_table"):
+            return
+        if reset_page:
+            self._salary_history_tab_page = 0
+        search = (
+            self._salary_history_tab_filter.text()
+            if hasattr(self, "_salary_history_tab_filter")
+            else ""
+        )
+        self._salary_history_tab_cache = self.expense_service.list_salary_history(
+            limit=50000,
+            search=search,
+            include_reverted=True,
+        )
+        self._render_salary_history_tab_page()
+
+    def _render_salary_history_tab_page(self) -> None:
+        if not hasattr(self, "_salary_history_tab_table"):
+            return
+        rows = slice_page(self._salary_history_tab_cache, self._salary_history_tab_page)
+        tbl = self._salary_history_tab_table
+        tbl.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            d = r.get("expense_date")
+            date_s = f"{d.day:02d}/{d.month:02d}/{d.year}" if d else ""
+            attendance = float(r.get("attendance_days", 0) or 0)
+            working = float(r.get("working_days", 0) or 0)
+            tbl.setItem(i, 0, QTableWidgetItem(date_s))
+            tbl.setItem(i, 1, QTableWidgetItem(str(r.get("reference_no") or "")))
+            tbl.setItem(i, 2, QTableWidgetItem(str(r.get("faculty_name") or "")))
+            tbl.setItem(i, 3, QTableWidgetItem(str(r.get("faculty_type") or "")))
+            tbl.setItem(i, 4, QTableWidgetItem(str(r.get("month_label") or "")))
+            tbl.setItem(i, 5, QTableWidgetItem(f"{attendance:.1f}/{working:.1f}"))
+            tbl.setItem(i, 6, QTableWidgetItem(f"{float(r.get('base_amount', 0) or 0):.2f}"))
+            tbl.setItem(i, 7, QTableWidgetItem(f"{float(r.get('amount', 0) or 0):.2f}"))
+            tbl.setItem(i, 8, QTableWidgetItem(str(r.get("notes") or "")))
+            tbl.setItem(i, 9, QTableWidgetItem(str(r.get("status") or "Paid")))
+            undo_btn = QPushButton("Undo")
+            style_fee_action_button(undo_btn, width=fee_action_button_width(undo_btn, min_width=92))
+            if bool(r.get("is_reverted", False)):
+                undo_btn.setText("Reverted")
+                undo_btn.setEnabled(False)
+            else:
+                undo_btn.clicked.connect(
+                    lambda _=False, payment_row=dict(r): self._on_salary_history_tab_undo(payment_row)
+                )
+            tbl.setCellWidget(i, 10, undo_btn)
+        tbl.resizeColumnsToContents()
+        tbl.setColumnWidth(10, max(tbl.columnWidth(10), 116))
+        if hasattr(self, "_salary_history_tab_pagination"):
+            self._salary_history_tab_pagination.update_state(
+                self._salary_history_tab_page, len(self._salary_history_tab_cache)
+            )
+
+    def _on_salary_history_tab_undo(self, payment_row: dict) -> None:
+        if bool(payment_row.get("is_reverted", False)):
+            theme.message_information(self, "Already reverted", "This salary payment is already reverted.")
+            return
+        reference_no = str(payment_row.get("reference_no") or "")
+        if not reference_no:
+            theme.message_warning(self, "Missing reference", "Cannot undo salary payment without a reference.")
+            return
+        reply = theme.message_question(
+            self,
+            "Confirm undo salary",
+            f"Undo salary reference “{reference_no}” for {payment_row.get('faculty_name', '')}?\n\n"
+            "This removes the payout from salary totals and marks the row as “Salary reverted”.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.expense_service.undo_salary_payment(reference_no)
+        except Exception as e:
+            self.session.rollback()
+            theme.message_critical(self, "Undo salary failed", str(e))
+            return
+        self._refresh_salary_history_tab_table(reset_page=False)
+        self._refresh_salary_history_table()
+        self._refresh_salary_control_history_table()
+        self._refresh_dashboard()
+        theme.message_information(
+            self,
+            "Salary reverted",
+            f"Salary {reference_no} has been reverted and marked as “Salary reverted”.",
+        )
+
+    def _salary_history_tab_change_page(self, delta: int) -> None:
+        new_page = self._salary_history_tab_page + delta
+        if new_page < 0 or new_page >= page_count(len(self._salary_history_tab_cache)):
+            return
+        self._salary_history_tab_page = new_page
+        self._render_salary_history_tab_page()
 
     def _build_salary_tab(self):
         body = QWidget()
@@ -1640,7 +1855,7 @@ class MainWindow(QMainWindow):
 
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
-        self._salary_open_window_btn = QPushButton("Open Faculty Window")
+        self._salary_open_window_btn = QPushButton("Salary Window")
         style_fee_action_button(self._salary_open_window_btn)
         self._salary_open_window_btn.clicked.connect(self._on_salary_open_faculty_window_clicked)
         action_row.addWidget(self._salary_open_window_btn)
@@ -1701,14 +1916,23 @@ class MainWindow(QMainWindow):
         self._salary_total_label = QLabel("Total paid: ₹0.00")
         self._salary_total_label.setProperty("role", "muted")
         history_card.body.addWidget(self._salary_total_label)
-        self._salary_history_table = QTableWidget(0, 6)
+        self._salary_history_table = QTableWidget(0, 8)
         self._salary_history_table.setHorizontalHeaderLabels(
-            ["Date", "Month", "Attendance/Days", "Base Salary (₹)", "Paid (₹)", "Notes"]
+            [
+                "Date",
+                "Reference",
+                "Month",
+                "Attendance/Days",
+                "Base Salary (₹)",
+                "Paid (₹)",
+                "Status",
+                "Notes",
+            ]
         )
         configure_scrollable_data_table(self._salary_history_table)
         self._salary_history_table.setProperty("table_variant", "scrollable")
         self._salary_history_table.horizontalHeader().setSectionResizeMode(
-            5, QHeaderView.ResizeMode.Stretch
+            7, QHeaderView.ResizeMode.Stretch
         )
         history_card.body.addWidget(self._salary_history_table, 1)
         dl.addWidget(history_card, 1)
@@ -2391,12 +2615,15 @@ class MainWindow(QMainWindow):
             d_text = d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else str(d or "")
             attendance = float(getattr(row, "attendance_days", 0) or 0)
             working = float(getattr(row, "working_days", 0) or 0)
+            reverted = bool(getattr(row, "is_reverted", False))
             values = [
                 d_text,
+                str(getattr(row, "reference_no", "") or ""),
                 str(row.month_label or ""),
                 f"{attendance:.1f}/{working:.1f}",
                 f"{float(row.base_amount or 0):.2f}",
                 f"{float(row.amount or 0):.2f}",
+                "Salary reverted" if reverted else "Paid",
                 str(row.notes or ""),
             ]
             for col, value in enumerate(values):
@@ -3008,6 +3235,8 @@ class MainWindow(QMainWindow):
             notes_edit.clear()
             _reload_dialog_salary_data()
             self._refresh_salary_history_table()
+            self._refresh_salary_history_tab_table(reset_page=False)
+            self._refresh_salary_control_history_table()
             theme.message_information(
                 dialog,
                 "Salary saved",
@@ -3818,8 +4047,8 @@ class MainWindow(QMainWindow):
         content_layout.setContentsMargins(0, 2, 0, 2)
         content_layout.setSpacing(12)
 
-        pay_school_pending_badge = pay_school_current_badge = None
-        pay_van_pending_badge = pay_van_current_badge = pay_total_badge = None
+        pay_pending_badge = pay_school_current_badge = None
+        pay_van_current_badge = pay_total_badge = None
         if show_payment_ui:
             t = theme.current_tokens()
             payoff_card = SurfaceCard()
@@ -3829,23 +4058,19 @@ class MainWindow(QMainWindow):
             payoff_hint.setProperty("role", "hint")
             payoff_row = QHBoxLayout()
             payoff_row.setSpacing(8)
-            pay_school_pending_badge = QLabel(
-                f"Pending school fees\n₹{float(due_init.get('school_pending', 0) or 0):.2f}"
+            pay_pending_badge = QLabel(
+                f"Pending fees\n₹{pending_fees(due_init):.2f}"
             )
             pay_school_current_badge = QLabel(
                 f"School fees due (current year)\n₹{float(due_init.get('fee_due', 0) or 0):.2f}"
-            )
-            pay_van_pending_badge = QLabel(
-                f"Pending van fees\n₹{float(due_init.get('van_pending', 0) or 0):.2f}"
             )
             pay_van_current_badge = QLabel(
                 f"Van fees due (current year)\n₹{float(due_init.get('van_due', 0) or 0):.2f}"
             )
             pay_total_badge = QLabel(f"Total payable\n₹{float(due_init.get('total', 0) or 0):.2f}")
             for badge in (
-                pay_school_pending_badge,
+                pay_pending_badge,
                 pay_school_current_badge,
-                pay_van_pending_badge,
                 pay_van_current_badge,
                 pay_total_badge,
             ):
@@ -4037,8 +4262,7 @@ class MainWindow(QMainWindow):
         fees_layout = QFormLayout(fees_box)
         joining_lbl = QLabel(_format_joining_date(student))
         year_lbl = QLabel(due_init.get("current_year_label") or "—")
-        school_pending_lbl = QLabel(f"{due_init.get('school_pending', 0):.2f}")
-        van_pending_lbl = QLabel(f"{due_init.get('van_pending', 0):.2f}")
+        pending_fees_lbl = QLabel(f"{pending_fees(due_init):.2f}")
         school_current_lbl = QLabel(f"{due_init.get('fee_due', 0):.2f}")
         van_current_lbl = QLabel(f"{due_init.get('van_due', 0):.2f}")
         school_payable_lbl = QLabel(f"{due_init.get('school_payable', due_init.get('fee_due', 0)):.2f}")
@@ -4046,8 +4270,7 @@ class MainWindow(QMainWindow):
         total_payable_lbl = QLabel(f"{due_init.get('total', 0):.2f}")
         fees_layout.addRow("Student joining date", joining_lbl)
         fees_layout.addRow("Academic year", year_lbl)
-        fees_layout.addRow("Pending school fees", school_pending_lbl)
-        fees_layout.addRow("Pending van fees", van_pending_lbl)
+        fees_layout.addRow("Pending fees", pending_fees_lbl)
         fees_layout.addRow("School fees due (current year)", school_current_lbl)
         fees_layout.addRow("Van fees due (current year)", van_current_lbl)
         fees_layout.addRow("Payable school fees", school_payable_lbl)
@@ -4055,30 +4278,23 @@ class MainWindow(QMainWindow):
         fees_layout.addRow("Total payable amount", total_payable_lbl)
         content_layout.addWidget(fees_box)
 
-        pay_school_pending_lbl = pay_van_pending_lbl = None
+        pay_pending_fees_lbl = None
         pay_school_current_lbl = pay_van_current_lbl = None
         popup_school_pay = popup_van_pay = popup_discount = popup_payment_date = popup_mode = None
 
         def _apply_due_breakdown(d: dict, st=None) -> None:
-            school_pending_lbl.setText(f"{d.get('school_pending', 0):.2f}")
-            van_pending_lbl.setText(f"{d.get('van_pending', 0):.2f}")
+            pending_fees_lbl.setText(f"{pending_fees(d):.2f}")
             school_current_lbl.setText(f"{d.get('fee_due', 0):.2f}")
             van_current_lbl.setText(f"{d.get('van_due', 0):.2f}")
             school_payable_lbl.setText(f"{d.get('school_payable', 0):.2f}")
             van_payable_lbl.setText(f"{d.get('van_payable', 0):.2f}")
             total_payable_lbl.setText(f"{d.get('total', 0):.2f}")
             year_lbl.setText(d.get("current_year_label") or "—")
-            if pay_school_pending_badge is not None:
-                pay_school_pending_badge.setText(
-                    f"Pending school fees\n₹{float(d.get('school_pending', 0) or 0):.2f}"
-                )
+            if pay_pending_badge is not None:
+                pay_pending_badge.setText(f"Pending fees\n₹{pending_fees(d):.2f}")
             if pay_school_current_badge is not None:
                 pay_school_current_badge.setText(
                     f"School fees due (current year)\n₹{float(d.get('fee_due', 0) or 0):.2f}"
-                )
-            if pay_van_pending_badge is not None:
-                pay_van_pending_badge.setText(
-                    f"Pending van fees\n₹{float(d.get('van_pending', 0) or 0):.2f}"
                 )
             if pay_van_current_badge is not None:
                 pay_van_current_badge.setText(
@@ -4095,9 +4311,8 @@ class MainWindow(QMainWindow):
                 )
             if st is not None:
                 joining_lbl.setText(_format_joining_date(st))
-            if pay_school_pending_lbl is not None:
-                pay_school_pending_lbl.setText(f"{d.get('school_pending', 0):.2f}")
-                pay_van_pending_lbl.setText(f"{d.get('van_pending', 0):.2f}")
+            if pay_pending_fees_lbl is not None:
+                pay_pending_fees_lbl.setText(f"{pending_fees(d):.2f}")
                 pay_school_current_lbl.setText(f"{d.get('fee_due', 0):.2f}")
                 pay_van_current_lbl.setText(f"{d.get('van_due', 0):.2f}")
 
@@ -4106,8 +4321,7 @@ class MainWindow(QMainWindow):
             payment_layout = QFormLayout(payment_box)
             payment_layout.setHorizontalSpacing(14)
             payment_layout.setVerticalSpacing(8)
-            pay_school_pending_lbl = QLabel(f"{due_init.get('school_pending', 0):.2f}")
-            pay_van_pending_lbl = QLabel(f"{due_init.get('van_pending', 0):.2f}")
+            pay_pending_fees_lbl = QLabel(f"{pending_fees(due_init):.2f}")
             pay_school_current_lbl = QLabel(f"{due_init.get('fee_due', 0):.2f}")
             pay_van_current_lbl = QLabel(f"{due_init.get('van_due', 0):.2f}")
             popup_school_pay = QLineEdit()
@@ -4126,8 +4340,7 @@ class MainWindow(QMainWindow):
             popup_mode = QLineEdit("cash")
             popup_mode.setPlaceholderText("cash / upi / card")
             popup_mode.setClearButtonEnabled(True)
-            payment_layout.addRow("Pending school fees", pay_school_pending_lbl)
-            payment_layout.addRow("Pending van fees", pay_van_pending_lbl)
+            payment_layout.addRow("Pending fees", pay_pending_fees_lbl)
             payment_layout.addRow("School fees due (current year)", pay_school_current_lbl)
             payment_layout.addRow("Van fees due (current year)", pay_van_current_lbl)
             payment_layout.addRow("School fee payment", popup_school_pay)
@@ -4468,44 +4681,31 @@ class MainWindow(QMainWindow):
 
     def on_student_search_basis_changed(self, _=None):
         basis = self.search_by.currentText() if hasattr(self, "search_by") else "Name"
-        placeholders = {
-            "Roll Number": "Enter student roll number",
-            "Name": "Enter student name",
-            "Gender": "Enter gender",
-            "Father Name": "Enter father name",
-            "Mother Name": "Enter mother name",
-            "Mobile Number 1": "Enter mobile number 1",
-            "Mobile Number 2": "Enter mobile number 2",
-            "Aadhaar": "Enter aadhaar number",
-            "Village": "Enter village name",
-            "Class": "Enter class",
-            "Caste": "Enter caste",
-        }
-        self.search_input.setPlaceholderText(placeholders.get(basis, "Enter search text"))
+        self.search_input.setPlaceholderText(SEARCH_PLACEHOLDERS.get(basis, "Enter search text"))
         self._run_student_search_now(reset_page=True)
 
     def _student_matches_search_basis(self, student, basis: str, q: str) -> bool:
-        if basis == "Roll Number":
-            return q in str(student.student_id or "").lower()
-        if basis == "Village":
-            return q in str(getattr(student, "village", None) or "").lower()
-        if basis == "Gender":
-            return q in str(getattr(student, "gender", None) or "").lower()
-        if basis == "Father Name":
-            return q in str(getattr(student, "father_name", None) or getattr(student, "guardian_name", None) or "").lower()
-        if basis == "Mother Name":
-            return q in str(getattr(student, "mother_name", None) or "").lower()
-        if basis == "Mobile Number 1":
-            return q in str(getattr(student, "mobile_number_1", None) or student.phone or "").lower()
-        if basis == "Mobile Number 2":
-            return q in str(getattr(student, "mobile_number_2", None) or "").lower()
-        if basis == "Aadhaar":
-            return q in str(getattr(student, "aadhaar", None) or "").lower()
-        if basis == "Caste":
-            return q in str(getattr(student, "caste", None) or "").lower()
-        if basis == "Class":
-            return class_name_matches_query(student.class_name, q)
-        return q in str(student.full_name or "").lower()
+        return student_matches_search(student, basis, q)
+
+    def _schedule_report_search(self) -> None:
+        if hasattr(self, "_report_search_timer"):
+            self._report_search_timer.start()
+
+    def _on_report_search_basis_changed(self, _=None) -> None:
+        basis = self.report_search_by.currentText() if hasattr(self, "report_search_by") else "Name"
+        self.report_student_input.setPlaceholderText(
+            SEARCH_PLACEHOLDERS.get(basis, "Enter search text")
+        )
+        self.load_defaulters(reset_page=True)
+
+    def _on_report_refresh_clicked(self) -> None:
+        if hasattr(self, "report_student_input"):
+            self.report_student_input.blockSignals(True)
+            try:
+                self.report_student_input.clear()
+            finally:
+                self.report_student_input.blockSignals(False)
+        self.load_defaulters(reset_page=True)
 
     def _collect_filtered_students(self):
         search_text = (self.search_input.text() or "").strip()
@@ -4569,13 +4769,10 @@ class MainWindow(QMainWindow):
                 due = due_map.get(
                     s.student_id,
                     {
+                        "pending_fees": 0.0,
                         "van_due": 0.0,
                         "fee_due": 0.0,
                         "total": 0.0,
-                        "van_pending": 0.0,
-                        "van_current": 0.0,
-                        "school_pending": 0.0,
-                        "school_current": 0.0,
                     },
                 )
                 disc = float(discount_map.get(s.student_id, 0.0) or 0.0)
@@ -4604,14 +4801,13 @@ class MainWindow(QMainWindow):
                     s.status,
                     f"{float(getattr(s, 'van_fees', 0) or 0):.2f}",
                     f"{van_s['van_paid']:.2f}",
-                    f"{due.get('van_pending', 0):.2f}",
                     f"{due['van_due']:.2f}",
                     f"{float(getattr(s, 'school_fees', 0) or 0):.2f}",
                     f"{summary['fee_paid']:.2f}",
                     f"{disc:.2f}",
-                    f"{due.get('school_pending', 0):.2f}",
+                    f"{pending_fees(due):.2f}",
                     f"{due['fee_due']:.2f}",
-                    f"{due.get('school_payable', due.get('school_pending', 0) + due['fee_due']):.2f}",
+                    f"{due.get('school_payable', 0):.2f}",
                     f"{due['total']:.2f}",
                 ]
                 for col, text in enumerate(row_cells):
@@ -4778,10 +4974,23 @@ class MainWindow(QMainWindow):
     def load_defaulters(self, reset_page: bool = True):
         selected_class = self.report_class.currentData()
         selected_section = self.report_section.currentData()
-        self._report_defaulter_rows = self.report_service.get_defaulters(
+        fee_status = self.report_fee_filter.currentData()
+        self._report_fee_status = str(fee_status) if fee_status else None
+        search_basis = (
+            self.report_search_by.currentText()
+            if hasattr(self, "report_search_by")
+            else "Name"
+        )
+        self._report_defaulter_rows = self.report_service.get_fee_report_rows(
+            fee_status=fee_status,
             student_query=self.report_student_input.text(),
+            search_basis=search_basis,
             class_name=selected_class,
             section=selected_section,
+        )
+        amount_header = report_amount_column_label(self._report_fee_status)
+        self.report_table.setHorizontalHeaderLabels(
+            ["Student ID", "Name", "Class", "Section", amount_header]
         )
         if reset_page:
             self._report_page = 0
@@ -4790,12 +4999,17 @@ class MainWindow(QMainWindow):
     def _render_report_page(self):
         rows = slice_page(self._report_defaulter_rows, self._report_page)
         self.report_table.setRowCount(len(rows))
+        paid_filter = self._report_fee_status == FEE_FILTER_PAID
         for i, r in enumerate(rows):
             self.report_table.setItem(i, 0, QTableWidgetItem(str(r.student_id)))
             self.report_table.setItem(i, 1, QTableWidgetItem(str(r.full_name)))
             self.report_table.setItem(i, 2, QTableWidgetItem(str(r.class_name)))
             self.report_table.setItem(i, 3, QTableWidgetItem(str(r.section)))
-            self.report_table.setItem(i, 4, QTableWidgetItem(f"{float(r.outstanding):.2f}"))
+            if paid_filter:
+                amount_text = "Paid"
+            else:
+                amount_text = f"{float(r.amount):.2f}"
+            self.report_table.setItem(i, 4, QTableWidgetItem(amount_text))
         if hasattr(self, "_report_pagination"):
             self._report_pagination.update_state(self._report_page, len(self._report_defaulter_rows))
 
@@ -4807,21 +5021,43 @@ class MainWindow(QMainWindow):
         self._render_report_page()
 
     def _rows(self):
+        paid_filter = self._report_fee_status == FEE_FILTER_PAID
         out = []
         for r in self._report_defaulter_rows:
+            if paid_filter:
+                amount_text = "Paid"
+            else:
+                amount_text = f"{float(r.amount):.2f}"
             out.append(
                 {
                     "student_id": str(r.student_id),
                     "name": str(r.full_name),
                     "class": str(r.class_name),
                     "section": str(r.section),
-                    "outstanding": f"{float(r.outstanding):.2f}",
+                    "amount": amount_text,
                 }
             )
         return out
 
+    def _report_export_headers(self) -> list[str]:
+        amount_header = report_amount_column_label(self._report_fee_status or "")
+        return ["Student ID", "Name", "Class", "Section", amount_header]
+
+    def _report_export_title(self) -> str:
+        if not self._report_fee_status:
+            return "All Students Report"
+        labels = {
+            FEE_FILTER_PENDING_DUE: "Pending Fees Due Report",
+            FEE_FILTER_CURRENT_YEAR: "Fees Due (Current Year) Report",
+            FEE_FILTER_PAID: "Fees Paid Report",
+        }
+        return labels.get(self._report_fee_status, "Fee Report")
+
     def export_excel(self):
-        p, _ = QFileDialog.getSaveFileName(self, "Save Excel", "defaulters.xlsx", "Excel Files (*.xlsx)")
+        if not self._report_defaulter_rows:
+            theme.message_warning(self, "No data", "Load a report before exporting.")
+            return
+        p, _ = QFileDialog.getSaveFileName(self, "Save Excel", "fee_report.xlsx", "Excel Files (*.xlsx)")
         if not p:
             return
         from backend.reports.excel_export import ExcelExporter
@@ -4830,16 +5066,20 @@ class MainWindow(QMainWindow):
         theme.message_information(self, "Exported", f"Excel report saved to {p}")
 
     def export_pdf(self):
-        p, _ = QFileDialog.getSaveFileName(self, "Save PDF", "defaulters.pdf", "PDF Files (*.pdf)")
+        if not self._report_defaulter_rows:
+            theme.message_warning(self, "No data", "Load a report before exporting.")
+            return
+        p, _ = QFileDialog.getSaveFileName(self, "Save PDF", "fee_report.pdf", "PDF Files (*.pdf)")
         if not p:
             return
         from backend.reports.pdf_export import PdfExporter
 
         rows = self._rows()
-        table = [[r["student_id"], r["name"], r["class"], r["section"], r["outstanding"]] for r in rows]
+        headers = self._report_export_headers()
+        table = [[r["student_id"], r["name"], r["class"], r["section"], r["amount"]] for r in rows]
         PdfExporter.export_simple_table(
-            "Defaulter Report",
-            ["Student ID", "Name", "Class", "Section", "Outstanding"],
+            self._report_export_title(),
+            headers,
             table,
             Path(p),
         )

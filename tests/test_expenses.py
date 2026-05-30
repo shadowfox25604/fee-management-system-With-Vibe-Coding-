@@ -135,12 +135,13 @@ def test_record_salary_from_attendance_creates_salary_expense(db_session):
 
     assert entry.expense_type == "salary"
     assert entry.person_name == "Ravi Kumar"
+    assert entry.faculty_type == "Teaching"
     assert float(entry.base_amount) == 30000.0
     assert float(entry.amount) == 24000.0
     assert svc.salary_total("2026-05") == pytest.approx(24000.0, abs=0.01)
 
 
-def test_salary_save_replaces_existing_entry_for_same_faculty_month(db_session):
+def test_salary_save_appends_history_rows_for_same_faculty_month(db_session):
     svc = ExpenseService(db_session)
     faculty = svc.assign_faculty_salary(
         "Ravi Kumar",
@@ -162,7 +163,7 @@ def test_salary_save_replaces_existing_entry_for_same_faculty_month(db_session):
         working_days=25,
         month_label="2026-05",
         expense_date=date(2026, 5, 28),
-        notes="Replaced save",
+        notes="Second save",
     )
 
     rows = db_session.scalars(
@@ -172,14 +173,13 @@ def test_salary_save_replaces_existing_entry_for_same_faculty_month(db_session):
             Expense.month_label == "2026-05",
         )
     ).all()
-    assert len(rows) == 1
-    saved = rows[0]
-    assert saved.id == first.id
-    assert saved.id == second.id
-    assert float(saved.amount) == pytest.approx(24000.0, abs=0.01)
-    assert saved.expense_date == date(2026, 5, 28)
-    assert saved.notes == "Replaced save"
-    assert svc.salary_total("2026-05") == pytest.approx(24000.0, abs=0.01)
+    assert len(rows) == 2
+    assert first.id != second.id
+    assert first.reference_no
+    assert second.reference_no
+    assert float(first.amount) == pytest.approx(12000.0, abs=0.01)
+    assert float(second.amount) == pytest.approx(24000.0, abs=0.01)
+    assert svc.salary_total("2026-05") == pytest.approx(36000.0, abs=0.01)
 
 
 def test_other_expense_totals_grouped_by_category(db_session):
@@ -226,6 +226,39 @@ def test_mark_attendance_persists_for_month(db_session):
     assert stored["marked_days"] == [1, 2, 31]
     rows = db_session.scalars(select(FacultyAttendance)).all()
     assert len(rows) == 1
+
+
+def test_purge_faculty_by_name_removes_salary_history_without_profile(db_session):
+    svc = ExpenseService(db_session)
+    faculty = svc.assign_faculty_salary("Temp Faculty", 20000.0, faculty_type="Teaching")
+    svc.record_salary_from_attendance(
+        faculty.id,
+        attendance_days=20,
+        working_days=26,
+        month_label="2026-08",
+        expense_date=date(2026, 8, 1),
+    )
+    db_session.delete(faculty)
+    db_session.commit()
+    orphan = Expense(
+        expense_type="salary",
+        category="Salary",
+        person_name="orphan only",
+        faculty_type="Teaching",
+        description="orphan",
+        amount=100.0,
+        expense_date=date(2026, 8, 2),
+        month_label="2026-08",
+        reference_no="ORPHANREF001",
+    )
+    db_session.add(orphan)
+    db_session.commit()
+    result = svc.purge_faculty_by_name("orphan only")
+    assert result["salary_expenses_deleted"] == 1
+    remaining = db_session.scalars(
+        select(Expense).where(Expense.person_name == "orphan only")
+    ).all()
+    assert remaining == []
 
 
 def test_salary_from_marked_attendance_is_calculated_not_saved(db_session):

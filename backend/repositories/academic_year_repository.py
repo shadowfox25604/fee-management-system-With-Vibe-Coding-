@@ -22,7 +22,11 @@ class AcademicYearRepository:
             return existing[-1]
         start, end = _default_academic_year_bounds(date.today())
         year = self.create(start, end)
+        from backend.core.student_enrollment import student_skips_academic_year_fee_provisioning
+
         for st in self.session.scalars(select(Student)).all():
+            if student_skips_academic_year_fee_provisioning(st):
+                continue
             self.session.add(
                 StudentAcademicYearFee(
                     student_id_fk=st.student_id,

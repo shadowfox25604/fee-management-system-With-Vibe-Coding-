@@ -459,3 +459,107 @@ def test_create_year_passes_out_class_10_students(db_session):
     assert st.van_fees == pytest.approx(0.0, abs=0.01)
     year_row = StudentYearFeeRepository(db_session).get(st.student_id, ay_repo.list_all()[-1].id)
     assert year_row is None
+
+
+def test_create_year_skips_inactive_students(db_session):
+    from backend.services.class_fee_service import ClassFeeService
+    from backend.services.village_van_fee_service import VillageVanFeeService
+
+    ay_repo = AcademicYearRepository(db_session)
+    for row in ay_repo.list_all():
+        db_session.delete(row)
+    db_session.commit()
+
+    ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
+    db_session.commit()
+
+    st = Student(
+        student_id=f"DROP-{uuid.uuid4().hex[:8]}",
+        full_name="Left School Student",
+        class_name="6",
+        section="B",
+        phone="9876543212",
+        guardian_name="G",
+        status="inactive",
+        school_fees=15000.0,
+        van_fees=800.0,
+    )
+    db_session.add(st)
+    db_session.commit()
+    sy = StudentYearFeeRepository(db_session)
+    sy.get_or_create(
+        st, ay_repo.list_all()[0].id, school_fees=15000.0, van_fees=800.0, allow_inactive=True
+    )
+    db_session.commit()
+
+    class_svc = ClassFeeService(db_session)
+    village_svc = VillageVanFeeService(db_session)
+    ay_svc = AcademicYearService(db_session)
+    ay_svc.create_year(
+        date(2025, 5, 17),
+        date(2026, 4, 18),
+        "2025-26",
+        class_fee_service=class_svc,
+        village_fee_service=village_svc,
+    )
+    db_session.refresh(st)
+
+    assert st.class_name == "6"
+    assert (st.status or "").lower() == "inactive"
+    new_year_id = ay_repo.list_all()[-1].id
+    assert sy.get(st.student_id, new_year_id) is None
+    old_year_row = sy.get(st.student_id, ay_repo.list_all()[0].id)
+    assert old_year_row is not None
+    assert old_year_row.school_fees == pytest.approx(15000.0, abs=0.01)
+
+
+def test_inactive_student_no_phantom_current_year_due_after_increment(db_session):
+    """Inactive leavers must not accrue current-year due from profile fees when no year row exists."""
+    from backend.services.class_fee_service import ClassFeeService
+    from backend.services.fee_balance_service import FeeBalanceService
+    from backend.services.village_van_fee_service import VillageVanFeeService
+
+    ay_repo = AcademicYearRepository(db_session)
+    for row in ay_repo.list_all():
+        db_session.delete(row)
+    db_session.commit()
+
+    y1 = ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
+    db_session.commit()
+
+    st = Student(
+        student_id=f"PHANTOM-{uuid.uuid4().hex[:8]}",
+        full_name="Inactive With Old Due",
+        class_name="7",
+        section="A",
+        phone="9876543213",
+        guardian_name="G",
+        status="inactive",
+        school_fees=20000.0,
+        van_fees=1000.0,
+    )
+    db_session.add(st)
+    db_session.commit()
+    _set_joining_date(st, date(2024, 6, 1))
+    sy = StudentYearFeeRepository(db_session)
+    sy.get_or_create(st, y1.id, school_fees=10000.0, van_fees=500.0, allow_inactive=True)
+    db_session.commit()
+
+    class_svc = ClassFeeService(db_session)
+    village_svc = VillageVanFeeService(db_session)
+    AcademicYearService(db_session).create_year(
+        date(2025, 5, 17),
+        date(2026, 4, 18),
+        "2025-26",
+        class_fee_service=class_svc,
+        village_fee_service=village_svc,
+    )
+    db_session.refresh(st)
+
+    assert sy.get(st.student_id, ay_repo.list_all()[-1].id) is None
+    due = FeeBalanceService(db_session).get_students_due_breakdown([st.student_id])[st.student_id]
+    assert due["school_current"] == pytest.approx(0.0, abs=0.01)
+    assert due["van_current"] == pytest.approx(0.0, abs=0.01)
+    assert due["fee_due"] == pytest.approx(0.0, abs=0.01)
+    assert due["school_pending"] == pytest.approx(10000.0, abs=0.01)
+    assert due["van_pending"] == pytest.approx(500.0, abs=0.01)

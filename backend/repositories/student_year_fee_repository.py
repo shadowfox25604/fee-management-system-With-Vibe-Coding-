@@ -21,10 +21,19 @@ class StudentYearFeeRepository:
         academic_year_id: int,
         school_fees: float | None = None,
         van_fees: float | None = None,
+        *,
+        allow_inactive: bool = False,
     ) -> StudentAcademicYearFee:
         row = self.get(student.student_id, academic_year_id)
         if row is not None:
             return row
+        from backend.core.student_enrollment import student_skips_academic_year_fee_provisioning
+
+        if not allow_inactive and student_skips_academic_year_fee_provisioning(student):
+            raise ValueError(
+                f"Cannot create academic year fees for student {student.student_id}: "
+                "inactive or passed-out students are excluded from new year fee provisioning."
+            )
         sf = float(school_fees if school_fees is not None else student.school_fees or 0.0)
         vf = float(van_fees if van_fees is not None else student.van_fees or 0.0)
         row = StudentAcademicYearFee(
@@ -53,10 +62,10 @@ class StudentYearFeeRepository:
         return float(student.school_fees or 0.0), float(student.van_fees or 0.0)
 
     def sync_student_to_current_year(self, student: Student) -> None:
-        from backend.core.fee_control_constants import is_passed_out_class
+        from backend.core.student_enrollment import student_skips_academic_year_fee_provisioning
         from backend.repositories.academic_year_repository import AcademicYearRepository
 
-        if is_passed_out_class(student.class_name):
+        if student_skips_academic_year_fee_provisioning(student):
             return
         current = AcademicYearRepository(self.session).get_current()
         if current is None:
@@ -79,12 +88,12 @@ class StudentYearFeeRepository:
         village_fee_lookup,
     ) -> int:
         """Create year-fee rows for students missing them (tariffs from class/village services)."""
-        from backend.core.fee_control_constants import is_passed_out_class
+        from backend.core.student_enrollment import student_skips_academic_year_fee_provisioning
 
         students = list(self.session.scalars(select(Student)).all())
         count = 0
         for st in students:
-            if is_passed_out_class(st.class_name):
+            if student_skips_academic_year_fee_provisioning(st):
                 continue
             if self.get(st.student_id, academic_year_id) is not None:
                 continue
