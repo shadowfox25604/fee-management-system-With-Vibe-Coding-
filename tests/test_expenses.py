@@ -141,7 +141,7 @@ def test_record_salary_from_attendance_creates_salary_expense(db_session):
     assert svc.salary_total("2026-05") == pytest.approx(24000.0, abs=0.01)
 
 
-def test_salary_save_appends_history_rows_for_same_faculty_month(db_session):
+def test_salary_save_replaces_prior_entry_for_same_faculty_month(db_session):
     svc = ExpenseService(db_session)
     faculty = svc.assign_faculty_salary(
         "Ravi Kumar",
@@ -157,6 +157,7 @@ def test_salary_save_appends_history_rows_for_same_faculty_month(db_session):
         expense_date=date(2026, 5, 20),
         notes="Initial save",
     )
+    first_ref = first.reference_no
     second = svc.record_salary_from_attendance(
         faculty.id,
         attendance_days=20,
@@ -173,28 +174,17 @@ def test_salary_save_appends_history_rows_for_same_faculty_month(db_session):
             Expense.month_label == "2026-05",
         )
     ).all()
-    assert len(rows) == 2
-    assert first.id != second.id
-    assert first.reference_no
+    assert len(rows) == 1
     assert second.reference_no
-    assert float(first.amount) == pytest.approx(12000.0, abs=0.01)
+    assert second.reference_no != first_ref
     assert float(second.amount) == pytest.approx(24000.0, abs=0.01)
-    assert svc.salary_total("2026-05") == pytest.approx(36000.0, abs=0.01)
+    assert svc.salary_total("2026-05") == pytest.approx(24000.0, abs=0.01)
 
-
-def test_other_expense_totals_grouped_by_category(db_session):
-    svc = ExpenseService(db_session)
-    svc.add_other_expense("Rent", 10000.0, expense_date=date(2026, 5, 2), description="Building rent")
-    svc.add_other_expense("Donation", 1500.0, expense_date=date(2026, 5, 4), notes="Local event support")
-    svc.add_other_expense("Stationary", 500.0, expense_date=date(2026, 5, 6), description="Registers")
-
-    totals = svc.other_totals()
-    assert totals["total"] == pytest.approx(12000.0, abs=0.01)
-    assert totals["by_category"]["Rent"] == pytest.approx(10000.0, abs=0.01)
-    assert totals["by_category"]["Donation"] == pytest.approx(1500.0, abs=0.01)
-    assert totals["by_category"]["Stationary"] == pytest.approx(500.0, abs=0.01)
-    rows = db_session.scalars(select(Expense).where(Expense.expense_type == "other")).all()
-    assert len(rows) == 3
+    history = svc.list_salary_history(limit=50, search="Ravi Kumar")
+    may_rows = [h for h in history if h["month_label"] == "2026-05"]
+    assert len(may_rows) == 1
+    assert may_rows[0]["reference_no"] == second.reference_no
+    assert first_ref not in {h["reference_no"] for h in history}
 
 
 def test_salary_calc_rejects_attendance_above_working_days(db_session):

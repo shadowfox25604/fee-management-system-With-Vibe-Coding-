@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+from datetime import date
+from pathlib import Path
+
+import xlsxwriter
+
+from backend.core.month_label_format import format_month_label_display
+
+
+class SalaryHistoryExcelExporter:
+    """Export salary history rows to a formatted Excel workbook."""
+
+    _HEADER_BG = "#1ABC9C"
+    _GRAND_TOTAL_BG = "#44546A"
+
+    @classmethod
+    def export(cls, rows: list[dict], output_path: Path) -> None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        headers = [
+            "Date",
+            "Reference",
+            "Faculty",
+            "Type",
+            "Month",
+            "Attendance/Days",
+            "Base (₹)",
+            "Paid (₹)",
+            "Notes",
+            "Status",
+        ]
+
+        workbook = xlsxwriter.Workbook(str(output_path))
+        try:
+            sheet = workbook.add_worksheet("Salary History")
+            sheet.set_column("A:A", 12)
+            sheet.set_column("B:B", 14)
+            sheet.set_column("C:C", 22)
+            sheet.set_column("D:D", 14)
+            sheet.set_column("E:E", 14)
+            sheet.set_column("F:F", 16)
+            sheet.set_column("G:H", 12)
+            sheet.set_column("I:I", 28)
+            sheet.set_column("J:J", 16)
+
+            header_fmt = workbook.add_format(
+                {
+                    "bold": True,
+                    "font_color": "#FFFFFF",
+                    "bg_color": cls._HEADER_BG,
+                    "align": "center",
+                    "valign": "vcenter",
+                    "border": 1,
+                }
+            )
+            text_fmt = workbook.add_format({"border": 1, "valign": "vcenter"})
+            money_fmt = workbook.add_format(
+                {"border": 1, "align": "right", "valign": "vcenter", "num_format": "#,##0.00"}
+            )
+            total_label_fmt = workbook.add_format(
+                {
+                    "bold": True,
+                    "font_color": "#FFFFFF",
+                    "bg_color": cls._GRAND_TOTAL_BG,
+                    "align": "right",
+                    "valign": "vcenter",
+                    "border": 1,
+                }
+            )
+            total_money_fmt = workbook.add_format(
+                {
+                    "bold": True,
+                    "font_color": "#FFFFFF",
+                    "bg_color": cls._GRAND_TOTAL_BG,
+                    "align": "right",
+                    "valign": "vcenter",
+                    "border": 1,
+                    "num_format": "#,##0.00",
+                }
+            )
+            total_blank_fmt = workbook.add_format({"bg_color": cls._GRAND_TOTAL_BG, "border": 1})
+
+            for col, label in enumerate(headers):
+                sheet.write(0, col, label, header_fmt)
+            sheet.freeze_panes(1, 0)
+
+            total_paid = 0.0
+            for row_idx, row in enumerate(rows, start=1):
+                expense_date = row.get("expense_date")
+                date_text = cls._format_date(expense_date) if isinstance(expense_date, date) else ""
+                attendance = float(row.get("attendance_days", 0) or 0)
+                working = float(row.get("working_days", 0) or 0)
+                base_amount = float(row.get("base_amount", 0) or 0)
+                paid = float(row.get("amount", 0) or 0)
+                total_paid += paid
+
+                sheet.write(row_idx, 0, date_text, text_fmt)
+                sheet.write(row_idx, 1, str(row.get("reference_no") or ""), text_fmt)
+                sheet.write(row_idx, 2, str(row.get("faculty_name") or ""), text_fmt)
+                sheet.write(row_idx, 3, str(row.get("faculty_type") or ""), text_fmt)
+                sheet.write(
+                    row_idx,
+                    4,
+                    format_month_label_display(str(row.get("month_label") or "")),
+                    text_fmt,
+                )
+                sheet.write(row_idx, 5, f"{attendance:.1f}/{working:.1f}", text_fmt)
+                sheet.write(row_idx, 6, base_amount, money_fmt)
+                sheet.write(row_idx, 7, paid, money_fmt)
+                sheet.write(row_idx, 8, str(row.get("notes") or ""), text_fmt)
+                sheet.write(row_idx, 9, str(row.get("status") or "Paid"), text_fmt)
+
+            if rows:
+                total_row = len(rows) + 1
+                for col in range(6):
+                    sheet.write(total_row, col, "", total_blank_fmt)
+                sheet.write(total_row, 6, "Grand Total", total_label_fmt)
+                sheet.write(total_row, 7, total_paid, total_money_fmt)
+                for col in range(8, len(headers)):
+                    sheet.write(total_row, col, "", total_blank_fmt)
+                sheet.autofilter(0, 0, total_row, len(headers) - 1)
+            else:
+                sheet.autofilter(0, 0, 0, len(headers) - 1)
+        finally:
+            workbook.close()
+
+    @staticmethod
+    def _format_date(value: date) -> str:
+        return f"{value.day:02d}/{value.month:02d}/{value.year}"

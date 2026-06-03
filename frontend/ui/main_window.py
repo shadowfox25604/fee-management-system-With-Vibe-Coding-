@@ -47,8 +47,10 @@ from backend.services.backup_service import BackupService
 from backend.services.class_fee_service import ClassFeeService
 from backend.services.village_van_fee_service import VillageVanFeeService
 from backend.services.expense_service import ExpenseService
+from backend.services.misc_expense_service import MiscExpenseService
 from backend.services.payment_service import PaymentService
 from backend.core.fee_due_display import pending_fees
+from backend.core.month_label_format import format_month_label_display
 from backend.core.student_search_match import SEARCH_PLACEHOLDERS, student_matches_search
 from backend.core.report_fee_constants import (
     FEE_FILTER_CURRENT_YEAR,
@@ -72,6 +74,9 @@ from frontend.ui.school_branding import (
 )
 from frontend.ui.edudash_widgets import CardTitleBar, GradientProfileCard, SurfaceCard, wrap_page
 from frontend.ui.home_page import HomePageTab
+from frontend.ui.misc_expenses_page import MiscExpensesPage
+from frontend.ui.payment_history_export_dialog import PaymentHistoryExportDialog
+from frontend.ui.salary_history_export_dialog import SalaryHistoryExportDialog
 from frontend.ui.pagination import PAGE_SIZE, PaginationBar, page_count, slice_page
 from frontend.ui.student_details_tab import StudentDetailsTab
 from frontend.ui.table_style import (
@@ -159,6 +164,7 @@ class MainWindow(QMainWindow):
         self.class_fee_service = ClassFeeService(session)
         self.village_van_fee_service = VillageVanFeeService(session)
         self.expense_service = ExpenseService(session)
+        self.misc_expense_service = MiscExpenseService(session)
         self.academic_year_service = AcademicYearService(session)
         self.selected_student = None
         self._payment_panes: dict[str, PaymentLikePane] = {}
@@ -217,7 +223,7 @@ class MainWindow(QMainWindow):
             "Salary",
             "Salary Control",
             "Salary History",
-            "Other",
+            "Miscellaneous",
             "Add Faculty",
             "Add Student",
             "Reports",
@@ -233,7 +239,7 @@ class MainWindow(QMainWindow):
             self._build_salary_tab,
             self._build_salary_control_tab,
             self._build_salary_history_tab,
-            self._build_other_expense_tab,
+            self._build_miscellaneous_tab,
             self._build_add_faculty_tab,
             self._build_add_student_tab,
             self._build_reports_tab,
@@ -254,8 +260,8 @@ class MainWindow(QMainWindow):
                 self._salary_control_tab_index = idx
             if key == "Salary History":
                 self._salary_history_tab_index = idx
-            if key == "Other":
-                self._other_expense_tab_index = idx
+            if key == "Miscellaneous":
+                self._miscellaneous_tab_index = idx
             if key == "Add Faculty":
                 self._add_faculty_tab_index = idx
         self._shell.page_changed.connect(self._on_main_tab_changed)
@@ -332,11 +338,17 @@ class MainWindow(QMainWindow):
             getattr(self, "_salary_control_edit_salary_btn", None),
             getattr(self, "_salary_control_edit_profile_btn", None),
             getattr(self, "_add_faculty_submit_btn", None),
-            getattr(self, "_other_add_btn", None),
+            getattr(self, "_misc_add_new_expense_btn", None),
+            getattr(self, "_misc_add_entry_btn", None),
+            getattr(self, "_misc_export_btn", None),
+            getattr(self, "_misc_refresh_btn", None),
         ):
             if btn is not None:
                 style_fee_action_button(btn, width=btn.width() if btn.width() > 0 else None)
         self._refresh_salary_list_style()
+        page = getattr(self, "_misc_expenses_page", None)
+        if page is not None:
+            page.refresh_theme()
         for pane_id in self._payment_panes:
             self._refresh_payment_pane_visuals(pane_id)
         for btn in self.findChildren(QPushButton):
@@ -947,6 +959,15 @@ class MainWindow(QMainWindow):
         page.submit_btn.clicked.connect(self.add_faculty)
         return page
 
+    def _build_miscellaneous_tab(self):
+        page = MiscExpensesPage(self.misc_expense_service, parent=self)
+        self._misc_expenses_page = page
+        self._misc_add_new_expense_btn = page._add_new_expense_btn
+        self._misc_add_entry_btn = page._add_entry_btn
+        self._misc_export_btn = page._export_btn
+        self._misc_refresh_btn = page._refresh_btn
+        return page
+
     def _build_add_student_tab(self):
         page = AddStudentPage(self._populate_village_combo, parent=self)
         self._add_student_page = page
@@ -1466,8 +1487,10 @@ class MainWindow(QMainWindow):
             self._refresh_salary_history_tab_table(reset_page=False)
             if hasattr(self, "_salary_history_tab_pagination"):
                 self._salary_history_tab_pagination.refresh_theme()
-        if index == getattr(self, "_other_expense_tab_index", -1):
-            self._refresh_other_expense_table()
+        if index == getattr(self, "_miscellaneous_tab_index", -1):
+            page = getattr(self, "_misc_expenses_page", None)
+            if page is not None:
+                page.reload(reset_page=False)
         if tab_name == "Student Details":
             self._refresh_details_tab(reset_page=False)
         if tab_name == "Collect Payment":
@@ -1487,8 +1510,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(hint)
         toolbar = QHBoxLayout()
         refresh_btn = QPushButton("Refresh")
+        style_fee_action_button(refresh_btn)
         refresh_btn.clicked.connect(self._on_payment_history_refresh_clicked)
+        export_btn = QPushButton("Export Excel")
+        style_fee_action_button(export_btn)
+        export_btn.clicked.connect(self._on_payment_history_export_excel)
         toolbar.addWidget(refresh_btn)
+        toolbar.addWidget(export_btn)
         toolbar.addWidget(QLabel("Filter"))
         self._payment_history_filter = QLineEdit()
         self._payment_history_filter.setPlaceholderText("Reference, student ID, or name…")
@@ -1538,8 +1566,9 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
         hint = QLabel(
-            "Recorded faculty salary payouts (newest first). Filter by reference, faculty name, "
-            "month, role, or notes. Undo removes the payout from salary totals while keeping the row in history."
+            "One salary payout per faculty and month (saving again replaces the prior entry). "
+            "Filter by reference, faculty name, month, role, or notes. Undo removes the payout "
+            "from salary totals while keeping the row in history."
         )
         hint.setWordWrap(True)
         hint.setProperty("role", "hint")
@@ -1548,7 +1577,11 @@ class MainWindow(QMainWindow):
         refresh_btn = QPushButton("Refresh")
         style_fee_action_button(refresh_btn)
         refresh_btn.clicked.connect(self._on_salary_history_tab_refresh_clicked)
+        export_btn = QPushButton("Export Excel")
+        style_fee_action_button(export_btn)
+        export_btn.clicked.connect(self._on_salary_history_export_excel)
         toolbar.addWidget(refresh_btn)
+        toolbar.addWidget(export_btn)
         toolbar.addWidget(QLabel("Filter"))
         self._salary_history_tab_filter = QLineEdit()
         self._salary_history_tab_filter.setPlaceholderText("Reference, faculty, month, role, notes…")
@@ -1603,6 +1636,55 @@ class MainWindow(QMainWindow):
         clear_data_table_selection(getattr(self, "_salary_history_tab_table", None))
         self._refresh_salary_history_tab_table(reset_page=True)
 
+    def _on_salary_history_export_excel(self) -> None:
+        search = ""
+        if hasattr(self, "_salary_history_tab_filter"):
+            search = self._salary_history_tab_filter.text()
+        dialog = SalaryHistoryExportDialog(
+            self.expense_service,
+            search=search,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            filters = dialog.payload()
+        except ValueError as exc:
+            theme.message_warning(self, "Invalid export filter", str(exc))
+            return
+
+        match_count = self.expense_service.count_salary_export_rows(**filters)
+        if match_count == 0:
+            min_date, max_date = self.expense_service.salary_expense_date_bounds()
+            span = ""
+            if min_date and max_date:
+                span = (
+                    f"\n\nRecorded salary payouts span "
+                    f"{min_date.day:02d}/{min_date.month:02d}/{min_date.year} to "
+                    f"{max_date.day:02d}/{max_date.month:02d}/{max_date.year}."
+                )
+            theme.message_warning(
+                self,
+                "No matching salary payouts",
+                "No salary payouts match the selected filters." + span,
+            )
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export salary history",
+            dialog.suggested_filename(),
+            "Excel files (*.xlsx)",
+        )
+        if not path:
+            return
+        try:
+            self.expense_service.export_salary_history_excel(path, **filters)
+        except Exception as exc:
+            theme.message_critical(self, "Export failed", str(exc))
+            return
+        theme.message_information(self, "Exported", f"Excel report saved to {path}")
+
     def _refresh_salary_history_tab_table(self, reset_page: bool = False) -> None:
         if not hasattr(self, "_salary_history_tab_table"):
             return
@@ -1635,7 +1717,7 @@ class MainWindow(QMainWindow):
             tbl.setItem(i, 1, QTableWidgetItem(str(r.get("reference_no") or "")))
             tbl.setItem(i, 2, QTableWidgetItem(str(r.get("faculty_name") or "")))
             tbl.setItem(i, 3, QTableWidgetItem(str(r.get("faculty_type") or "")))
-            tbl.setItem(i, 4, QTableWidgetItem(str(r.get("month_label") or "")))
+            tbl.setItem(i, 4, QTableWidgetItem(format_month_label_display(str(r.get("month_label") or ""))))
             tbl.setItem(i, 5, QTableWidgetItem(f"{attendance:.1f}/{working:.1f}"))
             tbl.setItem(i, 6, QTableWidgetItem(f"{float(r.get('base_amount', 0) or 0):.2f}"))
             tbl.setItem(i, 7, QTableWidgetItem(f"{float(r.get('amount', 0) or 0):.2f}"))
@@ -2364,7 +2446,7 @@ class MainWindow(QMainWindow):
             working = float(getattr(row, "working_days", 0) or 0)
             values = [
                 d_text,
-                str(row.month_label or ""),
+                format_month_label_display(str(row.month_label or "")),
                 f"{attendance:.1f}/{working:.1f}",
                 f"{float(row.amount or 0):.2f}",
                 str(row.notes or ""),
@@ -2619,7 +2701,7 @@ class MainWindow(QMainWindow):
             values = [
                 d_text,
                 str(getattr(row, "reference_no", "") or ""),
-                str(row.month_label or ""),
+                format_month_label_display(str(row.month_label or "")),
                 f"{attendance:.1f}/{working:.1f}",
                 f"{float(row.base_amount or 0):.2f}",
                 f"{float(row.amount or 0):.2f}",
@@ -3118,7 +3200,7 @@ class MainWindow(QMainWindow):
                 working = float(getattr(row, "working_days", 0) or 0)
                 values = [
                     d_text,
-                    str(row.month_label or ""),
+                    format_month_label_display(str(row.month_label or "")),
                     f"{attendance:.1f}/{working:.1f}",
                     f"{float(row.amount or 0):.2f}",
                     str(row.notes or ""),
@@ -3257,128 +3339,6 @@ class MainWindow(QMainWindow):
         dialog_layout.addWidget(actions)
         dialog.exec()
 
-    def _build_other_expense_tab(self):
-        body = QWidget()
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-
-        intro = QLabel(
-            "Document and calculate non-salary expenses such as rent, donation, and stationary."
-        )
-        intro.setProperty("role", "hint")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-
-        form_card = SurfaceCard()
-        form_card.body.addWidget(CardTitleBar("Add other expense"))
-        row = QHBoxLayout()
-        self._other_category = QComboBox()
-        self._other_category.addItems(["Rent", "Donation", "Stationary", "Other"])
-        self._other_amount = QLineEdit()
-        self._other_amount.setPlaceholderText("Amount (₹)")
-        self._other_date = QDateEdit(QDate.currentDate())
-        self._other_date.setCalendarPopup(True)
-        self._other_date.setDisplayFormat("dd/MM/yyyy")
-        self._other_date.setMaximumDate(QDate.currentDate())
-        self._other_description = QLineEdit()
-        self._other_description.setPlaceholderText("Description")
-        self._other_notes = QLineEdit()
-        self._other_notes.setPlaceholderText("Notes (optional)")
-        self._other_add_btn = QPushButton("Add Expense")
-        style_fee_action_button(self._other_add_btn)
-        self._other_add_btn.clicked.connect(self._on_add_other_expense_clicked)
-        row.addWidget(self._other_category)
-        row.addWidget(self._other_amount)
-        row.addWidget(self._other_date)
-        row.addWidget(self._other_description, 2)
-        row.addWidget(self._other_notes, 2)
-        row.addWidget(self._other_add_btn)
-        form_card.body.addLayout(row)
-        layout.addWidget(form_card)
-
-        totals_card = SurfaceCard()
-        totals_card.body.addWidget(CardTitleBar("Expense totals"))
-        self._other_totals_label = QLabel("Total: ₹0.00")
-        self._other_totals_label.setProperty("role", "muted")
-        self._other_totals_label.setWordWrap(True)
-        totals_card.body.addWidget(self._other_totals_label)
-        layout.addWidget(totals_card)
-
-        table_card = SurfaceCard()
-        table_card.body.addWidget(CardTitleBar("Other expense history"))
-        self._other_expenses_table = QTableWidget(0, 5)
-        self._other_expenses_table.setHorizontalHeaderLabels(
-            ["Date", "Category", "Description", "Amount (₹)", "Notes"]
-        )
-        configure_scrollable_data_table(self._other_expenses_table)
-        self._other_expenses_table.setProperty("table_variant", "scrollable")
-        table_card.body.addWidget(self._other_expenses_table, 1)
-        layout.addWidget(table_card, 1)
-
-        self._refresh_other_expense_table()
-        return wrap_page(
-            "Other Expenses",
-            breadcrumb_trail("Expenses", "Other"),
-            body,
-        )
-
-    def _refresh_other_expense_table(self) -> None:
-        if not hasattr(self, "_other_expenses_table"):
-            return
-        rows = self.expense_service.list_other_expenses(limit=1000)
-        table = self._other_expenses_table
-        table.setRowCount(len(rows))
-        for i, row in enumerate(rows):
-            d = row.expense_date
-            d_text = d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else str(d or "")
-            values = [
-                d_text,
-                str(row.category or ""),
-                str(row.description or ""),
-                f"{float(row.amount or 0):.2f}",
-                str(row.notes or ""),
-            ]
-            for col, value in enumerate(values):
-                table.setItem(i, col, table_item(value))
-        fit_table_columns_to_contents(table)
-        totals = self.expense_service.other_totals()
-        total = float(totals.get("total", 0.0) or 0.0)
-        by_category = totals.get("by_category", {})
-        parts = [f"{name}: ₹{float(amount):.2f}" for name, amount in by_category.items()]
-        details = " | ".join(parts) if parts else "No expense entries yet."
-        if hasattr(self, "_other_totals_label"):
-            self._other_totals_label.setText(f"Total: ₹{total:.2f} — {details}")
-
-    def _on_add_other_expense_clicked(self) -> None:
-        try:
-            amount = float((self._other_amount.text() or "").strip() or 0.0)
-            category = self._other_category.currentText()
-            qd = self._other_date.date()
-            expense_date = date(qd.year(), qd.month(), qd.day())
-            description = (self._other_description.text() or "").strip()
-            notes = (self._other_notes.text() or "").strip()
-            self.expense_service.add_other_expense(
-                category,
-                amount,
-                expense_date=expense_date,
-                description=description,
-                notes=notes,
-            )
-        except ValueError as e:
-            theme.message_warning(self, "Invalid expense", str(e))
-            return
-        except Exception as e:
-            self.session.rollback()
-            theme.message_critical(self, "Expense save failed", str(e))
-            return
-
-        self._other_amount.clear()
-        self._other_description.clear()
-        self._other_notes.clear()
-        self._refresh_other_expense_table()
-        theme.message_information(self, "Saved", "Other expense entry saved.")
-
     def _clear_list_selection(self, list_widget: QListWidget | None) -> None:
         if list_widget is None:
             return
@@ -3399,6 +3359,56 @@ class MainWindow(QMainWindow):
                 self._payment_history_filter.blockSignals(False)
         clear_data_table_selection(getattr(self, "_payment_history_table", None))
         self._refresh_payment_history_table(reset_page=True)
+
+    def _on_payment_history_export_excel(self) -> None:
+        search = ""
+        if hasattr(self, "_payment_history_filter"):
+            search = self._payment_history_filter.text()
+        dialog = PaymentHistoryExportDialog(
+            self.payment_service,
+            self.academic_year_service,
+            search=search,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            filters = dialog.payload()
+        except ValueError as exc:
+            theme.message_warning(self, "Invalid export filter", str(exc))
+            return
+
+        match_count = self.payment_service.count_export_rows(**filters)
+        if match_count == 0:
+            min_date, max_date = self.payment_service.payment_date_bounds()
+            span = ""
+            if min_date and max_date:
+                span = (
+                    f"\n\nRecorded payments span "
+                    f"{min_date.day:02d}/{min_date.month:02d}/{min_date.year} to "
+                    f"{max_date.day:02d}/{max_date.month:02d}/{max_date.year}."
+                )
+            theme.message_warning(
+                self,
+                "No matching payments",
+                "No payments match the selected filters." + span,
+            )
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export payment history",
+            dialog.suggested_filename(),
+            "Excel files (*.xlsx)",
+        )
+        if not path:
+            return
+        try:
+            self.payment_service.export_excel(path, **filters)
+        except Exception as exc:
+            theme.message_critical(self, "Export failed", str(exc))
+            return
+        theme.message_information(self, "Exported", f"Excel report saved to {path}")
 
     def _refresh_payment_history_table(self, reset_page: bool = False):
         if not hasattr(self, "_payment_history_table"):

@@ -131,7 +131,7 @@ class FacultyAttendance(Base):
 class Expense(Base):
     __tablename__ = "expenses"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    expense_type: Mapped[str] = mapped_column(String(20), nullable=False)  # salary | other
+    expense_type: Mapped[str] = mapped_column(String(20), nullable=False)  # salary
     category: Mapped[str] = mapped_column(String(80), nullable=False)
     person_name: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     faculty_type: Mapped[str] = mapped_column(String(20), default="", nullable=False)
@@ -148,6 +148,30 @@ class Expense(Base):
     is_reverted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     reverted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class MiscExpense(Base):
+    __tablename__ = "misc_expenses"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    head: Mapped[str] = mapped_column(String(80), nullable=False)
+    expense_date: Mapped[date] = mapped_column(Date, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    entries = relationship("MiscExpenseEntry", back_populates="expense", cascade="all, delete-orphan")
+
+
+class MiscExpenseEntry(Base):
+    __tablename__ = "misc_expense_entries"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    expense_id: Mapped[int] = mapped_column(ForeignKey("misc_expenses.id"), nullable=False)
+    entry_date: Mapped[date] = mapped_column(Date, nullable=False)
+    particular: Mapped[str] = mapped_column(String(240), nullable=False)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    expense = relationship("MiscExpense", back_populates="entries")
 
 
 class FeePlan(Base):

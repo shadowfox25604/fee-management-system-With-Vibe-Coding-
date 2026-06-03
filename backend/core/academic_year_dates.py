@@ -20,3 +20,12 @@ def auto_label_for_range(start: date, end: date) -> str:
     if end.year == start.year + 1 and end.month <= 4:
         return f"{start.year}-{str(end.year)[-2:]}"
     return format_academic_year_range(start, end)
+
+
+def academic_year_short_label(start: date, end: date) -> str:
+    """Compact year label for dropdowns, e.g. 2025-26."""
+    if end.year == start.year:
+        return str(start.year)
+    if end.year > start.year:
+        return f"{start.year}-{str(end.year)[-2:]}"
+    return str(start.year)

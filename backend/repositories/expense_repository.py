@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 from datetime import date, datetime
 
 from sqlalchemy import func, or_, select
@@ -247,6 +248,39 @@ class ExpenseRepository:
         stmt = stmt.order_by(FacultySalary.faculty_name.asc())
         return list(self.session.scalars(stmt).all())
 
+    def delete_salary_expenses_for_faculty_month(
+        self,
+        *,
+        person_name: str,
+        month_label: str,
+    ) -> int:
+        """Permanently remove all salary payout rows for this faculty and month."""
+        person_text = (person_name or "").strip()
+        if not person_text:
+            return 0
+        month_text = self._normalize_month_label(month_label)
+        rows = list(
+            self.session.scalars(
+                select(Expense).where(
+                    Expense.expense_type == "salary",
+                    func.lower(func.trim(Expense.person_name)) == person_text.lower(),
+                )
+            ).all()
+        )
+        deleted = 0
+        for row in rows:
+            row_month = (row.month_label or "").strip()
+            try:
+                same_month = self._normalize_month_label(row_month) == month_text
+            except ValueError:
+                same_month = row_month == month_text
+            if same_month:
+                self.session.delete(row)
+                deleted += 1
+        if deleted:
+            self.session.flush()
+        return deleted
+
     def create_salary_expense(
         self,
         *,
@@ -263,7 +297,13 @@ class ExpenseRepository:
         faculty_type: str = "",
     ) -> Expense:
         person_text = person_name.strip()
-        month_text = month_label.strip()
+        if not person_text:
+            raise ValueError("Faculty name is required.")
+        month_text = self._normalize_month_label(month_label)
+        self.delete_salary_expenses_for_faculty_month(
+            person_name=person_text,
+            month_label=month_text,
+        )
         category_text = self._normalize_faculty_type(faculty_type) or self.lookup_faculty_type(person_text)
         row = Expense(
             expense_type="salary",
@@ -282,28 +322,6 @@ class ExpenseRepository:
             operator_name=(operator_name or "").strip(),
             is_reverted=False,
             reverted_at=None,
-        )
-        self.session.add(row)
-        self.session.commit()
-        self.session.refresh(row)
-        return row
-
-    def create_other_expense(
-        self,
-        *,
-        category: str,
-        amount: float,
-        expense_date: date,
-        description: str = "",
-        notes: str = "",
-    ) -> Expense:
-        row = Expense(
-            expense_type="other",
-            category=category.strip(),
-            amount=float(amount),
-            expense_date=expense_date,
-            description=description.strip(),
-            notes=notes.strip(),
         )
         self.session.add(row)
         self.session.commit()
@@ -344,6 +362,10 @@ class ExpenseRepository:
         search: str | None = None,
         *,
         include_reverted: bool = True,
+        month: tuple[int, int] | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        faculty_names: list[str] | None = None,
     ) -> list[dict]:
         stmt = (
             select(Expense, FacultySalary)
@@ -355,6 +377,22 @@ class ExpenseRepository:
         )
         if not include_reverted:
             stmt = stmt.where(self._salary_not_reverted_filter())
+        if month is not None:
+            year, mon = month
+            start = date(int(year), int(mon), 1)
+            last_day = calendar.monthrange(int(year), int(mon))[1]
+            end = date(int(year), int(mon), last_day)
+            stmt = stmt.where(Expense.expense_date >= start, Expense.expense_date <= end)
+        else:
+            if date_from is not None:
+                stmt = stmt.where(Expense.expense_date >= date_from)
+            if date_to is not None:
+                stmt = stmt.where(Expense.expense_date <= date_to)
+        if faculty_names:
+            lowered = sorted({(name or "").strip().lower() for name in faculty_names if (name or "").strip()})
+            if not lowered:
+                return []
+            stmt = stmt.where(func.lower(func.trim(Expense.person_name)).in_(lowered))
         needle = (search or "").strip()
         if needle:
             pat = f"%{needle.lower()}%"
@@ -397,6 +435,41 @@ class ExpenseRepository:
             )
         return out
 
+    def salary_expense_date_bounds(self) -> tuple[date | None, date | None]:
+        min_date, max_date = self.session.execute(
+            select(func.min(Expense.expense_date), func.max(Expense.expense_date)).where(
+                Expense.expense_type == "salary"
+            )
+        ).one()
+        return (
+            min_date if isinstance(min_date, date) else None,
+            max_date if isinstance(max_date, date) else None,
+        )
+
+    def list_salary_export_faculty_names(self) -> list[str]:
+        profile_names = [
+            str(row.faculty_name or "").strip()
+            for row in self.list_faculty_salaries()
+            if str(row.faculty_name or "").strip()
+        ]
+        expense_names = [
+            str(name or "").strip()
+            for name in self.session.scalars(
+                select(Expense.person_name)
+                .where(Expense.expense_type == "salary")
+                .distinct()
+            ).all()
+            if str(name or "").strip()
+        ]
+        seen: set[str] = set()
+        out: list[str] = []
+        for name in sorted(set(profile_names) | set(expense_names), key=str.lower):
+            key = name.lower()
+            if key not in seen:
+                seen.add(key)
+                out.append(name)
+        return out
+
     def undo_salary_expense(self, reference_no: str) -> Expense:
         ref = (reference_no or "").strip()
         if not ref:
@@ -416,15 +489,6 @@ class ExpenseRepository:
         self.session.commit()
         self.session.refresh(row)
         return row
-
-    def list_other_expenses(self, *, limit: int = 500) -> list[Expense]:
-        stmt = (
-            select(Expense)
-            .where(Expense.expense_type == "other")
-            .order_by(Expense.expense_date.desc(), Expense.id.desc())
-            .limit(int(limit))
-        )
-        return list(self.session.scalars(stmt).all())
 
     def sum_salary_expenses(self, month_label: str | None = None) -> float:
         stmt = select(func.coalesce(func.sum(Expense.amount), 0.0)).where(
@@ -449,25 +513,6 @@ class ExpenseRepository:
             )
             or 0.0
         )
-
-    def sum_other_expenses(self) -> float:
-        return float(
-            self.session.scalar(
-                select(func.coalesce(func.sum(Expense.amount), 0.0)).where(
-                    Expense.expense_type == "other"
-                )
-            )
-            or 0.0
-        )
-
-    def grouped_other_expense_totals(self) -> dict[str, float]:
-        rows = self.session.execute(
-            select(Expense.category, func.coalesce(func.sum(Expense.amount), 0.0))
-            .where(Expense.expense_type == "other")
-            .group_by(Expense.category)
-            .order_by(Expense.category.asc())
-        ).all()
-        return {str(category): float(total or 0.0) for category, total in rows}
 
     def purge_faculty_by_name(self, faculty_name: str) -> dict[str, int]:
         """Remove faculty profile, attendance, and all salary payouts for this name."""

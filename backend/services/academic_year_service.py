@@ -1,6 +1,6 @@
 from datetime import date
 
-from backend.core.academic_year_dates import format_academic_year_range
+from backend.core.academic_year_dates import academic_year_short_label, format_academic_year_range
 from backend.repositories.academic_year_repository import AcademicYearRepository
 from backend.repositories.student_repository import StudentRepository
 from backend.repositories.student_year_fee_repository import StudentYearFeeRepository
@@ -25,6 +25,15 @@ class AcademicYearService:
         if year is None:
             return "—"
         return f"{year.label} ({format_academic_year_range(year.start_date, year.end_date)})"
+
+    def format_year_short_label(self, year) -> str:
+        """Compact label for filters and dropdowns, e.g. 2025-26."""
+        if year is None:
+            return "—"
+        label = (year.label or "").strip()
+        if label and "/" not in label and "–" not in label:
+            return label
+        return academic_year_short_label(year.start_date, year.end_date)
 
     def create_year(
         self,

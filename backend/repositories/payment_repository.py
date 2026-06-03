@@ -502,11 +502,46 @@ class PaymentRepository:
         search: str | None = None,
         *,
         include_reverted: bool = False,
+        month: tuple[int, int] | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        class_name: str | None = None,
+        class_names: list[str] | None = None,
+        academic_year_id: int | None = None,
     ):
-        """Newest first: reference, student, amounts, mode, operator. Optional case-insensitive search substring."""
+        """Newest first: reference, student, amounts, mode, operator. Optional filters for export."""
         stmt = select(Payment, Student).join(Student, Student.student_id == Payment.student_id_fk)
         if not include_reverted:
             stmt = stmt.where(self._not_reverted_filter())
+        if month is not None:
+            year, mon = month
+            start = date(int(year), int(mon), 1)
+            last_day = calendar.monthrange(int(year), int(mon))[1]
+            end = date(int(year), int(mon), last_day)
+            stmt = stmt.where(Payment.payment_date >= start, Payment.payment_date <= end)
+        else:
+            if date_from is not None:
+                stmt = stmt.where(Payment.payment_date >= date_from)
+            if date_to is not None:
+                stmt = stmt.where(Payment.payment_date <= date_to)
+        if class_names:
+            student_ids = self._student_ids_for_classes(class_names)
+            if not student_ids:
+                return []
+            stmt = stmt.where(Payment.student_id_fk.in_(student_ids))
+        elif class_name:
+            student_ids = self._student_ids_for_class(class_name)
+            if not student_ids:
+                return []
+            stmt = stmt.where(Payment.student_id_fk.in_(student_ids))
+        if academic_year_id is not None:
+            year = self._year_repo.get(int(academic_year_id))
+            if year is None:
+                return []
+            stmt = stmt.where(
+                Payment.payment_date >= year.start_date,
+                Payment.payment_date <= year.end_date,
+            )
         needle = (search or "").strip()
         if needle:
             pat = f"%{needle.lower()}%"
@@ -518,25 +553,57 @@ class PaymentRepository:
                 )
             )
         stmt = stmt.order_by(Payment.payment_date.desc(), Payment.id.desc()).limit(limit)
-        out = []
-        for p, s in self.session.execute(stmt).all():
-            out.append(
-                {
-                    "payment_date": p.payment_date,
-                    "reference_no": p.reference_no or "",
-                    "student_roll": s.student_id or "",
-                    "student_name": s.full_name or "",
-                    "class_name": s.class_name or "",
-                    "section": s.section or "",
-                    "father_name": getattr(s, "father_name", None) or "",
-                    "mother_name": getattr(s, "mother_name", None) or "",
-                    "guardian_name": getattr(s, "father_name", None) or s.guardian_name or "",
-                    "amount": float(p.amount or 0.0),
-                    "discount": float(p.discount_amount or 0.0),
-                    "mode": p.mode or "",
-                    "operator": p.operator_name or "",
-                    "is_reverted": bool(getattr(p, "is_reverted", False)),
-                    "status": "Payment reverted" if bool(getattr(p, "is_reverted", False)) else "Paid",
-                }
-            )
-        return out
+        return [self._payment_history_row(p, s) for p, s in self.session.execute(stmt).all()]
+
+    @staticmethod
+    def _payment_history_row(p: Payment, s: Student) -> dict:
+        return {
+            "payment_date": p.payment_date,
+            "reference_no": p.reference_no or "",
+            "student_roll": s.student_id or "",
+            "student_name": s.full_name or "",
+            "class_name": s.class_name or "",
+            "section": s.section or "",
+            "father_name": getattr(s, "father_name", None) or "",
+            "mother_name": getattr(s, "mother_name", None) or "",
+            "guardian_name": getattr(s, "father_name", None) or s.guardian_name or "",
+            "amount": float(p.amount or 0.0),
+            "discount": float(p.discount_amount or 0.0),
+            "mode": p.mode or "",
+            "operator": p.operator_name or "",
+            "is_reverted": bool(getattr(p, "is_reverted", False)),
+            "status": "Payment reverted" if bool(getattr(p, "is_reverted", False)) else "Paid",
+        }
+
+    def _student_ids_for_class(self, class_key: str) -> list[str]:
+        from backend.core.fee_control_constants import PASSED_OUT_CLASS_KEY, normalize_class_name
+        from backend.repositories.class_fee_repository import ClassFeeRepository
+
+        key = (class_key or "").strip()
+        if not key:
+            return []
+        if normalize_class_name(key) == normalize_class_name(PASSED_OUT_CLASS_KEY):
+            rows = self.session.scalars(
+                select(Student.student_id).where(
+                    func.lower(func.trim(Student.class_name))
+                    == normalize_class_name(PASSED_OUT_CLASS_KEY)
+                )
+            ).all()
+            return [str(value) for value in rows]
+        return [student.student_id for student in ClassFeeRepository(self.session).students_in_fixed_class(key)]
+
+    def _student_ids_for_classes(self, class_keys: list[str]) -> list[str]:
+        ids: list[str] = []
+        seen: set[str] = set()
+        for key in class_keys:
+            for student_id in self._student_ids_for_class(key):
+                if student_id not in seen:
+                    seen.add(student_id)
+                    ids.append(student_id)
+        return ids
+
+    def payment_date_bounds(self) -> tuple[date | None, date | None]:
+        row = self.session.execute(
+            select(func.min(Payment.payment_date), func.max(Payment.payment_date))
+        ).one()
+        return row[0], row[1]

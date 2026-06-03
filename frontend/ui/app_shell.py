@@ -62,7 +62,7 @@ DEFAULT_NAV: list[NavGroup] = [
             NavLeaf("Salary", "Salary"),
             NavLeaf("Salary Control", "Salary Control"),
             NavLeaf("Salary History", "Salary History"),
-            NavLeaf("Other", "Other"),
+            NavLeaf("Miscellaneous", "Miscellaneous"),
             NavLeaf("Add Faculty", "Add Faculty"),
         ],
     ),
@@ -82,7 +82,7 @@ _HIDE_TOP_SEARCH: frozenset[str] = frozenset(
         "Salary",
         "Salary Control",
         "Salary History",
-        "Other",
+        "Miscellaneous",
         "Add Faculty",
         "Reports",
     }
@@ -98,7 +98,7 @@ _HIDE_TOP_BAR: frozenset[str] = frozenset(
         "Salary",
         "Salary Control",
         "Salary History",
-        "Other",
+        "Miscellaneous",
         "Add Faculty",
         "Reports",
     }

@@ -77,6 +77,48 @@ def style_fee_action_button(btn: QPushButton, *, width: int | None = None) -> No
     btn.setStyleSheet(_apply_btn_style(width=width))
 
 
+class _ActionButtonCell(QWidget):
+    """Table cell host that keeps a fixed-size action button centered."""
+
+    def __init__(
+        self,
+        label: str,
+        on_click: Callable[[], None],
+        *,
+        min_width: int = 76,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("feeApplyCell")
+        self.setStyleSheet("background: transparent;")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMinimumHeight(_APPLY_BTN_SIZE.height())
+        self._btn = QPushButton(label, self)
+        self._btn.clicked.connect(on_click)
+        self._btn_width = fee_action_button_width(self._btn, min_width=min_width)
+        style_fee_action_button(self._btn, width=self._btn_width)
+        self._center_button()
+
+    def refresh_theme(self) -> None:
+        style_fee_action_button(self._btn, width=self._btn_width)
+        self._center_button()
+
+    def _center_button(self) -> None:
+        x = max(0, (self.width() - self._btn.width()) // 2)
+        y = max(0, (self.height() - self._btn.height()) // 2)
+        self._btn.move(x, y)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._lock_button_size()
+        self._center_button()
+
+    def _lock_button_size(self) -> None:
+        h = _APPLY_BTN_SIZE.height()
+        if self._btn.width() != self._btn_width or self._btn.height() != h:
+            style_fee_action_button(self._btn, width=self._btn_width)
+
+
 class _ApplyButtonCell(QWidget):
     """Table cell host that keeps a fixed-size Apply button centered."""
 
@@ -238,6 +280,7 @@ def fit_table_columns_to_contents(
     *,
     min_width: int = 72,
     pad: int = 24,
+    min_column_widths: dict[int, int] | None = None,
 ) -> None:
     """Size columns from header + widest cell, then lock widths so horizontal scroll works."""
     col_count = table.columnCount()
@@ -247,6 +290,7 @@ def fit_table_columns_to_contents(
     header.setMinimumSectionSize(min_width)
     _apply_horizontal_scroll_header(header)
     header_metrics = header.fontMetrics()
+    overrides = min_column_widths or {}
     fitted: list[int] = []
     for col in range(col_count):
         width = min_width
@@ -261,6 +305,7 @@ def fit_table_columns_to_contents(
             if item.font().bold():
                 item_metrics = QFontMetrics(item.font())
             width = max(width, item_metrics.horizontalAdvance(item.text()) + pad)
+        width = max(width, int(overrides.get(col, 0)))
         fitted.append(int(width))
     table._fitted_column_widths = fitted
     for col, width in enumerate(fitted):
@@ -345,3 +390,43 @@ def table_item(text: str, *, bold: bool = False) -> QTableWidgetItem:
         font.setWeight(QFont.Weight.DemiBold)
         item.setFont(font)
     return item
+
+
+def action_button_cell(
+    label: str,
+    on_click: Callable[[], None],
+    *,
+    min_width: int = 76,
+) -> QWidget:
+    """Centered solid action button for a table cell (matches Payment History buttons)."""
+    return _ActionButtonCell(label, on_click, min_width=min_width)
+
+
+def paired_action_buttons_cell(
+    on_edit: Callable[[], None],
+    on_delete: Callable[[], None],
+    *,
+    edit_label: str = "Edit",
+    delete_label: str = "Delete",
+) -> QWidget:
+    """Two solid action buttons in one table cell with spacing."""
+    host = QWidget()
+    host.setObjectName("pairedActionCell")
+    host.setStyleSheet("background: transparent;")
+    host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    row = QHBoxLayout(host)
+    row.setContentsMargins(8, 0, 8, 0)
+    row.setSpacing(16)
+    edit_btn = QPushButton(edit_label)
+    edit_width = fee_action_button_width(edit_btn, min_width=76)
+    style_fee_action_button(edit_btn, width=edit_width)
+    edit_btn.clicked.connect(on_edit)
+    delete_btn = QPushButton(delete_label)
+    delete_width = fee_action_button_width(delete_btn, min_width=92)
+    style_fee_action_button(delete_btn, width=delete_width)
+    delete_btn.clicked.connect(on_delete)
+    row.addWidget(edit_btn)
+    row.addWidget(delete_btn)
+    row.addStretch(1)
+    host.setMinimumWidth(edit_width + delete_width + 16 + 16)
+    return host

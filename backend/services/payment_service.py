@@ -1,4 +1,5 @@
 from datetime import date
+from pathlib import Path
 
 from backend.repositories.payment_repository import PaymentRepository
 
@@ -66,12 +67,82 @@ class PaymentService:
         search: str | None = None,
         *,
         include_reverted: bool = False,
+        month: tuple[int, int] | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        class_name: str | None = None,
+        class_names: list[str] | None = None,
+        academic_year_id: int | None = None,
     ):
         return self.repo.list_recent_payments_with_students(
             limit,
             search=search,
             include_reverted=include_reverted,
+            month=month,
+            date_from=date_from,
+            date_to=date_to,
+            class_name=class_name,
+            class_names=class_names,
+            academic_year_id=academic_year_id,
         )
+
+    def payment_date_bounds(self) -> tuple[date | None, date | None]:
+        return self.repo.payment_date_bounds()
+
+    def count_export_rows(
+        self,
+        *,
+        search: str | None = None,
+        include_reverted: bool = True,
+        month: tuple[int, int] | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        class_name: str | None = None,
+        class_names: list[str] | None = None,
+        academic_year_id: int | None = None,
+    ) -> int:
+        return len(
+            self.repo.list_recent_payments_with_students(
+                50000,
+                search=search,
+                include_reverted=include_reverted,
+                month=month,
+                date_from=date_from,
+                date_to=date_to,
+                class_name=class_name,
+                class_names=class_names,
+                academic_year_id=academic_year_id,
+            )
+        )
+
+    def export_excel(
+        self,
+        output_path: Path,
+        *,
+        search: str | None = None,
+        include_reverted: bool = True,
+        month: tuple[int, int] | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        class_name: str | None = None,
+        class_names: list[str] | None = None,
+        academic_year_id: int | None = None,
+    ) -> Path:
+        from backend.reports.payment_history_excel_export import PaymentHistoryExcelExporter
+
+        rows = self.repo.list_recent_payments_with_students(
+            50000,
+            search=search,
+            include_reverted=include_reverted,
+            month=month,
+            date_from=date_from,
+            date_to=date_to,
+            class_name=class_name,
+            class_names=class_names,
+            academic_year_id=academic_year_id,
+        )
+        PaymentHistoryExcelExporter.export(rows, output_path)
+        return output_path
 
     def undo_payment(self, reference_no: str):
         return self.repo.undo_payment(reference_no)

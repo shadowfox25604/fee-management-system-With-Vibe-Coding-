@@ -3,6 +3,9 @@ from __future__ import annotations
 import calendar
 from datetime import date
 
+from datetime import date
+from pathlib import Path
+
 from backend.repositories.expense_repository import ExpenseRepository
 
 
@@ -290,10 +293,73 @@ class ExpenseService:
         search: str | None = None,
         *,
         include_reverted: bool = True,
+        month: tuple[int, int] | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        faculty_names: list[str] | None = None,
     ):
         return self.repo.list_salary_history(
-            limit=limit, search=search, include_reverted=include_reverted
+            limit=limit,
+            search=search,
+            include_reverted=include_reverted,
+            month=month,
+            date_from=date_from,
+            date_to=date_to,
+            faculty_names=faculty_names,
         )
+
+    def salary_expense_date_bounds(self) -> tuple[date | None, date | None]:
+        return self.repo.salary_expense_date_bounds()
+
+    def list_salary_export_faculty_names(self) -> list[str]:
+        return self.repo.list_salary_export_faculty_names()
+
+    def count_salary_export_rows(
+        self,
+        *,
+        search: str | None = None,
+        include_reverted: bool = True,
+        month: tuple[int, int] | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        faculty_names: list[str] | None = None,
+    ) -> int:
+        return len(
+            self.repo.list_salary_history(
+                50000,
+                search=search,
+                include_reverted=include_reverted,
+                month=month,
+                date_from=date_from,
+                date_to=date_to,
+                faculty_names=faculty_names,
+            )
+        )
+
+    def export_salary_history_excel(
+        self,
+        output_path: Path,
+        *,
+        search: str | None = None,
+        include_reverted: bool = True,
+        month: tuple[int, int] | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        faculty_names: list[str] | None = None,
+    ) -> Path:
+        from backend.reports.salary_history_excel_export import SalaryHistoryExcelExporter
+
+        rows = self.repo.list_salary_history(
+            50000,
+            search=search,
+            include_reverted=include_reverted,
+            month=month,
+            date_from=date_from,
+            date_to=date_to,
+            faculty_names=faculty_names,
+        )
+        SalaryHistoryExcelExporter.export(rows, Path(output_path))
+        return Path(output_path)
 
     def undo_salary_payment(self, reference_no: str):
         return self.repo.undo_salary_expense(reference_no)
@@ -310,41 +376,8 @@ class ExpenseService:
             "total_paid": float(total_paid),
         }
 
-    def add_other_expense(
-        self,
-        category: str,
-        amount: float,
-        *,
-        expense_date: date | None = None,
-        description: str = "",
-        notes: str = "",
-    ):
-        cat = (category or "").strip()
-        if not cat:
-            raise ValueError("Expense category is required.")
-        value = float(amount or 0.0)
-        if value <= 0:
-            raise ValueError("Expense amount must be greater than zero.")
-        return self.repo.create_other_expense(
-            category=cat,
-            amount=value,
-            expense_date=expense_date or date.today(),
-            description=description or "",
-            notes=notes or "",
-        )
-
-    def list_other_expenses(self, *, limit: int = 500):
-        return self.repo.list_other_expenses(limit=limit)
-
     def salary_total(self, month_label: str | None = None) -> float:
         return self.repo.sum_salary_expenses(month_label=month_label)
-
-    def other_totals(self) -> dict:
-        by_category = self.repo.grouped_other_expense_totals()
-        return {
-            "total": self.repo.sum_other_expenses(),
-            "by_category": by_category,
-        }
 
     def purge_faculty_by_name(self, faculty_name: str) -> dict[str, int]:
         """Delete faculty (if present), attendance, and salary history rows for this name."""

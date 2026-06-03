@@ -86,6 +86,34 @@ def apply_sqlite_column_migrations(engine) -> None:
                 """
             )
         )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS misc_expenses (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    head VARCHAR(80) NOT NULL,
+                    expense_date DATE NOT NULL,
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS misc_expense_entries (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    expense_id INTEGER NOT NULL REFERENCES misc_expenses(id),
+                    entry_date DATE NOT NULL,
+                    particular VARCHAR(240) NOT NULL,
+                    amount REAL NOT NULL,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
 
     insp = inspect(engine)
     if not insp.has_table("students"):
@@ -253,6 +281,7 @@ def apply_sqlite_column_migrations(engine) -> None:
                 )
         _backfill_salary_expense_references(engine)
         _backfill_salary_expense_faculty_type(engine)
+        _dedupe_salary_expenses_per_faculty_month(engine)
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -261,6 +290,11 @@ def apply_sqlite_column_migrations(engine) -> None:
                     "AND TRIM(reference_no) != ''"
                 )
             )
+
+    _migrate_misc_expenses_remove_categories(engine)
+    _dedupe_misc_expenses_same_identity(engine)
+    _dedupe_misc_expenses_by_head(engine)
+    _backfill_misc_expense_entry_dates(engine)
 
 
 def _default_academic_year_bounds(as_of):
@@ -1061,3 +1095,259 @@ def _backfill_salary_expense_faculty_type(engine) -> None:
             )
         )
         conn.execute(text("INSERT INTO app_migrations (name) VALUES ('salary_expense_faculty_type_v1')"))
+
+
+def _dedupe_salary_expenses_per_faculty_month(engine) -> None:
+    """Keep only the latest salary payout per faculty name and month (permanent delete older rows)."""
+    from sqlalchemy import inspect
+
+    insp = inspect(engine)
+    if not insp.has_table("expenses"):
+        return
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        row = conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "salary_expense_dedupe_faculty_month_v1"},
+        ).fetchone()
+        if row:
+            return
+        conn.execute(
+            text(
+                """
+                DELETE FROM expenses
+                WHERE expense_type = 'salary'
+                  AND id NOT IN (
+                    SELECT MAX(id)
+                    FROM expenses
+                    WHERE expense_type = 'salary'
+                      AND TRIM(COALESCE(month_label, '')) != ''
+                    GROUP BY lower(trim(person_name)), trim(month_label)
+                  )
+                """
+            )
+        )
+        conn.execute(
+            text("INSERT INTO app_migrations (name) VALUES ('salary_expense_dedupe_faculty_month_v1')")
+        )
+
+
+def _migrate_misc_expenses_remove_categories(engine) -> None:
+    """Replace category-linked misc expenses with head + date expenses."""
+    from sqlalchemy import inspect
+
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("misc_expenses"):
+        return
+    exp_cols = {c["name"] for c in insp.get_columns("misc_expenses")}
+    if "category_id" not in exp_cols:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        row = conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "misc_expenses_remove_categories_v1"},
+        ).fetchone()
+        if row:
+            return
+        conn.execute(
+            text(
+                """
+                CREATE TABLE misc_expenses_new (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    head VARCHAR(80) NOT NULL,
+                    expense_date DATE NOT NULL,
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at DATETIME
+                )
+                """
+            )
+        )
+        if insp.has_table("misc_expense_categories"):
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO misc_expenses_new (id, head, expense_date, notes, created_at)
+                    SELECT
+                        e.id,
+                        trim(
+                            c.name ||
+                            CASE
+                                WHEN trim(COALESCE(e.title, '')) != '' THEN ' - ' || trim(e.title)
+                                ELSE ''
+                            END
+                        ),
+                        e.expense_date,
+                        COALESCE(e.notes, ''),
+                        e.created_at
+                    FROM misc_expenses e
+                    JOIN misc_expense_categories c ON c.id = e.category_id
+                    """
+                )
+            )
+        else:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO misc_expenses_new (id, head, expense_date, notes, created_at)
+                    SELECT
+                        id,
+                        trim(COALESCE(title, 'Miscellaneous')),
+                        expense_date,
+                        COALESCE(notes, ''),
+                        created_at
+                    FROM misc_expenses
+                    """
+                )
+            )
+        conn.execute(text("DROP TABLE misc_expenses"))
+        conn.execute(text("ALTER TABLE misc_expenses_new RENAME TO misc_expenses"))
+        if insp.has_table("misc_expense_categories"):
+            conn.execute(text("DROP TABLE misc_expense_categories"))
+        conn.execute(
+            text("INSERT INTO app_migrations (name) VALUES ('misc_expenses_remove_categories_v1')")
+        )
+
+
+def _dedupe_misc_expenses_same_identity(engine) -> None:
+    """Merge duplicate misc expenses that share head, date, and particulars."""
+    from sqlalchemy import inspect
+
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("misc_expenses") or not insp.has_table("misc_expense_entries"):
+        return
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        row = conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "misc_expenses_dedupe_identity_v1"},
+        ).fetchone()
+        if row:
+            return
+        groups = conn.execute(
+            text(
+                """
+                SELECT
+                    lower(trim(head)) AS head_key,
+                    expense_date,
+                    lower(trim(COALESCE(notes, ''))) AS notes_key,
+                    MIN(id) AS keep_id
+                FROM misc_expenses
+                GROUP BY head_key, expense_date, notes_key
+                HAVING COUNT(*) > 1
+                """
+            )
+        ).fetchall()
+        for group in groups:
+            keep_id = int(group[3])
+            dupes = conn.execute(
+                text(
+                    """
+                    SELECT id FROM misc_expenses
+                    WHERE lower(trim(head)) = :head_key
+                      AND expense_date = :expense_date
+                      AND lower(trim(COALESCE(notes, ''))) = :notes_key
+                      AND id != :keep_id
+                    """
+                ),
+                {
+                    "head_key": group[0],
+                    "expense_date": group[1],
+                    "notes_key": group[2],
+                    "keep_id": keep_id,
+                },
+            ).fetchall()
+            for (dupe_id,) in dupes:
+                conn.execute(
+                    text(
+                        "UPDATE misc_expense_entries SET expense_id = :keep_id WHERE expense_id = :dupe_id"
+                    ),
+                    {"keep_id": keep_id, "dupe_id": int(dupe_id)},
+                )
+                conn.execute(text("DELETE FROM misc_expenses WHERE id = :id"), {"id": int(dupe_id)})
+        conn.execute(
+            text("INSERT INTO app_migrations (name) VALUES ('misc_expenses_dedupe_identity_v1')")
+        )
+
+
+def _dedupe_misc_expenses_by_head(engine) -> None:
+    """Keep one misc expense per head name and merge duplicate rows."""
+    from sqlalchemy import inspect
+
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("misc_expenses") or not insp.has_table("misc_expense_entries"):
+        return
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        row = conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "misc_expenses_dedupe_head_v1"},
+        ).fetchone()
+        if row:
+            return
+        groups = conn.execute(
+            text(
+                """
+                SELECT lower(trim(head)) AS head_key, MIN(id) AS keep_id
+                FROM misc_expenses
+                GROUP BY head_key
+                HAVING COUNT(*) > 1
+                """
+            )
+        ).fetchall()
+        for group in groups:
+            keep_id = int(group[1])
+            dupes = conn.execute(
+                text(
+                    """
+                    SELECT id FROM misc_expenses
+                    WHERE lower(trim(head)) = :head_key
+                      AND id != :keep_id
+                    """
+                ),
+                {"head_key": group[0], "keep_id": keep_id},
+            ).fetchall()
+            for (dupe_id,) in dupes:
+                conn.execute(
+                    text(
+                        "UPDATE misc_expense_entries SET expense_id = :keep_id WHERE expense_id = :dupe_id"
+                    ),
+                    {"keep_id": keep_id, "dupe_id": int(dupe_id)},
+                )
+                conn.execute(text("DELETE FROM misc_expenses WHERE id = :id"), {"id": int(dupe_id)})
+        conn.execute(
+            text("INSERT INTO app_migrations (name) VALUES ('misc_expenses_dedupe_head_v1')")
+        )
+
+
+def _backfill_misc_expense_entry_dates(engine) -> None:
+    from sqlalchemy import inspect
+
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("misc_expense_entries") or not insp.has_table("misc_expenses"):
+        return
+    entry_cols = {c["name"] for c in insp.get_columns("misc_expense_entries")}
+    if "entry_date" in entry_cols:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE misc_expense_entries ADD COLUMN entry_date DATE"))
+        conn.execute(
+            text(
+                """
+                UPDATE misc_expense_entries
+                SET entry_date = (
+                    SELECT expense_date FROM misc_expenses
+                    WHERE misc_expenses.id = misc_expense_entries.expense_id
+                )
+                WHERE entry_date IS NULL
+                """
+            )
+        )
