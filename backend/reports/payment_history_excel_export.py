@@ -24,6 +24,8 @@ class PaymentHistoryExcelExporter:
             "Name",
             "Class",
             "Section",
+            "School (₹)",
+            "Van (₹)",
             "Total (₹)",
             "Discount (₹)",
             "Mode",
@@ -40,10 +42,10 @@ class PaymentHistoryExcelExporter:
             sheet.set_column("D:D", 24)
             sheet.set_column("E:E", 10)
             sheet.set_column("F:F", 10)
-            sheet.set_column("G:H", 12)
-            sheet.set_column("I:I", 12)
-            sheet.set_column("J:J", 14)
-            sheet.set_column("K:K", 16)
+            sheet.set_column("G:J", 12)
+            sheet.set_column("K:K", 12)
+            sheet.set_column("L:L", 14)
+            sheet.set_column("M:M", 16)
 
             header_fmt = workbook.add_format(
                 {
@@ -93,8 +95,11 @@ class PaymentHistoryExcelExporter:
                 date_text = cls._format_date(payment_date) if isinstance(payment_date, date) else ""
                 amount = float(row.get("amount") or 0.0)
                 discount = float(row.get("discount") or 0.0)
-                total_amount += amount
-                total_discount += discount
+                school_amount = float(row.get("school_amount") or 0.0)
+                van_amount = float(row.get("van_amount") or 0.0)
+                if not bool(row.get("is_reverted", False)):
+                    total_amount += amount
+                    total_discount += discount
 
                 sheet.write(row_idx, 0, date_text, text_fmt)
                 sheet.write(row_idx, 1, str(row.get("reference_no") or ""), text_fmt)
@@ -102,20 +107,22 @@ class PaymentHistoryExcelExporter:
                 sheet.write(row_idx, 3, str(row.get("student_name") or ""), text_fmt)
                 sheet.write(row_idx, 4, str(row.get("class_name") or ""), text_fmt)
                 sheet.write(row_idx, 5, str(row.get("section") or ""), text_fmt)
-                sheet.write(row_idx, 6, amount, money_fmt)
-                sheet.write(row_idx, 7, discount, money_fmt)
-                sheet.write(row_idx, 8, str(row.get("mode") or ""), text_fmt)
-                sheet.write(row_idx, 9, str(row.get("operator") or ""), text_fmt)
-                sheet.write(row_idx, 10, str(row.get("status") or "Paid"), text_fmt)
+                sheet.write(row_idx, 6, school_amount, money_fmt)
+                sheet.write(row_idx, 7, van_amount, money_fmt)
+                sheet.write(row_idx, 8, amount, money_fmt)
+                sheet.write(row_idx, 9, discount, money_fmt)
+                sheet.write(row_idx, 10, str(row.get("mode") or ""), text_fmt)
+                sheet.write(row_idx, 11, str(row.get("operator") or ""), text_fmt)
+                sheet.write(row_idx, 12, str(row.get("status") or "Paid"), text_fmt)
 
             if rows:
                 total_row = len(rows) + 1
-                for col in range(5):
+                for col in range(7):
                     sheet.write(total_row, col, "", total_blank_fmt)
-                sheet.write(total_row, 5, "Grand Total", total_label_fmt)
-                sheet.write(total_row, 6, total_amount, total_money_fmt)
-                sheet.write(total_row, 7, total_discount, total_money_fmt)
-                for col in range(8, len(headers)):
+                sheet.write(total_row, 7, "Grand Total", total_label_fmt)
+                sheet.write(total_row, 8, total_amount, total_money_fmt)
+                sheet.write(total_row, 9, total_discount, total_money_fmt)
+                for col in range(10, len(headers)):
                     sheet.write(total_row, col, "", total_blank_fmt)
                 sheet.autofilter(0, 0, total_row, len(headers) - 1)
             else:

@@ -19,6 +19,7 @@ class StudentAcademicYearFee(Base):
     academic_year_id: Mapped[int] = mapped_column(ForeignKey("academic_years.id"), nullable=False)
     school_fees: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     van_fees: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    opening_pending_fees: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     __table_args__ = (
         UniqueConstraint("student_id_fk", "academic_year_id", name="uq_student_academic_year"),
     )

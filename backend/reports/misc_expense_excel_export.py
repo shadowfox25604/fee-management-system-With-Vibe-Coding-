@@ -69,9 +69,6 @@ class MiscExpenseExcelExporter:
                     "num_format": "#,##0",
                 }
             )
-            blank_date_fmt = workbook.add_format({"bg_color": cls._DATE_BG, "border": 1})
-            blank_expense_fmt = workbook.add_format({"bg_color": cls._EXPENSE_BG, "border": 1})
-            blank_total_fmt = workbook.add_format({"bg_color": cls._DATE_BG, "border": 1})
 
             grand_total_label_fmt = workbook.add_format(
                 {
@@ -106,31 +103,22 @@ class MiscExpenseExcelExporter:
             sheet.freeze_panes(1, 0)
 
             group_totals = cls._group_totals(rows)
+            row_group_totals = cls._row_group_totals(rows, group_totals)
             grand_total = 0.0
 
             for row_idx, row in enumerate(rows, start=1):
-                show_date = bool(row.get("show_date", True))
-                show_head = bool(row.get("show_head", True))
                 expense_date = row.get("expense_date")
-                if show_date and isinstance(expense_date, date):
+                if isinstance(expense_date, date):
                     sheet.write(row_idx, 0, cls._format_date(expense_date), date_fmt)
                 else:
-                    sheet.write_blank(row_idx, 0, None, blank_date_fmt)
+                    sheet.write(row_idx, 0, "", date_fmt)
 
-                if show_head:
-                    sheet.write(row_idx, 1, str(row.get("head") or ""), expense_fmt)
-                else:
-                    sheet.write_blank(row_idx, 1, None, blank_expense_fmt)
-
+                sheet.write(row_idx, 1, str(row.get("head") or ""), expense_fmt)
                 sheet.write(row_idx, 2, str(row.get("particular") or ""), particulars_fmt)
                 amount = float(row.get("amount") or 0.0)
                 sheet.write(row_idx, 3, amount, amount_fmt)
                 grand_total += amount
-
-                if show_head and row_idx - 1 in group_totals:
-                    sheet.write(row_idx, 4, group_totals[row_idx - 1], group_total_fmt)
-                else:
-                    sheet.write_blank(row_idx, 4, None, blank_total_fmt)
+                sheet.write(row_idx, 4, row_group_totals[row_idx - 1], group_total_fmt)
 
             total_row = len(rows) + 1
             if rows:
@@ -166,6 +154,19 @@ class MiscExpenseExcelExporter:
                 start = idx + 1
                 group_sum = 0.0
         return totals
+
+    @staticmethod
+    def _row_group_totals(rows: list[dict], group_totals: dict[int, float]) -> list[float]:
+        """Repeat each group's subtotal on every row in that group."""
+        if not rows:
+            return []
+        out: list[float] = []
+        group_start = 0
+        for idx, row in enumerate(rows):
+            if idx > 0 and bool(row.get("show_head", True)):
+                group_start = idx
+            out.append(group_totals.get(group_start, float(row.get("amount") or 0.0)))
+        return out
 
     @staticmethod
     def _format_date(value: date) -> str:

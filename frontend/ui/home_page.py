@@ -18,9 +18,9 @@ from PySide6.QtWidgets import (
 
 from frontend.ui.edudash_widgets import (
     CardTitleBar,
-    DashMetricCard,
     ListRow,
     RevenueChartWidget,
+    SolidMetricCard,
     SurfaceCard,
 )
 from frontend.ui import theme
@@ -102,14 +102,15 @@ class HomePageTab(QWidget):
         metrics.setSpacing(14)
         metrics.setContentsMargins(0, 0, 0, 0)
         self._cards = [
-            DashMetricCard("Total Active Students", "0", "—", 0),
-            DashMetricCard("Total Inactive Students", "0", "—", 1),
-            DashMetricCard("Academic Years", "0", "—", 2),
-            DashMetricCard("Amount Collected This Week", "0", "—", 3),
-            DashMetricCard("Payments Made This Week", "0", "—", 4),
-            DashMetricCard("Payments Made Today", "0", "—", 5),
+            SolidMetricCard("Total Active Students", "0", "—", 0),
+            SolidMetricCard("Total Inactive Students", "0", "—", 1),
+            SolidMetricCard("Academic Years", "0", "—", 2),
+            SolidMetricCard("Amount Collected This Week", "0", "—", 3),
+            SolidMetricCard("Payments Made This Week", "0", "—", 4),
+            SolidMetricCard("Payments Made Today", "0", "—", 5),
         ]
         for i, card in enumerate(self._cards):
+            card.setMinimumHeight(100)
             metrics.addWidget(card, i // 3, i % 3)
         metrics_host = QWidget()
         metrics_host.setLayout(metrics)

@@ -6,6 +6,7 @@ from backend.repositories.student_repository import StudentRepository
 from backend.repositories.student_year_fee_repository import StudentYearFeeRepository
 from backend.services.academic_year_errors import AcademicYearProvisionError
 from backend.services.class_fee_service import ClassFeeService
+from backend.services.fee_rollover_service import FeeRolloverService
 from backend.services.village_van_fee_service import VillageVanFeeService
 
 
@@ -51,11 +52,16 @@ class AcademicYearService:
         self.session.refresh(year)
         if provision_students and class_fee_service and village_fee_service:
             try:
+                rollover = FeeRolloverService(self.session)
                 if self._should_promote_classes(year):
                     StudentRepository(self.session).promote_all_student_classes(
                         class_fee_service.school_fees_for_class_name
                     )
+                # Snapshot: new pending = existing pending + current school due + current van due.
+                rolled_by_student = rollover.compute_rollover_snapshot(year)
                 self._provision_students(year, class_fee_service, village_fee_service)
+                if rolled_by_student:
+                    rollover.apply_opening_pending(year, rolled_by_student)
                 self.session.commit()
             except Exception as exc:
                 self.session.rollback()

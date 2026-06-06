@@ -3,6 +3,7 @@ from datetime import date, datetime
 
 from sqlalchemy import func, not_, or_, select
 
+from backend.core.fee_due_display import pending_fees as combined_pending_fees
 from backend.core.fee_heads import van_fee_head_filter, van_fee_head_name_match
 from backend.core.payment_reference import allocate_unique_payment_reference
 from backend.models import AcademicYear, FeeHead, Invoice, Payment, PaymentAllocation, Student
@@ -11,6 +12,39 @@ from backend.services.fee_balance_service import FeeBalanceService
 
 _van_fee_head_filter = van_fee_head_filter
 _van_fee_head_name_match = van_fee_head_name_match
+
+
+def infer_payment_split_amounts(
+    amount: float,
+    discount_amount: float = 0.0,
+    *,
+    school_allocated: float = 0.0,
+    van_allocated: float = 0.0,
+) -> tuple[float, float]:
+    """Derive school/van cash columns for legacy rows that only stored the total amount."""
+    total = float(amount or 0.0)
+    discount = float(discount_amount or 0.0)
+    cash = max(0.0, total - discount)
+    school_alloc = float(school_allocated or 0.0)
+    van_alloc = float(van_allocated or 0.0)
+    eps = 1e-6
+
+    if van_alloc <= eps and school_alloc <= eps:
+        return cash, 0.0
+
+    school_cash_equiv = max(0.0, school_alloc - discount)
+    van_cash = max(0.0, van_alloc)
+    parts_sum = school_cash_equiv + van_cash
+    if parts_sum <= eps:
+        return cash, 0.0
+    if van_cash <= eps:
+        return min(cash, school_cash_equiv if school_cash_equiv > eps else cash), 0.0
+    if school_cash_equiv <= eps:
+        return 0.0, min(cash, van_cash)
+
+    van_amount = min(cash, cash * (van_cash / parts_sum))
+    school_amount = cash - van_amount
+    return round(school_amount, 2), round(van_amount, 2)
 
 
 class PaymentRepository:
@@ -31,6 +65,75 @@ class PaymentRepository:
         return y.id if y else None
 
     @staticmethod
+    def _sort_invoices_chronologically(invoices) -> list:
+        return sorted(
+            invoices,
+            key=lambda inv: (
+                int(getattr(inv, "academic_year_id", 0) or 0),
+                getattr(inv, "due_date", None) or date.min,
+                int(getattr(inv, "id", 0) or 0),
+            ),
+        )
+
+    def _pending_invoice_order(self, school_invoices, van_invoices) -> list:
+        """All prior-year invoices (school + van), oldest first."""
+        current_id = self._current_academic_year_id()
+        pending: list = []
+        for inv in list(school_invoices) + list(van_invoices):
+            if current_id is None or int(getattr(inv, "academic_year_id", 0) or 0) != int(current_id):
+                pending.append(inv)
+        return self._sort_invoices_chronologically(pending)
+
+    def _current_school_invoice_order(self, school_invoices) -> list:
+        current_id = self._current_academic_year_id()
+        current = [
+            inv
+            for inv in school_invoices
+            if current_id is not None
+            and int(getattr(inv, "academic_year_id", 0) or 0) == int(current_id)
+        ]
+        return self._sort_invoices_chronologically(current)
+
+    def _current_van_invoice_order(self, van_invoices) -> list:
+        current_id = self._current_academic_year_id()
+        current = [
+            inv
+            for inv in van_invoices
+            if current_id is not None
+            and int(getattr(inv, "academic_year_id", 0) or 0) == int(current_id)
+        ]
+        return self._sort_invoices_chronologically(current)
+
+    def _school_payment_invoice_order(self, school_invoices, van_invoices) -> list:
+        """Pending-year invoices (school + van) first, then current-year school invoices."""
+        current_id = self._current_academic_year_id()
+        pending: list = []
+        current_school: list = []
+        for inv in school_invoices:
+            if current_id is not None and int(getattr(inv, "academic_year_id", 0) or 0) == int(current_id):
+                current_school.append(inv)
+            else:
+                pending.append(inv)
+        for inv in van_invoices:
+            if current_id is None or int(getattr(inv, "academic_year_id", 0) or 0) != int(current_id):
+                pending.append(inv)
+        return self._sort_invoices_chronologically(pending) + self._sort_invoices_chronologically(
+            current_school
+        )
+
+    def _van_payment_invoice_order(self, van_invoices) -> list:
+        """Pending-year van invoices first, then current-year van invoices."""
+        current_id = self._current_academic_year_id()
+        pending: list = []
+        current: list = []
+        for inv in van_invoices:
+            if current_id is not None and int(getattr(inv, "academic_year_id", 0) or 0) == int(current_id):
+                current.append(inv)
+            else:
+                pending.append(inv)
+        return self._sort_invoices_chronologically(pending) + self._sort_invoices_chronologically(current)
+
+    @staticmethod
     def _not_reverted_filter():
         return or_(Payment.is_reverted.is_(False), Payment.is_reverted.is_(None))
 
@@ -47,15 +150,45 @@ class PaymentRepository:
         return float(due - paid)
 
     def get_students_cumulative_payment_discount(self, student_ids):
-        """Sum of split-payment school discounts recorded on Payment.discount_amount per student."""
+        """Sum school discounts that were actually allocated to school (non-van) invoices."""
         if not student_ids:
             return {}
-        rows = self.session.execute(
-            select(Payment.student_id_fk, func.coalesce(func.sum(Payment.discount_amount), 0.0))
-            .where(Payment.student_id_fk.in_(student_ids), self._not_reverted_filter())
-            .group_by(Payment.student_id_fk)
+        payments = self.session.execute(
+            select(
+                Payment.id,
+                Payment.student_id_fk,
+                Payment.discount_amount,
+            ).where(Payment.student_id_fk.in_(student_ids), self._not_reverted_filter())
         ).all()
-        return {str(r[0]): float(r[1] or 0.0) for r in rows}
+        if not payments:
+            return {}
+        payment_ids = [int(row[0]) for row in payments]
+        school_alloc_rows = self.session.execute(
+            select(
+                PaymentAllocation.payment_id,
+                func.coalesce(func.sum(PaymentAllocation.allocated_amount), 0.0),
+            )
+            .join(Invoice, Invoice.id == PaymentAllocation.invoice_id)
+            .join(FeeHead, FeeHead.id == Invoice.fee_head_id)
+            .where(
+                PaymentAllocation.payment_id.in_(payment_ids),
+                not_(_van_fee_head_filter()),
+            )
+            .group_by(PaymentAllocation.payment_id)
+        ).all()
+        school_alloc_by_payment = {int(pid): float(total or 0.0) for pid, total in school_alloc_rows}
+        credited: dict[str, float] = {}
+        for payment_id, student_id_fk, discount_amount in payments:
+            discount = float(discount_amount or 0.0)
+            if discount <= 0:
+                continue
+            school_alloc = float(school_alloc_by_payment.get(int(payment_id), 0.0))
+            if school_alloc <= 0:
+                continue
+            credited[str(student_id_fk)] = credited.get(str(student_id_fk), 0.0) + min(
+                discount, school_alloc
+            )
+        return credited
 
     def _allocate_to_invoices(self, payment_id: int, amount: float, invoices) -> float:
         rem = float(amount or 0.0)
@@ -76,6 +209,46 @@ class PaymentRepository:
             )
             rem -= alloc
         return rem
+
+    def _allocate_split_payment(
+        self,
+        payment_id: int,
+        van_amount: float,
+        school_amount: float,
+        discount_amount: float,
+        school_invoices,
+        van_invoices,
+    ) -> tuple[float, float]:
+        """Debit combined pending first, then current-year school and van from remaining budgets."""
+        eps = 1e-6
+        school_budget = float(school_amount or 0.0) + float(discount_amount or 0.0)
+        van_budget = float(van_amount or 0.0)
+        for inv in self._pending_invoice_order(school_invoices, van_invoices):
+            if school_budget <= eps and van_budget <= eps:
+                break
+            bal = float(inv.amount_due or 0.0) - float(inv.amount_paid or 0.0)
+            if bal <= eps:
+                continue
+            alloc = min(bal, school_budget + van_budget)
+            from_school = min(alloc, school_budget)
+            from_van = alloc - from_school
+            inv.amount_paid += alloc
+            self.session.add(
+                PaymentAllocation(
+                    payment_id=int(payment_id),
+                    invoice_id=int(inv.id),
+                    allocated_amount=float(alloc),
+                )
+            )
+            school_budget -= from_school
+            van_budget -= from_van
+        school_budget = self._allocate_to_invoices(
+            payment_id, school_budget, self._current_school_invoice_order(school_invoices)
+        )
+        van_budget = self._allocate_to_invoices(
+            payment_id, van_budget, self._current_van_invoice_order(van_invoices)
+        )
+        return school_budget, van_budget
 
     def get_students_school_fee_summary(self, student_ids):
         return self._balance.get_students_school_fee_summary(student_ids)
@@ -142,6 +315,21 @@ class PaymentRepository:
                 return h
         return None
 
+    def _sync_invoices_if_possible(
+        self, student: Student, van_amount: float, school_amount: float, invoice_anchor_date: date
+    ) -> None:
+        """Create tariff invoice lines when fee heads exist (best-effort for legacy payments)."""
+        van_fh = self._first_transport_fee_head()
+        school_fh = self._first_school_fee_head()
+        if van_fh is None and school_fh is None:
+            return
+        self._balance.sync_tariff_invoices_for_student(
+            student,
+            invoice_anchor_date,
+            school_fee_head=school_fh,
+            van_fee_head=van_fh,
+        )
+
     def _ensure_split_payment_invoice_capacity(
         self, student: Student, van_amount: float, school_amount: float, invoice_anchor_date: date
     ):
@@ -175,6 +363,8 @@ class PaymentRepository:
         d = payment_date or date.today()
         if d > date.today():
             raise ValueError("Payment date cannot be in the future")
+        amt = float(amount or 0.0)
+        self._sync_invoices_if_possible(student, 0.0, amt, d)
         payment = Payment(
             student_id_fk=student.student_id,
             payment_date=d,
@@ -189,13 +379,24 @@ class PaymentRepository:
         self.session.add(payment)
         self.session.flush()
         rem = float(amount or 0.0)
-        invoices = self.session.scalars(
+        van_invoices = self.session.scalars(
             select(Invoice)
+            .join(FeeHead, FeeHead.id == Invoice.fee_head_id)
             .outerjoin(AcademicYear, AcademicYear.id == Invoice.academic_year_id)
-            .where(Invoice.student_id_fk == student.student_id)
+            .where(Invoice.student_id_fk == student.student_id, _van_fee_head_filter())
             .order_by(*self._invoice_year_order())
         ).all()
-        rem = self._allocate_to_invoices(payment.id, rem, invoices)
+        school_invoices = self.session.scalars(
+            select(Invoice)
+            .join(FeeHead, FeeHead.id == Invoice.fee_head_id)
+            .outerjoin(AcademicYear, AcademicYear.id == Invoice.academic_year_id)
+            .where(Invoice.student_id_fk == student.student_id, not_(_van_fee_head_filter()))
+            .order_by(*self._invoice_year_order())
+        ).all()
+        rem_s, rem_v = self._allocate_split_payment(
+            payment.id, 0.0, amt, 0.0, school_invoices, van_invoices
+        )
+        rem = rem_s + rem_v
         self.session.commit()
         self.session.refresh(payment)
         return payment
@@ -228,14 +429,22 @@ class PaymentRepository:
         eps = 1e-6
         if discount_amount > school_amount + eps:
             raise ValueError("Discount cannot exceed school fee payment amount")
-        school_cap = float(
-            due.get("school_payable", due.get("school_pending", 0.0) + due.get("school_current", 0.0))
-        )
+        pending_total = combined_pending_fees(due)
+        school_current = float(due.get("school_current", due.get("fee_due", 0.0)) or 0.0)
+        van_current = float(due.get("van_due", due.get("van_current", 0.0)) or 0.0)
+        school_cap = float(due.get("school_payable", 0.0))
+        if school_cap <= 0:
+            school_cap = max(0.0, pending_total + school_current)
         if school_amount + discount_amount > school_cap + eps:
             raise ValueError("School fee payment plus discount exceeds school fees due (pending + current year)")
-        van_cap = float(due.get("van_payable", due.get("van_pending", 0.0) + due.get("van_current", 0.0)))
+        van_cap = float(due.get("van_payable", 0.0))
+        if van_cap <= 0:
+            van_cap = max(0.0, pending_total + van_current)
         if van_amount > van_cap + eps:
             raise ValueError("Van fee payment exceeds van fees due (pending + current year)")
+        max_total = max(0.0, school_cap + van_current)
+        if van_amount + school_amount + discount_amount > max_total + eps:
+            raise ValueError("Total payment exceeds outstanding fees (pending + current year)")
         return van_amount, school_amount, discount_amount, d
 
     def create_split_payment(
@@ -248,7 +457,7 @@ class PaymentRepository:
         discount_amount: float = 0.0,
         payment_date: date | None = None,
     ):
-        """Apply school payments only to non-van invoices and van payments only to van/transport invoices (due date order)."""
+        """Apply payments to combined pending first, then current-year school and van invoices."""
         van_amount, school_amount, discount_amount, d = self.validate_split_payment_inputs(
             student, van_amount, school_amount, discount_amount, payment_date
         )
@@ -285,8 +494,9 @@ class PaymentRepository:
             .where(Invoice.student_id_fk == student.student_id, not_(_van_fee_head_filter()))
             .order_by(*self._invoice_year_order())
         ).all()
-        rem_v = self._allocate_to_invoices(payment.id, van_amount, van_invoices)
-        rem_s = self._allocate_to_invoices(payment.id, school_allocate, school_invoices)
+        rem_s, rem_v = self._allocate_split_payment(
+            payment.id, van_amount, school_amount, discount_amount, school_invoices, van_invoices
+        )
         eps = 1e-6
         if rem_v > eps or rem_s > eps:
             self.session.rollback()
@@ -348,24 +558,31 @@ class PaymentRepository:
         ).all()
 
         eps = 1e-6
+        school_invoices = self._student_school_invoices(student_id)
+        van_invoices = self._student_van_invoices(student_id)
         for payment in payments:
             school_amount = float(getattr(payment, "school_amount", 0.0) or 0.0)
             van_amount = float(getattr(payment, "van_amount", 0.0) or 0.0)
             discount_amount = float(payment.discount_amount or 0.0)
             if school_amount > eps or van_amount > eps:
-                rem_v = self._allocate_to_invoices(payment.id, van_amount, self._student_van_invoices(student_id))
-                rem_s = self._allocate_to_invoices(
+                rem_s, rem_v = self._allocate_split_payment(
                     payment.id,
-                    school_amount + discount_amount,
-                    self._student_school_invoices(student_id),
+                    van_amount,
+                    school_amount,
+                    discount_amount,
+                    school_invoices,
+                    van_invoices,
                 )
-                rem_total = rem_v + rem_s
             else:
-                rem_total = self._allocate_to_invoices(
+                rem_s, rem_v = self._allocate_split_payment(
                     payment.id,
+                    0.0,
                     float(payment.amount or 0.0),
-                    self._student_all_invoices(student_id),
+                    0.0,
+                    school_invoices,
+                    van_invoices,
                 )
+            rem_total = rem_s + rem_v
             if rem_total > eps:
                 self._allocate_to_invoices(payment.id, rem_total, self._student_all_invoices(student_id))
 
@@ -473,6 +690,7 @@ class PaymentRepository:
             or 0.0
         )
         collected_week -= reverted_week
+        live_filter = self._not_reverted_filter()
         payments_week = int(
             self.session.scalar(
                 select(func.count())
@@ -480,13 +698,16 @@ class PaymentRepository:
                 .where(
                     Payment.payment_date >= week_start,
                     Payment.payment_date <= today,
+                    live_filter,
                 )
             )
             or 0
         )
         payments_today = int(
             self.session.scalar(
-                select(func.count()).select_from(Payment).where(Payment.payment_date == today)
+                select(func.count())
+                .select_from(Payment)
+                .where(Payment.payment_date == today, live_filter)
             )
             or 0
         )
@@ -553,10 +774,65 @@ class PaymentRepository:
                 )
             )
         stmt = stmt.order_by(Payment.payment_date.desc(), Payment.id.desc()).limit(limit)
-        return [self._payment_history_row(p, s) for p, s in self.session.execute(stmt).all()]
+        rows = self.session.execute(stmt).all()
+        eps = 1e-6
+        legacy_ids = [
+            int(p.id)
+            for p, _s in rows
+            if abs(float(getattr(p, "school_amount", 0.0) or 0.0)) <= eps
+            and abs(float(getattr(p, "van_amount", 0.0) or 0.0)) <= eps
+        ]
+        alloc_map = self._allocation_splits_for_payments(legacy_ids)
+        return [
+            self._payment_history_row(p, s, alloc_map.get(int(p.id)))
+            for p, s in rows
+        ]
+
+    def _allocation_splits_for_payments(
+        self, payment_ids: list[int]
+    ) -> dict[int, tuple[float, float]]:
+        if not payment_ids:
+            return {}
+        school_totals: dict[int, float] = {}
+        van_totals: dict[int, float] = {}
+        stmt = (
+            select(
+                PaymentAllocation.payment_id,
+                PaymentAllocation.allocated_amount,
+                FeeHead.head_name,
+            )
+            .join(Invoice, Invoice.id == PaymentAllocation.invoice_id)
+            .join(FeeHead, FeeHead.id == Invoice.fee_head_id)
+            .where(PaymentAllocation.payment_id.in_(payment_ids))
+        )
+        for payment_id, allocated_amount, head_name in self.session.execute(stmt).all():
+            pid = int(payment_id)
+            amt = float(allocated_amount or 0.0)
+            if _van_fee_head_name_match(head_name or ""):
+                van_totals[pid] = van_totals.get(pid, 0.0) + amt
+            else:
+                school_totals[pid] = school_totals.get(pid, 0.0) + amt
+        return {
+            pid: (school_totals.get(pid, 0.0), van_totals.get(pid, 0.0)) for pid in payment_ids
+        }
 
     @staticmethod
-    def _payment_history_row(p: Payment, s: Student) -> dict:
+    def _payment_history_row(
+        p: Payment,
+        s: Student,
+        allocation_split: tuple[float, float] | None = None,
+    ) -> dict:
+        school_amount = float(getattr(p, "school_amount", 0.0) or 0.0)
+        van_amount = float(getattr(p, "van_amount", 0.0) or 0.0)
+        eps = 1e-6
+        if school_amount <= eps and van_amount <= eps:
+            school_alloc, van_alloc = allocation_split or (0.0, 0.0)
+            school_amount, van_amount = infer_payment_split_amounts(
+                float(p.amount or 0.0),
+                float(p.discount_amount or 0.0),
+                school_allocated=school_alloc,
+                van_allocated=van_alloc,
+            )
         return {
             "payment_date": p.payment_date,
             "reference_no": p.reference_no or "",
@@ -568,12 +844,43 @@ class PaymentRepository:
             "mother_name": getattr(s, "mother_name", None) or "",
             "guardian_name": getattr(s, "father_name", None) or s.guardian_name or "",
             "amount": float(p.amount or 0.0),
+            "school_amount": school_amount,
+            "van_amount": van_amount,
             "discount": float(p.discount_amount or 0.0),
             "mode": p.mode or "",
             "operator": p.operator_name or "",
             "is_reverted": bool(getattr(p, "is_reverted", False)),
             "status": "Payment reverted" if bool(getattr(p, "is_reverted", False)) else "Paid",
         }
+
+    def backfill_legacy_payment_splits(self) -> int:
+        """Persist school/van columns on payments created before split columns existed."""
+        eps = 1e-6
+        payments = self.session.scalars(
+            select(Payment).where(
+                func.abs(Payment.school_amount) <= eps,
+                func.abs(Payment.van_amount) <= eps,
+                Payment.amount > eps,
+            )
+        ).all()
+        if not payments:
+            return 0
+        alloc_map = self._allocation_splits_for_payments([int(p.id) for p in payments])
+        updated = 0
+        for payment in payments:
+            school_alloc, van_alloc = alloc_map.get(int(payment.id), (0.0, 0.0))
+            school_amount, van_amount = infer_payment_split_amounts(
+                float(payment.amount or 0.0),
+                float(payment.discount_amount or 0.0),
+                school_allocated=school_alloc,
+                van_allocated=van_alloc,
+            )
+            payment.school_amount = school_amount
+            payment.van_amount = van_amount
+            updated += 1
+        if updated:
+            self.session.commit()
+        return updated
 
     def _student_ids_for_class(self, class_key: str) -> list[str]:
         from backend.core.fee_control_constants import PASSED_OUT_CLASS_KEY, normalize_class_name

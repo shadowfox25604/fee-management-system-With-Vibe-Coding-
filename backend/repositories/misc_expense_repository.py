@@ -191,8 +191,6 @@ class MiscExpenseRepository:
                 )
             )
         stmt = stmt.order_by(
-            MiscExpenseEntry.entry_date.desc(),
-            MiscExpense.head.asc(),
             MiscExpenseEntry.id.desc(),
         ).limit(int(limit))
         out: list[dict] = []
@@ -267,6 +265,34 @@ class MiscExpenseRepository:
             prev_date = entry_date
             prev_head = head
         return rows
+
+    def daily_misc_expenses_for_month(self, year: int, month: int) -> dict:
+        """Per-day miscellaneous expense totals by entry date."""
+        last_day = calendar.monthrange(year, month)[1]
+        start = date(year, month, 1)
+        end = date(year, month, last_day)
+        rows = self.session.execute(
+            select(MiscExpenseEntry.entry_date, func.sum(MiscExpenseEntry.amount))
+            .where(
+                MiscExpenseEntry.entry_date >= start,
+                MiscExpenseEntry.entry_date <= end,
+            )
+            .group_by(MiscExpenseEntry.entry_date)
+        ).all()
+        by_day: dict[int, float] = {}
+        for entry_date, total in rows:
+            if isinstance(entry_date, date):
+                by_day[int(entry_date.day)] = float(total or 0.0)
+        amounts = [by_day.get(day, 0.0) for day in range(1, last_day + 1)]
+        month_label = date(year, month, 1).strftime("%B %Y")
+        return {
+            "year": year,
+            "month": month,
+            "days_in_month": last_day,
+            "amounts": amounts,
+            "reverted_amounts": [0.0] * last_day,
+            "month_label": month_label,
+        }
 
     def entry_date_bounds(self) -> tuple[date | None, date | None]:
         min_date, max_date = self.session.execute(

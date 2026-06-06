@@ -19,6 +19,19 @@ def test_add_expense_with_entries(db_session):
     assert svc.total_spent() == pytest.approx(6450.0, abs=0.01)
 
 
+def test_entry_history_newest_entry_first(db_session):
+    svc = MiscExpenseService(db_session)
+    old_expense = svc.add_new_expense("Rent", date(2024, 1, 1))
+    new_expense = svc.add_new_expense("Water Bill", date(2026, 6, 1))
+    svc.add_entry(new_expense.id, "June bill", 500.0)
+    svc.add_entry(old_expense.id, "Backdated rent line", 1000.0)
+
+    history = svc.list_entry_history()
+    assert len(history) == 2
+    assert history[0]["particular"] == "Backdated rent line"
+    assert history[1]["particular"] == "June bill"
+
+
 def test_multiple_expenses(db_session):
     svc = MiscExpenseService(db_session)
     rent_expense = svc.add_new_expense("Rent", date(2026, 1, 6))
@@ -104,6 +117,14 @@ def test_export_group_totals():
     assert totals[0] == pytest.approx(1250.0, abs=0.01)
     assert totals[2] == pytest.approx(30000.0, abs=0.01)
     assert totals[3] == pytest.approx(450.0, abs=0.01)
+
+    row_totals = MiscExpenseExcelExporter._row_group_totals(rows, totals)
+    assert row_totals == [
+        pytest.approx(1250.0, abs=0.01),
+        pytest.approx(1250.0, abs=0.01),
+        pytest.approx(30000.0, abs=0.01),
+        pytest.approx(450.0, abs=0.01),
+    ]
 
 
 def test_export_rows_filter_by_month(db_session):

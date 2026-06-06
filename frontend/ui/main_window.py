@@ -73,6 +73,7 @@ from frontend.ui.school_branding import (
     school_window_title,
 )
 from frontend.ui.edudash_widgets import CardTitleBar, GradientProfileCard, SurfaceCard, wrap_page
+from frontend.ui.fee_control_page import FeeControlPage
 from frontend.ui.home_page import HomePageTab
 from frontend.ui.misc_expenses_page import MiscExpensesPage
 from frontend.ui.payment_history_export_dialog import PaymentHistoryExportDialog
@@ -320,6 +321,9 @@ class MainWindow(QMainWindow):
         details = getattr(self, "_student_details_tab", None)
         if details is not None:
             details.refresh_theme()
+        fee_control = getattr(self, "_fee_control_page", None)
+        if fee_control is not None:
+            fee_control.refresh_theme()
         add_village = getattr(self, "_add_village_btn", None)
         if add_village is not None:
             style_fee_action_button(add_village)
@@ -1276,89 +1280,23 @@ class MainWindow(QMainWindow):
         return wrap_page("Backup", breadcrumb_trail("Backup"), body)
 
     def _build_fee_control_tab(self):
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.setContentsMargins(0, 0, 0, 0)
-        intro = SurfaceCard()
-        school_lbl = QLabel(
-            "School fees: set the tariff for each class (fixed list). Apply updates matching students’ school fees "
-            "and tuition invoices only."
+        self._fee_control_page = FeeControlPage(
+            class_fee_service=self.class_fee_service,
+            village_van_fee_service=self.village_van_fee_service,
+            academic_year_service=self.academic_year_service,
+            on_apply_school=self._on_fee_control_apply_clicked,
+            on_apply_van=self._on_van_fee_control_apply_clicked,
+            on_manage_years=self._on_manage_academic_years_clicked,
+            on_add_village=self._on_add_village_fee_clicked,
+            parent=self,
         )
-        school_lbl.setWordWrap(True)
-        school_lbl.setProperty("role", "muted")
-        van_lbl = QLabel(
-            "Van fees: set tariffs per village. Use “Add village” for new villages. Own-transport students are skipped."
-        )
-        van_lbl.setWordWrap(True)
-        van_lbl.setProperty("role", "muted")
-        confirm_lbl = QLabel("A confirmation is required before saving each row.")
-        confirm_lbl.setProperty("role", "hint")
-        intro.body.addWidget(school_lbl)
-        intro.body.addWidget(van_lbl)
-        intro.body.addWidget(confirm_lbl)
-        academic_years_row = QHBoxLayout()
-        manage_years_btn = QPushButton("Manage academic years")
-        style_fee_action_button(manage_years_btn)
-        self._manage_years_btn = manage_years_btn
-        manage_years_btn.setToolTip(
-            "Add or edit academic year date ranges (DD/MM/YYYY). "
-            "Adding a new forward year promotes active students one class (Class 10→Passed Out). "
-            "Inactive students are skipped; old pending fees remain."
-        )
-        manage_years_btn.clicked.connect(self._on_manage_academic_years_clicked)
-        academic_years_row.addWidget(manage_years_btn)
-        academic_years_row.addStretch(1)
-        intro.body.addLayout(academic_years_row)
-        layout.addWidget(intro)
-
-        tables_row = QHBoxLayout()
-        tables_row.setSpacing(16)
-        self._fee_control_amount_edits = {}
-        tbl_school = QTableWidget(len(FIXED_CLASS_KEYS), 3)
-        tbl_school.setHorizontalHeaderLabels(["Class", "School fee (₹)", "Action"])
-        configure_fee_editor_table(tbl_school)
-        for row, class_key in enumerate(FIXED_CLASS_KEYS):
-            class_item = table_item(class_key)
-            tbl_school.setItem(row, 0, class_item)
-            amount_edit = QLineEdit()
-            amount_edit.setPlaceholderText("20000")
-            self._fee_control_amount_edits[class_key] = amount_edit
-            tbl_school.setCellWidget(row, 1, amount_edit)
-            tbl_school.setCellWidget(
-                row,
-                2,
-                apply_button_cell(lambda _=False, ck=class_key: self._on_fee_control_apply_clicked(ck)),
-            )
-
-        self._van_fee_control_panel = QWidget()
-        van_panel_layout = QVBoxLayout(self._van_fee_control_panel)
-        self._van_fee_control_table = self._create_van_fee_control_table()
-        van_panel_layout.addWidget(self._van_fee_control_table)
-        self._add_village_btn = QPushButton("Add village")
-        style_fee_action_button(self._add_village_btn)
-        self._add_village_btn.clicked.connect(self._on_add_village_fee_clicked)
-        add_village_row = QHBoxLayout()
-        add_village_row.addStretch(1)
-        add_village_row.addWidget(self._add_village_btn)
-        van_panel_layout.addLayout(add_village_row)
-
-        school_card = SurfaceCard()
-        school_title = QLabel("School fees by class")
-        school_title.setProperty("role", "section-title")
-        school_card.body.addWidget(school_title)
-        school_card.body.addWidget(tbl_school, 1)
-        van_card = SurfaceCard()
-        van_title = QLabel("Van fees by village")
-        van_title.setProperty("role", "section-title")
-        van_card.body.addWidget(van_title)
-        van_card.body.addWidget(self._van_fee_control_panel, 1)
-        tables_row.addWidget(school_card, 1)
-        tables_row.addWidget(van_card, 1)
-        layout.addLayout(tables_row, 1)
-        self._fee_control_table = tbl_school
-        self._refresh_fee_control_amounts()
-        self._refresh_van_fee_control_amounts()
-        return wrap_page("Fee Control", breadcrumb_trail("Fee Control"), w)
+        self._fee_control_amount_edits = self._fee_control_page.fee_control_amount_edits
+        self._van_fee_control_amount_edits = self._fee_control_page.van_fee_control_amount_edits
+        self._fee_control_table = self._fee_control_page.fee_control_table
+        self._van_fee_control_table = self._fee_control_page.van_fee_control_table
+        self._add_village_btn = self._fee_control_page.add_village_btn
+        self._manage_years_btn = self._fee_control_page.manage_years_btn
+        return wrap_page("Fee Control", breadcrumb_trail("Fee Control"), self._fee_control_page)
 
     def _on_manage_academic_years_clicked(self) -> None:
         dlg = AcademicYearDialog(
@@ -1370,6 +1308,9 @@ class MainWindow(QMainWindow):
         dlg.exec()
         self.perform_search(reset_page=False)
         self._invalidate_payment_student_cache()
+        page = getattr(self, "_fee_control_page", None)
+        if page is not None:
+            page.reload_stats()
 
     @staticmethod
     def _format_fee_due_lines(due: dict) -> str:
@@ -1380,38 +1321,12 @@ class MainWindow(QMainWindow):
             f"Total payable: {due.get('total', 0):.2f}"
         )
 
-    def _create_van_fee_control_table(self) -> QTableWidget:
-        self._van_fee_control_amount_edits = {}
-        keys = self.village_van_fee_service.list_village_keys_for_fee_control()
-        tbl = QTableWidget(len(keys), 3)
-        tbl.setHorizontalHeaderLabels(["Village", "Van fee (₹)", "Action"])
-        configure_fee_editor_table(tbl)
-        for row, village_key in enumerate(keys):
-            tbl.setItem(row, 0, table_item(village_key))
-            v_edit = QLineEdit()
-            v_edit.setPlaceholderText("0")
-            self._van_fee_control_amount_edits[village_key] = v_edit
-            tbl.setCellWidget(row, 1, v_edit)
-            tbl.setCellWidget(
-                row,
-                2,
-                apply_button_cell(lambda _=False, vk=village_key: self._on_van_fee_control_apply_clicked(vk)),
-            )
-        return tbl
-
     def _rebuild_van_fee_control_table(self) -> None:
-        panel = getattr(self, "_van_fee_control_panel", None)
-        if panel is None:
-            return
-        lay = panel.layout()
-        if lay is None or lay.count() < 1:
-            return
-        old_tbl = lay.itemAt(0).widget()
-        new_tbl = self._create_van_fee_control_table()
-        lay.replaceWidget(old_tbl, new_tbl)
-        old_tbl.deleteLater()
-        self._van_fee_control_table = new_tbl
-        self._refresh_van_fee_control_amounts()
+        page = getattr(self, "_fee_control_page", None)
+        if page is not None:
+            page.rebuild_van_table()
+            self._van_fee_control_amount_edits = page.van_fee_control_amount_edits
+            self._van_fee_control_table = page.van_fee_control_table
 
     def _on_add_village_fee_clicked(self) -> None:
         dlg = QDialog(self)
@@ -1470,8 +1385,12 @@ class MainWindow(QMainWindow):
                 if not has_user_input:
                     page.sync_default_working_days_current_month()
         if index == getattr(self, "_fee_control_tab_index", -1):
-            self._refresh_fee_control_amounts()
-            self._refresh_van_fee_control_amounts()
+            page = getattr(self, "_fee_control_page", None)
+            if page is not None:
+                page.refresh_amounts()
+            else:
+                self._refresh_fee_control_amounts()
+                self._refresh_van_fee_control_amounts()
         if index == getattr(self, "_payment_history_tab_index", -1):
             self._refresh_payment_history_table(reset_page=False)
             if hasattr(self, "_payment_history_pagination"):
@@ -3564,6 +3483,10 @@ class MainWindow(QMainWindow):
         self._render_payment_history_page()
 
     def _refresh_fee_control_amounts(self):
+        page = getattr(self, "_fee_control_page", None)
+        if page is not None:
+            page.refresh_school_amounts()
+            return
         if not hasattr(self, "_fee_control_amount_edits"):
             return
         for class_key, edit in self._fee_control_amount_edits.items():
@@ -3571,6 +3494,10 @@ class MainWindow(QMainWindow):
             edit.setText(f"{amt:.2f}")
 
     def _refresh_van_fee_control_amounts(self):
+        page = getattr(self, "_fee_control_page", None)
+        if page is not None:
+            page.refresh_van_amounts()
+            return
         if not hasattr(self, "_van_fee_control_amount_edits"):
             return
         for village_key, edit in self._van_fee_control_amount_edits.items():

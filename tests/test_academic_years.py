@@ -99,7 +99,7 @@ def test_payment_applies_to_pending_year_first(db_session):
 
     db_session.add(
         Invoice(
-            student_id_fk=st.id,
+            student_id_fk=st.student_id,
             academic_year_id=y1.id,
             fee_head_id=t.id,
             period_label="y1",
@@ -110,7 +110,7 @@ def test_payment_applies_to_pending_year_first(db_session):
     )
     db_session.add(
         Invoice(
-            student_id_fk=st.id,
+            student_id_fk=st.student_id,
             academic_year_id=y2.id,
             fee_head_id=t.id,
             period_label="y2",
@@ -122,17 +122,17 @@ def test_payment_applies_to_pending_year_first(db_session):
     db_session.commit()
 
     balance = FeeBalanceService(db_session)
-    due = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    due = balance.get_students_due_breakdown([st.student_id], {st.student_id: 0.0})[st.student_id]
     assert due["school_pending"] >= 5000.0 - 1e-6
     assert due["school_current"] >= 5000.0 - 1e-6
 
     pay_repo = PaymentRepository(db_session)
     pay_repo.create_split_payment(st, 0.0, 2000.0, "cash", "test", 0.0, date(2025, 6, 1))
     inv_old = db_session.scalars(
-        select(Invoice).where(Invoice.student_id_fk == st.id, Invoice.academic_year_id == y1.id)
+        select(Invoice).where(Invoice.student_id_fk == st.student_id, Invoice.academic_year_id == y1.id)
     ).first()
     inv_new = db_session.scalars(
-        select(Invoice).where(Invoice.student_id_fk == st.id, Invoice.academic_year_id == y2.id)
+        select(Invoice).where(Invoice.student_id_fk == st.student_id, Invoice.academic_year_id == y2.id)
     ).first()
     assert float(inv_old.amount_paid) == 2000.0
     assert float(inv_new.amount_paid) == 0.0
@@ -169,7 +169,7 @@ def test_tariff_only_pending_cleared_before_current_year(db_session):
     # Only current year has an invoice (legacy-style data).
     db_session.add(
         Invoice(
-            student_id_fk=st.id,
+            student_id_fk=st.student_id,
             academic_year_id=y_cur.id,
             fee_head_id=t.id,
             period_label="cur-only",
@@ -182,12 +182,12 @@ def test_tariff_only_pending_cleared_before_current_year(db_session):
 
     balance = FeeBalanceService(db_session)
     pay_repo = PaymentRepository(db_session)
-    before = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    before = balance.get_students_due_breakdown([st.student_id], {st.student_id: 0.0})[st.student_id]
     assert before["school_pending"] == pytest.approx(8000.0, abs=0.02)
     assert before["school_current"] == pytest.approx(10000.0, abs=0.02)
 
     pay_repo.create_split_payment(st, 0.0, 5000.0, "cash", "test", 0.0, date(2025, 6, 1))
-    after = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    after = balance.get_students_due_breakdown([st.student_id], {st.student_id: 0.0})[st.student_id]
     assert after["school_pending"] == pytest.approx(3000.0, abs=0.02)
     assert after["school_current"] == pytest.approx(10000.0, abs=0.02)
 
@@ -221,11 +221,14 @@ def test_due_breakdown_splits_pending_and_current(db_session):
     db_session.commit()
 
     balance = FeeBalanceService(db_session)
-    due = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    due = balance.get_students_due_breakdown([st.student_id], {st.student_id: 0.0})[st.student_id]
     assert due["school_pending"] == pytest.approx(3000.0, abs=0.01)
     assert due["school_current"] == pytest.approx(4000.0, abs=0.01)
     assert due["van_pending"] == pytest.approx(500.0, abs=0.01)
     assert due["van_current"] == pytest.approx(600.0, abs=0.01)
+    assert due["pending_fees"] == pytest.approx(
+        due["school_pending"] + due["van_pending"], abs=0.01
+    )
 
 
 def test_new_student_has_no_pending_from_older_years(db_session):
@@ -255,7 +258,7 @@ def test_new_student_has_no_pending_from_older_years(db_session):
     StudentYearFeeRepository(db_session).sync_student_to_current_year(st)
     db_session.commit()
 
-    due = FeeBalanceService(db_session).get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    due = FeeBalanceService(db_session).get_students_due_breakdown([st.student_id], {st.student_id: 0.0})[st.student_id]
     assert due["school_pending"] == pytest.approx(0.0, abs=0.01)
     assert due["van_pending"] == pytest.approx(0.0, abs=0.01)
     assert due["fee_due"] == pytest.approx(19870.18, abs=0.01)
@@ -295,12 +298,12 @@ def test_school_payment_clears_pending_before_current_year(db_session):
 
     balance = FeeBalanceService(db_session)
     pay_repo = PaymentRepository(db_session)
-    before = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    before = balance.get_students_due_breakdown([st.student_id], {st.student_id: 0.0})[st.student_id]
     assert before["school_pending"] == pytest.approx(2000.0, abs=0.02)
     assert before["fee_due"] == pytest.approx(6000.0, abs=0.02)
 
     pay_repo.create_split_payment(st, 0.0, 2500.0, "cash", "test", 0.0, date(2025, 6, 1))
-    after = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    after = balance.get_students_due_breakdown([st.student_id], {st.student_id: 0.0})[st.student_id]
     assert after["school_pending"] == pytest.approx(0.0, abs=0.02)
     assert after["fee_due"] == pytest.approx(5500.0, abs=0.02)
 
@@ -335,14 +338,56 @@ def test_van_payment_clears_pending_before_current_year(db_session):
 
     balance = FeeBalanceService(db_session)
     pay_repo = PaymentRepository(db_session)
-    before = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    before = balance.get_students_due_breakdown([st.student_id], {st.student_id: 0.0})[st.student_id]
     assert before["van_pending"] == pytest.approx(300.0, abs=0.02)
     assert before["van_due"] == pytest.approx(800.0, abs=0.02)
 
     pay_repo.create_split_payment(st, 500.0, 0.0, "cash", "test", 0.0, date(2025, 6, 1))
-    after = balance.get_students_due_breakdown([st.id], {st.id: 0.0})[st.id]
+    after = balance.get_students_due_breakdown([st.student_id], {st.student_id: 0.0})[st.student_id]
     assert after["van_pending"] == pytest.approx(0.0, abs=0.02)
     assert after["van_due"] == pytest.approx(600.0, abs=0.02)
+
+
+def test_van_payment_clears_combined_pending_including_school(db_session):
+    """Van fee payment debits combined pending (prior-year school + van) before current-year van."""
+    t, tr = _fee_heads(db_session)
+    ay_repo = AcademicYearRepository(db_session)
+    for row in ay_repo.list_all():
+        db_session.delete(row)
+    db_session.commit()
+    y_old = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
+    y_cur = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
+    db_session.commit()
+
+    st = Student(
+        student_id=f"VC{uuid.uuid4().hex[:4].upper()}",
+        full_name="Van Clears Combined Pending",
+        class_name="4",
+        section="A",
+        phone=f"4{uuid.uuid4().int % 10**9:09d}",
+        guardian_name="G",
+        van_fees=1000.0,
+        school_fees=2000.0,
+    )
+    db_session.add(st)
+    db_session.commit()
+    _set_joining_date(st, date(2023, 6, 1))
+    sy = StudentYearFeeRepository(db_session)
+    sy.get_or_create(st, y_old.id, school_fees=1500.0, van_fees=500.0)
+    sy.get_or_create(st, y_cur.id, school_fees=2000.0, van_fees=1000.0)
+    db_session.commit()
+
+    balance = FeeBalanceService(db_session)
+    pay_repo = PaymentRepository(db_session)
+    before = balance.get_students_due_breakdown([st.student_id], {st.student_id: 0.0})[st.student_id]
+    assert before["pending_fees"] == pytest.approx(2000.0, abs=0.02)
+    assert before["van_payable"] == pytest.approx(3000.0, abs=0.02)
+
+    pay_repo.create_split_payment(st, 2000.0, 0.0, "cash", "test", 0.0, date(2025, 6, 1))
+    after = balance.get_students_due_breakdown([st.student_id], {st.student_id: 0.0})[st.student_id]
+    assert after["pending_fees"] == pytest.approx(0.0, abs=0.02)
+    assert after["fee_due"] == pytest.approx(2000.0, abs=0.02)
+    assert after["van_due"] == pytest.approx(1000.0, abs=0.02)
 
 
 def test_next_class_key_progression():

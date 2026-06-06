@@ -435,6 +435,71 @@ class ExpenseRepository:
             )
         return out
 
+    @staticmethod
+    def _coerce_expense_date(value) -> date | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                return date.fromisoformat(text[:10])
+            except ValueError:
+                return None
+        return None
+
+    def daily_salary_expenses_for_month(self, year: int, month: int) -> dict:
+        """Per-day salary payouts by expense date + reversals by reversion date."""
+        last_day = calendar.monthrange(year, month)[1]
+        start = date(year, month, 1)
+        end = date(year, month, last_day)
+        paid_rows = self.session.execute(
+            select(Expense.expense_date, func.sum(Expense.amount))
+            .where(
+                Expense.expense_type == "salary",
+                Expense.expense_date >= start,
+                Expense.expense_date <= end,
+            )
+            .group_by(Expense.expense_date)
+        ).all()
+        reverted_rows = self.session.execute(
+            select(func.date(Expense.reverted_at), func.sum(Expense.amount))
+            .where(
+                Expense.expense_type == "salary",
+                Expense.is_reverted.is_(True),
+                Expense.reverted_at.is_not(None),
+                func.date(Expense.reverted_at) >= start.isoformat(),
+                func.date(Expense.reverted_at) <= end.isoformat(),
+            )
+            .group_by(func.date(Expense.reverted_at))
+        ).all()
+        paid_by_day: dict[int, float] = {}
+        reverted_by_day: dict[int, float] = {}
+        for expense_date, total in paid_rows:
+            coerced = self._coerce_expense_date(expense_date)
+            if coerced is not None:
+                paid_by_day[int(coerced.day)] = float(total or 0.0)
+        for reverted_date, total in reverted_rows:
+            coerced = self._coerce_expense_date(reverted_date)
+            if coerced is not None:
+                reverted_by_day[int(coerced.day)] = float(total or 0.0)
+        amounts = [paid_by_day.get(day, 0.0) for day in range(1, last_day + 1)]
+        reverted_amounts = [reverted_by_day.get(day, 0.0) for day in range(1, last_day + 1)]
+        month_label = date(year, month, 1).strftime("%B %Y")
+        return {
+            "year": year,
+            "month": month,
+            "days_in_month": last_day,
+            "amounts": amounts,
+            "reverted_amounts": reverted_amounts,
+            "month_label": month_label,
+        }
+
     def salary_expense_date_bounds(self) -> tuple[date | None, date | None]:
         min_date, max_date = self.session.execute(
             select(func.min(Expense.expense_date), func.max(Expense.expense_date)).where(

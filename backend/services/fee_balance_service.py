@@ -14,6 +14,7 @@ from backend.repositories.student_year_fee_repository import StudentYearFeeRepos
 def _empty_due() -> dict:
     return {
         "pending_fees": 0.0,
+        "opening_pending_fees": 0.0,
         "van_pending": 0.0,
         "van_current": 0.0,
         "van_due": 0.0,
@@ -202,11 +203,17 @@ class FeeBalanceService:
                 )
         self.session.flush()
 
-    def get_students_due_breakdown(self, student_ids: list[str], discount_by_id: dict[str, float] | None = None) -> dict:
+    def get_students_due_breakdown(
+        self,
+        student_ids: list[str],
+        discount_by_id: dict[str, float] | None = None,
+        *,
+        as_of: date | None = None,
+    ) -> dict:
         if not student_ids:
             return {}
         self.year_repo.ensure_bootstrap_year()
-        current = self.year_repo.get_current()
+        current = self.year_repo.get_current(as_of)
         years = self.year_repo.list_all()
         if not years:
             return {str(sid): _empty_due() for sid in student_ids}
@@ -246,14 +253,21 @@ class FeeBalanceService:
                     school_pending += school_year_due
 
             disc = float((discount_by_id or {}).get(i, 0.0) or 0.0)
-            # Display: pending = prior years only; due = current academic year only (not merged).
             fee_due = max(0.0, float(school_current))
             van_due = max(0.0, float(van_current))
-            school_payable = max(0.0, school_pending + school_current - disc)
-            van_payable = van_pending + van_current
-            pending_fees_total = school_pending + van_pending
+            # Pending fees = unpaid school + van from all years before the current year.
+            # After academic-year rollover this equals:
+            #   old pending + old current-year school due + old current-year van due
+            prior_unpaid = school_pending + van_pending
+            current_row = self.year_fee_repo.get(i, current_id)
+            opening = float(current_row.opening_pending_fees or 0) if current_row else 0.0
+            pending_fees_total = max(0.0, prior_unpaid)
+            school_payable = max(0.0, pending_fees_total + school_current - disc)
+            van_payable = max(0.0, pending_fees_total + van_current)
+            total_payable = max(0.0, pending_fees_total + school_current + van_current - disc)
             out[i] = {
                 "pending_fees": pending_fees_total,
+                "opening_pending_fees": opening,
                 "van_pending": van_pending,
                 "van_current": van_current,
                 "van_due": van_due,
@@ -263,7 +277,7 @@ class FeeBalanceService:
                 "fee_tariff_due": school_current,
                 "school_payable": school_payable,
                 "van_payable": van_payable,
-                "total": school_payable + van_payable,
+                "total": total_payable,
                 "current_year_label": current_label,
             }
         return out

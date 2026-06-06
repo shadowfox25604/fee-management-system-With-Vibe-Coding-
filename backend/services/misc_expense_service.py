@@ -74,6 +74,9 @@ class MiscExpenseService:
     def entry_date_bounds(self) -> tuple[date | None, date | None]:
         return self.repo.entry_date_bounds()
 
+    def daily_misc_chart_for_month(self, year: int, month: int) -> dict:
+        return self.repo.daily_misc_expenses_for_month(year, month)
+
     def count_export_rows(
         self,
         *,

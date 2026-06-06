@@ -38,6 +38,7 @@ class AcademicYearDialog(QDialog):
             "Each academic year is a date range (DD/MM/YYYY). Ranges must not overlap. "
             "The year that contains today’s date is the current year for new fees and payments. "
             "Adding a new forward year promotes every active student one class (e.g. LKG→UKG→1→2→…→10→Passed Out). "
+            "Pending fees for the new year become: existing pending + previous current-year school due + previous current-year van due. "
             "Class 10 students are marked Passed Out and set to inactive. "
             "Inactive students (e.g. left school) are not promoted and do not receive new year fees; old pending fees remain. "
             "Fee records are created for active students using Fee Control class and village tariffs."

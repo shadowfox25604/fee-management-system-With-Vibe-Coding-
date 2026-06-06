@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, or_, select
@@ -40,7 +40,7 @@ def test_schema_and_student_creation():
     try:
         sid = f"TST{uuid.uuid4().hex[:8].upper()}"
         st=Student(student_id=sid, full_name="Test User", class_name="8", section="A", phone=f"9{uuid.uuid4().int % 10**9:09d}", guardian_name="Guardian")
-        s.add(st); s.commit(); assert st.id is not None
+        s.add(st); s.commit(); assert st.student_id is not None
         assert float(st.van_fees) == 0.0
         assert float(st.school_fees) == 20000.0
         assert getattr(st, "village", None) == ""
@@ -140,7 +140,7 @@ def test_split_payment_top_up_when_invoices_smaller_than_tariff():
         d = date(2026, 6, 15)
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=tr.id,
                 period_label="2026-01",
                 due_date=d,
@@ -150,7 +150,7 @@ def test_split_payment_top_up_when_invoices_smaller_than_tariff():
         )
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=t.id,
                 period_label="2026-01",
                 due_date=d,
@@ -167,7 +167,7 @@ def test_split_payment_top_up_when_invoices_smaller_than_tariff():
 
         top_ups = s.scalars(
             select(Invoice).where(
-                Invoice.student_id_fk == st.id,
+                Invoice.student_id_fk == st.student_id,
                 or_(
                     Invoice.period_label.like("Collect top-up%"),
                     Invoice.period_label.like("Tariff sync%"),
@@ -176,7 +176,7 @@ def test_split_payment_top_up_when_invoices_smaller_than_tariff():
         ).all()
         assert len(top_ups) >= 1
 
-        payments = s.scalars(select(Payment).where(Payment.student_id_fk == st.id)).all()
+        payments = s.scalars(select(Payment).where(Payment.student_id_fk == st.student_id)).all()
         assert len(payments) == 1
         assert payments[0].reference_no
         assert is_compact_payment_reference(payments[0].reference_no)
@@ -219,7 +219,7 @@ def test_split_payment_with_discount_records_total_amount():
         d = date(2026, 7, 1)
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=tr.id,
                 period_label="2026-01",
                 due_date=d,
@@ -229,7 +229,7 @@ def test_split_payment_with_discount_records_total_amount():
         )
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=t.id,
                 period_label="2026-01",
                 due_date=d,
@@ -250,10 +250,10 @@ def test_split_payment_with_discount_records_total_amount():
         )
         assert float(pay.discount_amount) == 500.0
         assert float(pay.amount) == 3500.0
-        due_after = repo.get_student_due_breakdown(st.id)
-        assert due_after["fee_due"] == 7500.0  # current year; cash applied to invoices
-        assert due_after["school_payable"] == 7000.0  # payable reduced by cumulative discount
-        assert due_after["van_due"] == 4000.0
+        due_after = repo.get_student_due_breakdown(st.student_id)
+        assert due_after["fee_due"] == 8500.0  # tariff school due minus cash + discount applied to school
+        assert due_after["school_payable"] == 8000.0  # payable reduced by cash + cumulative discount
+        assert due_after["van_due"] == 3000.0
         assert due_after["total"] == 11000.0
     finally:
         s.close()
@@ -294,7 +294,7 @@ def test_split_payment_school_fully_covered_by_discount_stores_sum_in_payment_am
         d = date(2026, 7, 1)
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=t.id,
                 period_label="2026-01",
                 due_date=d,
@@ -315,8 +315,201 @@ def test_split_payment_school_fully_covered_by_discount_stores_sum_in_payment_am
         )
         assert float(pay.discount_amount) == 1000.0
         assert float(pay.amount) == 2000.0
-        inv = s.scalars(select(Invoice).where(Invoice.student_id_fk == st.id)).first()
+        inv = s.scalars(select(Invoice).where(Invoice.student_id_fk == st.student_id)).first()
         assert float(inv.amount_paid) == 2000.0
+    finally:
+        s.close()
+
+
+def test_orphan_discount_on_non_school_allocation_does_not_reduce_school_payable():
+    """Discount stored on a payment must be credited to school invoices to reduce school payable."""
+    Base.metadata.create_all(bind=db.engine)
+    apply_sqlite_column_migrations(db.engine)
+    apply_sqlite_data_migrations(db.engine)
+    s = db.SessionLocal()
+    try:
+        t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
+        tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
+        if t is None:
+            t = FeeHead(head_name="Tuition", frequency="monthly", default_amount=2000.0)
+            s.add(t)
+        if tr is None:
+            tr = FeeHead(head_name="Transport", frequency="monthly", default_amount=500.0)
+            s.add(tr)
+        s.flush()
+
+        sid = f"OD{uuid.uuid4().hex[:8].upper()}"
+        st = Student(
+            student_id=sid,
+            full_name="Orphan Discount Test",
+            class_name="7",
+            section="B",
+            phone=f"7{uuid.uuid4().int % 10**9:09d}",
+            guardian_name="G",
+            van_fees=5272.73,
+            school_fees=20000.0,
+        )
+        s.add(st)
+        s.commit()
+        s.refresh(st)
+
+        from backend.repositories.academic_year_repository import AcademicYearRepository
+        from backend.repositories.student_year_fee_repository import StudentYearFeeRepository
+
+        ay_repo = AcademicYearRepository(s)
+        for row in ay_repo.list_all():
+            s.delete(row)
+        s.commit()
+        y_cur = ay_repo.create(date(2026, 5, 16), date(2027, 5, 31), "2026-27")
+        s.commit()
+        StudentYearFeeRepository(s).get_or_create(st, y_cur.id, school_fees=20000.0, van_fees=5272.73)
+        s.commit()
+
+        pay_day = date(2026, 5, 19)
+        van_inv = Invoice(
+            student_id_fk=st.student_id,
+            academic_year_id=y_cur.id,
+            fee_head_id=tr.id,
+            period_label="van",
+            due_date=pay_day,
+            amount_due=5272.73,
+            amount_paid=0.0,
+        )
+        school_inv = Invoice(
+            student_id_fk=st.student_id,
+            academic_year_id=y_cur.id,
+            fee_head_id=t.id,
+            period_label="school",
+            due_date=pay_day,
+            amount_due=20000.0,
+            amount_paid=0.0,
+        )
+        s.add(van_inv)
+        s.add(school_inv)
+        s.commit()
+        s.refresh(van_inv)
+
+        repo = PaymentRepository(s)
+        payment = Payment(
+            student_id_fk=st.student_id,
+            payment_date=pay_day,
+            amount=4000.0,
+            school_amount=0.0,
+            van_amount=0.0,
+            discount_amount=1000.0,
+            mode="cash",
+            reference_no=repo.new_payment_reference(),
+            operator_name="test",
+            is_reverted=False,
+        )
+        s.add(payment)
+        s.flush()
+        repo._allocate_to_invoices(int(payment.id), 4000.0, [van_inv])
+        s.commit()
+
+        due = repo.get_student_due_breakdown(st.student_id)
+        assert repo.get_students_cumulative_payment_discount([st.student_id]).get(st.student_id, 0.0) == 0.0
+        assert due["school_payable"] == pytest.approx(20000.0, abs=0.01)
+        assert due["van_payable"] == pytest.approx(1272.73, abs=0.01)
+    finally:
+        s.close()
+
+
+def test_school_payment_can_clear_pending_van_before_current_school():
+    """School fee payment applies to all pending dues first, then current-year school fees."""
+    Base.metadata.create_all(bind=db.engine)
+    apply_sqlite_column_migrations(db.engine)
+    apply_sqlite_data_migrations(db.engine)
+    s = db.SessionLocal()
+    try:
+        t = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "tuition")).first()
+        tr = s.scalars(select(FeeHead).where(func.lower(FeeHead.head_name) == "transport")).first()
+        if t is None:
+            t = FeeHead(head_name="Tuition", frequency="monthly", default_amount=2000.0)
+            s.add(t)
+        if tr is None:
+            tr = FeeHead(head_name="Transport", frequency="monthly", default_amount=500.0)
+            s.add(tr)
+        s.flush()
+
+        from backend.repositories.academic_year_repository import AcademicYearRepository
+
+        ay_repo = AcademicYearRepository(s)
+        for row in ay_repo.list_all():
+            s.delete(row)
+        s.commit()
+        y_prev = ay_repo.create(date(2025, 5, 17), date(2026, 5, 15), "2025-26")
+        y_cur = ay_repo.create(date(2026, 6, 1), date(2027, 6, 4), "2026-27")
+        s.commit()
+
+        sid = f"SC{uuid.uuid4().hex[:8].upper()}"
+        st = Student(
+            student_id=sid,
+            full_name="Pending First School Pay",
+            class_name="7",
+            section="B",
+            phone=f"8{uuid.uuid4().int % 10**9:09d}",
+            guardian_name="G",
+            van_fees=5272.73,
+            school_fees=20000.0,
+            created_at=datetime(2025, 8, 1),
+        )
+        s.add(st)
+        s.commit()
+        s.refresh(st)
+
+        from backend.repositories.student_year_fee_repository import StudentYearFeeRepository
+
+        sy = StudentYearFeeRepository(s)
+        sy.get_or_create(st, y_prev.id, school_fees=0.0, van_fees=5272.73)
+        sy.get_or_create(st, y_cur.id, school_fees=20000.0, van_fees=5272.73)
+        s.commit()
+
+        pay_day = date(2026, 6, 3)
+        s.add(
+            Invoice(
+                student_id_fk=st.student_id,
+                academic_year_id=y_prev.id,
+                fee_head_id=tr.id,
+                period_label="prev van",
+                due_date=pay_day,
+                amount_due=5272.73,
+                amount_paid=4000.0,
+            )
+        )
+        s.add(
+            Invoice(
+                student_id_fk=st.student_id,
+                academic_year_id=y_cur.id,
+                fee_head_id=t.id,
+                period_label="cur school",
+                due_date=pay_day,
+                amount_due=20000.0,
+                amount_paid=2545.73,
+            )
+        )
+        s.add(
+            Invoice(
+                student_id_fk=st.student_id,
+                academic_year_id=y_cur.id,
+                fee_head_id=tr.id,
+                period_label="cur van",
+                due_date=pay_day,
+                amount_due=5272.73,
+                amount_paid=0.0,
+            )
+        )
+        s.commit()
+
+        repo = PaymentRepository(s)
+        due = repo.get_student_due_breakdown(st.student_id)
+        assert due["school_payable"] == pytest.approx(18727.0, abs=0.01)
+        repo.validate_split_payment_inputs(st, 0.0, 18000.0, 0.0, pay_day)
+        pay = repo.create_split_payment(st, 0.0, 18000.0, "cash", "test", 0.0, pay_day)
+        assert float(pay.school_amount) == pytest.approx(18000.0, abs=0.01)
+        after = repo.get_student_due_breakdown(st.student_id)
+        assert after["pending_fees"] == pytest.approx(0.0, abs=0.01)
+        assert after["fee_due"] == pytest.approx(727.0, abs=0.02)
     finally:
         s.close()
 
@@ -355,7 +548,7 @@ def test_split_payment_stores_explicit_payment_date():
         d_inv = date(2026, 3, 1)
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=tr.id,
                 period_label="2026-01",
                 due_date=d_inv,
@@ -365,7 +558,7 @@ def test_split_payment_stores_explicit_payment_date():
         )
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=t.id,
                 period_label="2026-01",
                 due_date=d_inv,
@@ -426,7 +619,7 @@ def test_split_payment_rejects_future_payment_date():
         d_inv = date(2026, 3, 1)
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=tr.id,
                 period_label="2026-01",
                 due_date=d_inv,
@@ -436,7 +629,7 @@ def test_split_payment_rejects_future_payment_date():
         )
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=t.id,
                 period_label="2026-01",
                 due_date=d_inv,
@@ -497,7 +690,7 @@ def test_due_breakdown_is_max_of_tariff_and_invoice_open_balance():
         # Current-year due is tariff minus paid; invoice open balance does not inflate display.
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=t.id,
                 period_label="inv1",
                 due_date=d,
@@ -507,7 +700,7 @@ def test_due_breakdown_is_max_of_tariff_and_invoice_open_balance():
         )
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=tr.id,
                 period_label="v1",
                 due_date=d,
@@ -518,7 +711,7 @@ def test_due_breakdown_is_max_of_tariff_and_invoice_open_balance():
         s.commit()
 
         repo = PaymentRepository(s)
-        due = repo.get_student_due_breakdown(st.id)
+        due = repo.get_student_due_breakdown(st.student_id)
         assert due["fee_due"] == 5000.0
         assert due["van_due"] == 1000.0
     finally:
@@ -572,7 +765,7 @@ def test_class_fee_apply_updates_students_scales_tuition_leaves_transport_invoic
 
         d = date(2026, 4, 1)
         inv_s = Invoice(
-            student_id_fk=st.id,
+            student_id_fk=st.student_id,
             fee_head_id=t.id,
             period_label="2026-01",
             due_date=d,
@@ -580,7 +773,7 @@ def test_class_fee_apply_updates_students_scales_tuition_leaves_transport_invoic
             amount_paid=0.0,
         )
         inv_v = Invoice(
-            student_id_fk=st.id,
+            student_id_fk=st.student_id,
             fee_head_id=tr.id,
             period_label="2026-01",
             due_date=d,
@@ -595,7 +788,7 @@ def test_class_fee_apply_updates_students_scales_tuition_leaves_transport_invoic
         n = cfr.apply_class_school_fee("5", 25000.0)
         assert n == 1
 
-        st2 = s.get(Student, st.id)
+        st2 = s.get(Student, st.student_id)
         assert float(st2.school_fees) == 25000.0
         assert float(st2.van_fees) == 3000.0
 
@@ -609,7 +802,7 @@ def test_class_fee_apply_updates_students_scales_tuition_leaves_transport_invoic
         assert float(row.amount) == 25000.0
 
         pay_repo = PaymentRepository(s)
-        due = pay_repo.get_student_due_breakdown(st.id)
+        due = pay_repo.get_student_due_breakdown(st.student_id)
         assert due["van_due"] == 3000.0
     finally:
         s.close()
@@ -658,7 +851,7 @@ def test_village_van_fee_apply_updates_students_scales_transport_leaves_tuition_
 
         d = date(2026, 4, 1)
         inv_s = Invoice(
-            student_id_fk=st.id,
+            student_id_fk=st.student_id,
             fee_head_id=t.id,
             period_label="2026-01",
             due_date=d,
@@ -666,7 +859,7 @@ def test_village_van_fee_apply_updates_students_scales_transport_leaves_tuition_
             amount_paid=0.0,
         )
         inv_v = Invoice(
-            student_id_fk=st.id,
+            student_id_fk=st.student_id,
             fee_head_id=tr.id,
             period_label="2026-01",
             due_date=d,
@@ -681,7 +874,7 @@ def test_village_van_fee_apply_updates_students_scales_transport_leaves_tuition_
         n = vfr.apply_village_van_fee("Nagaram", 4500.0)
         assert n == 1
 
-        st2 = s.get(Student, st.id)
+        st2 = s.get(Student, st.student_id)
         assert float(st2.van_fees) == 4500.0
         assert float(st2.school_fees) == 20000.0
 
@@ -695,7 +888,7 @@ def test_village_van_fee_apply_updates_students_scales_transport_leaves_tuition_
         assert float(row.amount) == 4500.0
 
         pay_repo = PaymentRepository(s)
-        due = pay_repo.get_student_due_breakdown(st.id)
+        due = pay_repo.get_student_due_breakdown(st.student_id)
         assert due["fee_due"] == 20000.0
     finally:
         s.close()
@@ -760,7 +953,7 @@ def test_create_split_rejects_discount_greater_than_school_amount():
         d = date(2026, 9, 1)
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=t.id,
                 period_label="2026-01",
                 due_date=d,
@@ -770,7 +963,7 @@ def test_create_split_rejects_discount_greater_than_school_amount():
         )
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=tr.id,
                 period_label="2026-01",
                 due_date=d,
@@ -830,7 +1023,7 @@ def test_payment_service_collect_split_delegates_to_repo():
         d_inv = date(2026, 10, 1)
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=t.id,
                 period_label="2026-01",
                 due_date=d_inv,
@@ -840,7 +1033,7 @@ def test_payment_service_collect_split_delegates_to_repo():
         )
         s.add(
             Invoice(
-                student_id_fk=st.id,
+                student_id_fk=st.student_id,
                 fee_head_id=tr.id,
                 period_label="2026-01",
                 due_date=d_inv,
@@ -938,7 +1131,7 @@ def test_daily_cash_collected_for_month_excludes_discount():
     pay_day = date(2026, 5, 15)
     s.add(
       Payment(
-        student_id_fk=st.id,
+        student_id_fk=st.student_id,
         payment_date=pay_day,
         amount=350.0,
         discount_amount=50.0,

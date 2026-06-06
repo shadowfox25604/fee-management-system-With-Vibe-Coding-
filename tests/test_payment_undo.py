@@ -40,7 +40,7 @@ def test_undo_payment_reverts_due_and_marks_history(db_session):
 
     db_session.add(
         Invoice(
-            student_id_fk=st.id,
+            student_id_fk=st.student_id,
             fee_head_id=tuition.id,
             period_label="2026-01",
                 due_date=pay_day,
@@ -50,7 +50,7 @@ def test_undo_payment_reverts_due_and_marks_history(db_session):
     )
     db_session.add(
         Invoice(
-            student_id_fk=st.id,
+            student_id_fk=st.student_id,
             fee_head_id=transport.id,
             period_label="2026-01",
                 due_date=pay_day,
@@ -72,13 +72,13 @@ def test_undo_payment_reverts_due_and_marks_history(db_session):
             payment_date=pay_day,
     )
 
-    due_after_payment = repo.get_student_due_breakdown(st.id)
+    due_after_payment = repo.get_student_due_breakdown(st.student_id)
     assert due_after_payment["total"] == pytest.approx(5400.0, abs=0.01)
 
     reverted = svc.undo_payment(pay.reference_no)
     assert bool(reverted.is_reverted) is True
 
-    due_after_undo = repo.get_student_due_breakdown(st.id)
+    due_after_undo = repo.get_student_due_breakdown(st.student_id)
     assert due_after_undo["total"] == pytest.approx(6000.0, abs=0.01)
     assert due_after_undo["school_payable"] == pytest.approx(5000.0, abs=0.01)
     assert due_after_undo["van_payable"] == pytest.approx(1000.0, abs=0.01)
@@ -116,7 +116,7 @@ def test_undo_payment_cannot_run_twice(db_session):
 
     db_session.add(
         Invoice(
-            student_id_fk=st.id,
+            student_id_fk=st.student_id,
             fee_head_id=tuition.id,
             period_label="2026-01",
                 due_date=pay_day,
@@ -160,7 +160,7 @@ def test_daily_chart_keeps_collection_on_payment_date_and_reversion_on_reverted_
 
     db_session.add(
         Invoice(
-            student_id_fk=st.id,
+            student_id_fk=st.student_id,
             fee_head_id=tuition.id,
             period_label="2026-01",
             due_date=pay_day,

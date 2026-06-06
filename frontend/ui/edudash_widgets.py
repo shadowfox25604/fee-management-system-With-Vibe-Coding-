@@ -223,6 +223,94 @@ class DashMetricCard(QFrame):
       self._trend.hide()
 
 
+class SolidMetricCard(QFrame):
+  """Solid-colour stat tile — icon and text on one background (no gradient banding)."""
+
+  # (background, icon glyph) per style_idx
+  _LIGHT = (
+    ("#FF7043", "▣"),   # 0 orange — active students
+    ("#42A5F5", "◎"),   # 1 blue
+    ("#AB47BC", "◷"),   # 2 purple — academic year
+    ("#1ABC9C", "₹"),   # 3 teal — collections
+    ("#66BB6A", "◆"),   # 4 green
+    ("#26C6DA", "●"),   # 5 cyan
+  )
+  _DARK = (
+    ("#E64A19", "▣"),
+    ("#1E88E5", "◎"),
+    ("#8E24AA", "◷"),
+    ("#15967E", "₹"),
+    ("#43A047", "◆"),
+    ("#0097A7", "●"),
+  )
+
+  def __init__(
+    self,
+    label: str,
+    value: str = "—",
+    detail: str = "",
+    style_idx: int = 0,
+    parent=None,
+  ):
+    super().__init__(parent)
+    self._style_idx = style_idx % len(self._LIGHT)
+    self.setObjectName("solidMetricCard")
+    self.setMinimumHeight(96)
+
+    lay = QHBoxLayout(self)
+    lay.setContentsMargins(16, 14, 16, 14)
+    lay.setSpacing(12)
+
+    _, glyph = self._LIGHT[self._style_idx]
+    self._icon = QLabel(glyph)
+    self._icon.setFixedSize(42, 42)
+    self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+    col = QVBoxLayout()
+    col.setSpacing(2)
+    self._label = QLabel(label)
+    self._value = QLabel(value)
+    self._trend = QLabel(detail)
+    col.addWidget(self._label)
+    col.addWidget(self._value)
+    col.addWidget(self._trend)
+    if not detail:
+      self._trend.hide()
+
+    lay.addWidget(self._icon)
+    lay.addLayout(col, 1)
+    self.refresh_theme()
+
+  def update_metric(self, value: str, trend: str = "") -> None:
+    self._value.setText(value)
+    if trend:
+      self._trend.setText(trend)
+      self._trend.show()
+    else:
+      self._trend.hide()
+
+  def refresh_theme(self) -> None:
+    palette = self._DARK if theme.current_theme_mode() == "dark" else self._LIGHT
+    bg, _ = palette[self._style_idx]
+    self.setStyleSheet(
+      f"QFrame#solidMetricCard {{ background-color: {bg}; border: none; "
+      f"border-radius: 12px; }}"
+    )
+    self._icon.setStyleSheet(
+      "background-color: rgba(255, 255, 255, 0.25); color: #FFFFFF; "
+      "border-radius: 21px; font-size: 18px; font-weight: 700;"
+    )
+    self._label.setStyleSheet(
+      "color: #FFFFFF; font-size: 12px; font-weight: 600; background: transparent;"
+    )
+    self._value.setStyleSheet(
+      "color: #FFFFFF; font-size: 26px; font-weight: 800; background: transparent;"
+    )
+    self._trend.setStyleSheet(
+      "color: #F0FDFA; font-size: 11px; font-weight: 600; background: transparent;"
+    )
+
+
 # ── Charts (QPainter) ──────────────────────────────────────────────────────────
 
 

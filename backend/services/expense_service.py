@@ -379,6 +379,45 @@ class ExpenseService:
     def salary_total(self, month_label: str | None = None) -> float:
         return self.repo.sum_salary_expenses(month_label=month_label)
 
+    def daily_salary_chart_for_month(self, year: int, month: int) -> dict:
+        return self.repo.daily_salary_expenses_for_month(year, month)
+
+    @staticmethod
+    def merge_daily_charts(*parts: dict) -> dict:
+        if not parts:
+            return {
+                "amounts": [],
+                "reverted_amounts": [],
+                "month_label": "",
+            }
+        base = parts[0]
+        day_count = len(base.get("amounts") or [])
+        amounts = [0.0] * day_count
+        reverted_amounts = [0.0] * day_count
+        for part in parts:
+            part_amounts = list(part.get("amounts") or [])
+            part_reverted = list(part.get("reverted_amounts") or [])
+            if len(part_amounts) > day_count:
+                extra = len(part_amounts) - day_count
+                amounts.extend([0.0] * extra)
+                reverted_amounts.extend([0.0] * extra)
+                day_count = len(part_amounts)
+            while len(part_reverted) < day_count:
+                part_reverted.append(0.0)
+            for idx in range(day_count):
+                if idx < len(part_amounts):
+                    amounts[idx] += float(part_amounts[idx] or 0.0)
+                if idx < len(part_reverted):
+                    reverted_amounts[idx] += float(part_reverted[idx] or 0.0)
+        return {
+            "year": base.get("year"),
+            "month": base.get("month"),
+            "days_in_month": base.get("days_in_month", day_count),
+            "amounts": amounts,
+            "reverted_amounts": reverted_amounts,
+            "month_label": base.get("month_label", ""),
+        }
+
     def purge_faculty_by_name(self, faculty_name: str) -> dict[str, int]:
         """Delete faculty (if present), attendance, and salary history rows for this name."""
         return self.repo.purge_faculty_by_name(faculty_name)

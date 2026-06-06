@@ -282,6 +282,16 @@ def apply_sqlite_column_migrations(engine) -> None:
         _backfill_salary_expense_references(engine)
         _backfill_salary_expense_faculty_type(engine)
         _dedupe_salary_expenses_per_faculty_month(engine)
+        if insp.has_table("student_academic_year_fees"):
+            sy_cols = {c["name"] for c in insp.get_columns("student_academic_year_fees")}
+            if "opening_pending_fees" not in sy_cols:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE student_academic_year_fees "
+                            "ADD COLUMN opening_pending_fees REAL NOT NULL DEFAULT 0.0"
+                        )
+                    )
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -295,6 +305,7 @@ def apply_sqlite_column_migrations(engine) -> None:
     _dedupe_misc_expenses_same_identity(engine)
     _dedupe_misc_expenses_by_head(engine)
     _backfill_misc_expense_entry_dates(engine)
+    _backfill_payment_split_amounts(engine)
 
 
 def _default_academic_year_bounds(as_of):
@@ -905,6 +916,7 @@ def _migrate_academic_years_v1(conn) -> None:
                 academic_year_id INTEGER NOT NULL REFERENCES academic_years(id),
                 school_fees REAL NOT NULL DEFAULT 0.0,
                 van_fees REAL NOT NULL DEFAULT 0.0,
+                opening_pending_fees REAL NOT NULL DEFAULT 0.0,
                 CONSTRAINT uq_student_academic_year UNIQUE (student_id_fk, academic_year_id)
             )
             """
@@ -1350,4 +1362,40 @@ def _backfill_misc_expense_entry_dates(engine) -> None:
                 WHERE entry_date IS NULL
                 """
             )
+        )
+
+
+def _backfill_payment_split_amounts(engine) -> None:
+    """Populate school_amount/van_amount on payments saved before split columns existed."""
+    from sqlalchemy import inspect
+
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("payments"):
+        return
+    pay_cols = {c["name"] for c in insp.get_columns("payments")}
+    if "school_amount" not in pay_cols or "van_amount" not in pay_cols:
+        return
+
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        if conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "backfill_payment_split_amounts_v1"},
+        ).fetchone():
+            return
+
+    from backend.core.database import SessionLocal
+    from backend.repositories.payment_repository import PaymentRepository
+
+    session = SessionLocal()
+    try:
+        PaymentRepository(session).backfill_legacy_payment_splits()
+    finally:
+        session.close()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO app_migrations (name) VALUES ('backfill_payment_split_amounts_v1')")
         )
