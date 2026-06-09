@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import Property, QEasingCurve, QPointF, QRectF, QSize, Qt, QPropertyAnimation
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
@@ -16,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from frontend.ui import theme
-from frontend.ui.theme import BLUE, GREEN, ORANGE, PURPLE, TEAL
+from frontend.ui.theme import BLUE, GREEN, ORANGE, PINK, PURPLE, TEAL, YELLOW
 
 
 # ── Page chrome ──────────────────────────────────────────────────────────────
@@ -369,9 +371,40 @@ class RevenueChartWidget(QWidget):
       return f"₹{int(v / 1_000)}k"
     return f"₹{v:,.0f}"
 
+  def _peak_daily_total(self) -> float:
+    if not self._collected:
+      return 0.0
+    peak = 0.0
+    for i in range(len(self._collected)):
+      peak = max(peak, self._day_total(i))
+    return peak
+
+  def _axis_scale(self) -> tuple[float, float]:
+    peak = self._peak_daily_total()
+    if peak <= 1e-6:
+      return 20_000.0, 5_000.0
+    if peak <= 2_000:
+      step = 500.0
+    elif peak <= 10_000:
+      step = 2_000.0
+    elif peak <= 50_000:
+      step = 10_000.0
+    else:
+      step = self.Y_AXIS_STEP
+    axis_max = max(step, math.ceil(peak / step) * step)
+    return axis_max, step
+
+  def _axis_max(self) -> float:
+    return self._axis_scale()[0]
+
   def _y_tick_values(self) -> list[float]:
-    steps = int(self.Y_AXIS_MAX / self.Y_AXIS_STEP)
-    return [i * self.Y_AXIS_STEP for i in range(steps + 1)]
+    axis_max, step = self._axis_scale()
+    ticks: list[float] = []
+    value = 0.0
+    while value <= axis_max + 1e-6:
+      ticks.append(value)
+      value += step
+    return ticks or [0.0, step]
 
   def _y_axis_labels(self) -> list[str]:
     return [self._format_axis_amount(v) for v in self._y_tick_values()]
@@ -390,7 +423,7 @@ class RevenueChartWidget(QWidget):
     w, h = self.width(), self.height()
     margin_t = 24
     margin_b = 40 if n_days > 25 else 36
-    max_v = self.Y_AXIS_MAX
+    max_v = self._axis_max()
     margin_l = self._left_margin_for_axis()
     chart_h = h - margin_b - margin_t
     chart_w = w - margin_l - 16
@@ -683,6 +716,346 @@ class DonutChartWidget(QWidget):
       )
     )
     p.end()
+
+  def refresh_theme(self) -> None:
+    self.update()
+
+
+EXPENSE_SLICE_COLORS = (TEAL, ORANGE, PURPLE, BLUE, GREEN, PINK, YELLOW)
+
+# Stable colours for common expense heads (case-insensitive).
+_EXPENSE_COLOR_BY_LABEL: dict[str, str] = {
+    "salary": PURPLE,
+    "rent": YELLOW,
+    "transport": BLUE,
+    "van": BLUE,
+    "stationary": GREEN,
+    "stationery": GREEN,
+    "donation": PINK,
+    "donations": PINK,
+    "utilities": ORANGE,
+    "electricity": ORANGE,
+    "maintenance": TEAL,
+    "repair": TEAL,
+    "repairs": TEAL,
+    "food": "#E53935",
+    "canteen": "#E53935",
+    "medical": "#26C6DA",
+    "insurance": "#5C6BC0",
+    "miscellaneous": "#8D6E63",
+    "misc": "#8D6E63",
+}
+
+
+def expense_color_for_label(label: str) -> str:
+    """Return a stable, distinct colour for an expense category label."""
+    text = (label or "").strip()
+    key = text.lower()
+    if key in _EXPENSE_COLOR_BY_LABEL:
+        return _EXPENSE_COLOR_BY_LABEL[key]
+    if not key:
+        return EXPENSE_SLICE_COLORS[0]
+    seed = sum(ord(ch) * (idx + 3) for idx, ch in enumerate(key))
+    hue = int(seed * 47) % 360
+    saturation = 0.52 + (seed % 13) / 100.0
+    value = 0.82 + (seed % 11) / 100.0
+    return QColor.fromHsvF(hue / 360.0, min(0.72, saturation), min(0.92, value)).name()
+
+
+def _assign_expense_slice_colors(raw_slices: list[dict]) -> list[tuple[float, str, str]]:
+    built: list[tuple[float, str, str]] = []
+    used_colors: set[str] = set()
+    fallback_idx = 0
+    for row in raw_slices:
+        amount = float(row.get("amount", 0) or 0.0)
+        if amount <= 1e-6:
+            continue
+        label = str(row.get("label") or "Expense").strip() or "Expense"
+        color = expense_color_for_label(label)
+        while color in used_colors and fallback_idx < len(EXPENSE_SLICE_COLORS):
+            color = EXPENSE_SLICE_COLORS[fallback_idx % len(EXPENSE_SLICE_COLORS)]
+            fallback_idx += 1
+        if color in used_colors:
+            seed = f"{label}:{fallback_idx}"
+            hue = (sum(ord(c) for c in seed) * 53 + fallback_idx * 29) % 360
+            color = QColor.fromHsvF(hue / 360.0, 0.58, 0.86).name()
+            fallback_idx += 1
+        used_colors.add(color)
+        built.append((amount, color, label))
+    return built
+
+
+class ExpensesDonutChartWidget(QWidget):
+  """Hollow pie chart for expense breakdown with total in the center."""
+
+  _SLICE_GAP = 8  # sixteenths of a degree, matches drawPie gap
+  _INNER_RATIO = 0.58
+
+  def __init__(self, parent=None):
+    super().__init__(parent)
+    self.setMinimumSize(220, 220)
+    self.setMouseTracking(True)
+    self._slices: list[tuple[float, str, str]] = []
+    self._total = 0.0
+    self._center_caption = "Total Expense"
+    self._hover_index: int | None = None
+    self._tooltip_opacity = 0.0
+    self._opacity_anim = QPropertyAnimation(self, b"tooltipOpacity")
+    self._opacity_anim.setDuration(180)
+    self._opacity_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+  def get_tooltip_opacity(self) -> float:
+    return self._tooltip_opacity
+
+  def set_tooltip_opacity(self, value: float) -> None:
+    self._tooltip_opacity = float(value)
+    self.update()
+
+  tooltipOpacity = Property(float, get_tooltip_opacity, set_tooltip_opacity)
+
+  @staticmethod
+  def _format_amount(value: float) -> str:
+    amount = max(0.0, float(value or 0.0))
+    if amount >= 100000:
+      return f"₹{amount / 100000:.1f}L"
+    if amount >= 1000:
+      return f"₹{amount / 1000:.1f}k"
+    return f"₹{amount:,.0f}"
+
+  def _donut_rect(self) -> QRectF:
+    side = min(self.width(), self.height()) - 12
+    return QRectF((self.width() - side) / 2, 6, side, side)
+
+  def _slice_layout(self) -> list[dict]:
+    total = sum(amount for amount, _, _ in self._slices)
+    if total <= 1e-6:
+      return []
+    gap_deg = self._SLICE_GAP / 16.0
+    cursor = 0.0
+    layout: list[dict] = []
+    for amount, color, label in self._slices:
+      span_deg = 360.0 * float(amount) / total
+      span_deg = max(0.0, span_deg - gap_deg)
+      layout.append(
+        {
+          "amount": float(amount),
+          "color": color,
+          "label": str(label),
+          "start_deg": cursor,
+          "span_deg": span_deg,
+        }
+      )
+      cursor += span_deg + gap_deg
+    return layout
+
+  def _slice_index_at(self, pos: QPointF) -> int | None:
+    rect = self._donut_rect()
+    if rect.width() <= 0:
+      return None
+    cx = rect.center().x()
+    cy = rect.center().y()
+    outer_r = rect.width() / 2
+    inner_r = rect.width() * self._INNER_RATIO / 2
+    dx = pos.x() - cx
+    dy = pos.y() - cy
+    dist = math.hypot(dx, dy)
+    if dist < inner_r or dist > outer_r:
+      return None
+    angle = math.degrees(math.atan2(dx, -dy))
+    if angle < 0:
+      angle += 360.0
+    for i, sl in enumerate(self._slice_layout()):
+      if sl["span_deg"] <= 1e-6:
+        continue
+      start = float(sl["start_deg"])
+      end = start + float(sl["span_deg"])
+      if start <= angle < end:
+        return i
+    return None
+
+  def _fade_tooltip(self, target: float) -> None:
+    self._opacity_anim.stop()
+    self._opacity_anim.setDuration(180 if target > self._tooltip_opacity else 140)
+    self._opacity_anim.setStartValue(self._tooltip_opacity)
+    self._opacity_anim.setEndValue(target)
+    self._opacity_anim.start()
+
+  def _update_hover(self, index: int | None) -> None:
+    if index == self._hover_index:
+      return
+    prev = self._hover_index
+    self._hover_index = index
+    if index is not None:
+      self.setCursor(Qt.CursorShape.PointingHandCursor)
+      if prev is None:
+        self._fade_tooltip(1.0)
+      else:
+        self.update()
+    else:
+      self.unsetCursor()
+      if prev is not None:
+        self._fade_tooltip(0.0)
+      else:
+        self.update()
+
+  def mouseMoveEvent(self, event: QMouseEvent) -> None:
+    self._update_hover(self._slice_index_at(event.position()))
+    super().mouseMoveEvent(event)
+
+  def leaveEvent(self, event) -> None:
+    self._update_hover(None)
+    super().leaveEvent(event)
+
+  def set_expense_breakdown(self, data: dict | None) -> None:
+    raw_slices = list((data or {}).get("slices") or [])
+    built = _assign_expense_slice_colors(raw_slices)
+    if built:
+      self._total = sum(amount for amount, _, _ in built)
+    else:
+      self._total = float((data or {}).get("total", 0) or 0.0)
+    self._slices = built
+    self._hover_index = None
+    self._tooltip_opacity = 0.0
+    self.update()
+
+  def expense_slices(self) -> list[tuple[float, str, str]]:
+    """(amount, colour hex, label) for legend rendering."""
+    return list(self._slices)
+
+  def _paint_tooltip(self, p: QPainter, index: int) -> None:
+    if self._tooltip_opacity <= 0.01:
+      return
+    layout = self._slice_layout()
+    if not (0 <= index < len(layout)):
+      return
+    sl = layout[index]
+    label = str(sl["label"])
+    amount = float(sl["amount"])
+    text = f"{label}: ₹{amount:,.0f}"
+    t = theme.current_tokens()
+    tip_font = QFont("Segoe UI", 9)
+    tip_font.setWeight(QFont.Weight.DemiBold)
+    p.setFont(tip_font)
+    metrics = p.fontMetrics()
+    pad_x, pad_y = 10, 6
+    text_w = metrics.horizontalAdvance(text)
+    text_h = metrics.height()
+    box_w = text_w + pad_x * 2
+    box_h = text_h + pad_y * 2
+
+    rect = self._donut_rect()
+    cx = rect.center().x()
+    cy = rect.center().y()
+    mid_angle = math.radians(sl["start_deg"] + sl["span_deg"] / 2.0)
+    ring_r = rect.width() * (1.0 + self._INNER_RATIO) / 4.0
+    anchor_x = cx + math.sin(mid_angle) * ring_r
+    anchor_y = cy - math.cos(mid_angle) * ring_r
+    box_x = max(4.0, min(anchor_x - box_w / 2, self.width() - box_w - 4))
+    box_y = max(4.0, anchor_y - box_h - 8)
+
+    p.save()
+    p.setOpacity(self._tooltip_opacity)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(t.bg_surface))
+    p.drawRoundedRect(QRectF(box_x, box_y, box_w, box_h), 8, 8)
+    p.setPen(QPen(QColor(t.border)))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(QRectF(box_x, box_y, box_w, box_h), 8, 8)
+    p.setPen(QColor(t.text_primary))
+    p.drawText(
+      QRectF(box_x + pad_x, box_y + pad_y, text_w, text_h),
+      Qt.AlignmentFlag.AlignCenter,
+      text,
+    )
+    p.restore()
+
+  def paintEvent(self, _event):
+    p = QPainter(self)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    t = theme.current_tokens()
+    rect = self._donut_rect()
+    total = sum(amount for amount, _, _ in self._slices)
+
+    if total <= 1e-6:
+      p.setPen(QPen(QColor(t.border)))
+      p.setBrush(QColor(t.bg_hover))
+      p.drawEllipse(rect)
+      inner = rect.width() * self._INNER_RATIO
+      p.setBrush(QColor(t.bg_surface))
+      p.setPen(Qt.PenStyle.NoPen)
+      p.drawEllipse(
+        QRectF(
+          rect.center().x() - inner / 2,
+          rect.center().y() - inner / 2,
+          inner,
+          inner,
+        )
+      )
+      self._paint_center_text(p, rect, "₹0", t)
+      p.end()
+      return
+
+    slice_layout = self._slice_layout()
+    for i, sl in enumerate(slice_layout):
+      span = int(360 * 16 * sl["span_deg"] / 360.0)
+      if span <= 0:
+        continue
+      start = int((90.0 - sl["start_deg"]) * 16)
+      color = QColor(str(sl["color"]))
+      if i == self._hover_index:
+        color = color.lighter(112)
+      p.setBrush(color)
+      p.setPen(Qt.PenStyle.NoPen)
+      p.drawPie(rect, start, -span)
+
+    inner = rect.width() * self._INNER_RATIO
+    p.setBrush(QColor(t.bg_surface))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawEllipse(
+      QRectF(
+        rect.center().x() - inner / 2,
+        rect.center().y() - inner / 2,
+        inner,
+        inner,
+      )
+    )
+    self._paint_center_text(p, rect, self._format_amount(self._total), t)
+    if self._hover_index is not None:
+      self._paint_tooltip(p, self._hover_index)
+    p.end()
+
+  def _paint_center_text(self, p: QPainter, rect: QRectF, amount_text: str, t) -> None:
+    amount_font = QFont("Segoe UI", 16)
+    amount_font.setWeight(QFont.Weight.Bold)
+    caption_font = QFont("Segoe UI", 9)
+    p.setFont(amount_font)
+    amount_metrics = p.fontMetrics()
+    amount_h = amount_metrics.height()
+    p.setFont(caption_font)
+    caption_metrics = p.fontMetrics()
+    caption_h = caption_metrics.height()
+    gap = 4
+    block_h = amount_h + gap + caption_h
+    top_y = rect.center().y() - block_h / 2
+
+    p.setFont(amount_font)
+    p.setPen(QColor(t.text_primary))
+    amount_w = amount_metrics.horizontalAdvance(amount_text)
+    p.drawText(
+      QRectF(rect.center().x() - amount_w / 2, top_y, amount_w, amount_h),
+      Qt.AlignmentFlag.AlignCenter,
+      amount_text,
+    )
+
+    p.setFont(caption_font)
+    p.setPen(QColor(t.text_muted))
+    caption = self._center_caption
+    caption_w = caption_metrics.horizontalAdvance(caption)
+    p.drawText(
+      QRectF(rect.center().x() - caption_w / 2, top_y + amount_h + gap, caption_w, caption_h),
+      Qt.AlignmentFlag.AlignCenter,
+      caption,
+    )
 
   def refresh_theme(self) -> None:
     self.update()

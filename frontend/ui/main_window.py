@@ -276,7 +276,9 @@ class MainWindow(QMainWindow):
             on_navigate=self._navigate_to_tab,
             on_refresh=self._home_page_snapshot,
             on_chart_data=self._home_page_chart_data,
+            on_expense_chart_data=self._home_page_expense_chart_data,
             on_manage_academic_years=self._on_manage_academic_years_clicked,
+            on_chart_month_bounds=self._home_page_chart_month_bounds,
             parent=self,
         )
         return self._home_page
@@ -284,6 +286,37 @@ class MainWindow(QMainWindow):
     def _home_page_chart_data(self, year: int, month: int) -> dict:
         """Daily collected amounts for a calendar month (from payments table)."""
         return self.payment_service.daily_cash_collected_for_month(year, month)
+
+    def _home_page_expense_chart_data(self, year: int, month: int) -> dict:
+        """Monthly expense pie breakdown including salary and miscellaneous heads."""
+        return self.expense_service.dashboard_expense_pie_for_month(
+            year,
+            month,
+            misc_expense_service=self.misc_expense_service,
+        )
+
+    def _home_page_chart_month_bounds(self) -> tuple[date | None, date | None]:
+        """Earliest and latest dates across payments, salary, and misc expenses."""
+        mins: list[date] = []
+        maxs: list[date] = []
+        pay_min, pay_max = self.payment_service.payment_date_bounds()
+        if pay_min is not None:
+            mins.append(pay_min)
+        if pay_max is not None:
+            maxs.append(pay_max)
+        misc_min, misc_max = self.misc_expense_service.entry_date_bounds()
+        if misc_min is not None:
+            mins.append(misc_min)
+        if misc_max is not None:
+            maxs.append(misc_max)
+        sal_min, sal_max = self.expense_service.salary_expense_date_bounds()
+        if sal_min is not None:
+            mins.append(sal_min)
+        if sal_max is not None:
+            maxs.append(sal_max)
+        if not mins:
+            return None, date.today()
+        return min(mins), max(maxs) if maxs else date.today()
 
     def _refresh_dashboard(self, chart_date: date | None = None) -> None:
         """Reload dashboard metrics, chart, and payment list from the database."""
@@ -294,7 +327,8 @@ class MainWindow(QMainWindow):
             if home is not None:
                 home.reload(chart_date=chart_date)
 
-        # Defer until after the payment dialog closes so the chart repaints reliably.
+        _do_reload()
+        # Second pass after any modal dialog closes so charts repaint reliably.
         QTimer.singleShot(0, _do_reload)
 
     def _navigate_to_tab(self, tab_name: str) -> None:
@@ -566,22 +600,32 @@ class MainWindow(QMainWindow):
             roll = str(getattr(student, "student_id", None) or "")
             payments = [
                 p
-                for p in self.payment_service.list_payment_history(limit=5000)
+                for p in self.payment_service.list_payment_history(
+                    limit=5000,
+                    include_reverted=True,
+                )
                 if str(p.get("student_roll") or "") == roll
             ][:14]
+            t = theme.current_tokens()
             for row, p in enumerate(payments):
                 pane.payments_table.insertRow(row)
                 pd = p.get("payment_date")
                 pd_str = pd.strftime("%d/%m/%Y") if hasattr(pd, "strftime") else str(pd or "")
+                is_reverted = bool(p.get("is_reverted", False))
+                status = str(p.get("status") or ("Payment reverted" if is_reverted else "Paid"))
                 values = [
                     pd_str,
                     str(p.get("reference_no") or ""),
                     f"{float(p.get('amount', 0) or 0):.2f}",
                     f"{float(p.get('discount', 0) or 0):.2f}",
                     str(p.get("mode") or ""),
+                    status,
                 ]
                 for col, text in enumerate(values):
-                    pane.payments_table.setItem(row, col, table_item(text))
+                    item = table_item(text)
+                    if is_reverted:
+                        item.setForeground(QColor(t.text_muted))
+                    pane.payments_table.setItem(row, col, item)
             self._stretch_table_columns(pane.payments_table)
         self._animate_widget_fade(pane.profile_card, start=0.86, duration=180)
 
@@ -619,6 +663,7 @@ class MainWindow(QMainWindow):
         return None
 
     def _home_page_snapshot(self) -> dict:
+        self.session.expire_all()
         today = date.today()
         week_start = today - timedelta(days=today.weekday())
         active, inactive = self.student_service.count_active_inactive()
@@ -633,21 +678,34 @@ class MainWindow(QMainWindow):
         collected_week = float(period["collected_week"])
         payments_week = int(period["payments_week"])
         payments_today = int(period["payments_today"])
-        payments = self.payment_service.list_payment_history(limit=500)
-        collected = sum(float(p.get("amount", 0) or 0) for p in payments)
+        payments = self.payment_service.list_payment_history(limit=500, include_reverted=True)
+        collected = sum(
+            float(p.get("amount", 0) or 0)
+            for p in payments
+            if not bool(p.get("is_reverted", False))
+        )
         recent = []
         for p in payments[:12]:
             d = p.get("payment_date")
             date_s = d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else str(d or "")
             name = str(p.get("student_name") or "")
+            is_reverted = bool(p.get("is_reverted", False))
+            status = str(p.get("status") or ("Payment reverted" if is_reverted else "Paid"))
             recent.append({
                 "initial": name[:1] if name else "P",
                 "name": name,
                 "amount": float(p.get("amount", 0) or 0),
                 "mode": str(p.get("mode") or ""),
                 "date": date_s,
+                "status": status,
+                "is_reverted": is_reverted,
             })
         daily_revenue = self.payment_service.daily_cash_collected_for_month(today.year, today.month)
+        expense_pie = self.expense_service.dashboard_expense_pie_for_month(
+            today.year,
+            today.month,
+            misc_expense_service=self.misc_expense_service,
+        )
         week_range = (
             f"{week_start.strftime('%d %b')} – {today.strftime('%d %b %Y')}"
             if week_start != today
@@ -673,6 +731,7 @@ class MainWindow(QMainWindow):
                 "reverted_amounts": daily_revenue.get("reverted_amounts", []),
                 "month_label": daily_revenue["month_label"],
             },
+            "expense_chart": expense_pie,
             "recent_payments": recent,
         }
 
@@ -919,9 +978,9 @@ class MainWindow(QMainWindow):
 
         pay_card = SurfaceCard()
         pay_card.body.addWidget(CardTitleBar("Recent payments"))
-        payments_table = QTableWidget(0, 5)
+        payments_table = QTableWidget(0, 6)
         payments_table.setHorizontalHeaderLabels(
-            ["Date", "Reference", "Amount (₹)", "Discount (₹)", "Mode"]
+            ["Date", "Reference", "Amount (₹)", "Discount (₹)", "Mode", "Status"]
         )
         payments_table.setMinimumHeight(280)
         configure_data_table(payments_table)
@@ -964,7 +1023,11 @@ class MainWindow(QMainWindow):
         return page
 
     def _build_miscellaneous_tab(self):
-        page = MiscExpensesPage(self.misc_expense_service, parent=self)
+        page = MiscExpensesPage(
+            self.misc_expense_service,
+            parent=self,
+            on_data_changed=self._refresh_dashboard,
+        )
         self._misc_expenses_page = page
         self._misc_add_new_expense_btn = page._add_new_expense_btn
         self._misc_add_entry_btn = page._add_entry_btn
@@ -1366,6 +1429,7 @@ class MainWindow(QMainWindow):
 
     def _on_main_tab_changed(self, index: int):
         if index == getattr(self, "_home_tab_index", -1):
+            self.session.expire_all()
             home = getattr(self, "_home_page", None)
             if home is not None:
                 home.reload()
@@ -3238,6 +3302,7 @@ class MainWindow(QMainWindow):
             self._refresh_salary_history_table()
             self._refresh_salary_history_tab_table(reset_page=False)
             self._refresh_salary_control_history_table()
+            self._refresh_dashboard(chart_date=payload["payment_date"])
             theme.message_information(
                 dialog,
                 "Salary saved",
@@ -3467,6 +3532,13 @@ class MainWindow(QMainWindow):
         self._refresh_payment_history_table(reset_page=False)
         self.perform_search(reset_page=False)
         self._invalidate_payment_student_cache()
+        if self.selected_student is not None:
+            for pane in self._payment_panes.values():
+                self._set_payment_preview_student(
+                    pane,
+                    self.selected_student,
+                    self.payment_service.get_student_due_breakdown(self.selected_student.student_id),
+                )
         pay_date = self._payment_record_date(getattr(payment, "payment_date", None))
         self._refresh_dashboard(chart_date=pay_date)
         theme.message_information(
@@ -4873,7 +4945,7 @@ class MainWindow(QMainWindow):
                 mother_name=optional.get("mother_name", self.add_student_mother_name.text()),
                 mobile_number_1=self.add_student_mobile_number_1.text(),
                 mobile_number_2=optional.get("mobile_number_2", self.add_student_mobile_number_2.text()),
-                date_of_birth=optional.get("date_of_birth", self.add_student_date_of_birth.text()),
+                date_of_birth=optional.get("date_of_birth", page.date_of_birth_value() if page is not None else None),
                 caste=optional.get("caste", self.add_student_caste.text()),
                 aadhaar=optional.get("aadhaar", self.add_student_aadhaar.text()),
             )
@@ -4886,7 +4958,7 @@ class MainWindow(QMainWindow):
             self.add_student_section.setCurrentIndex(0)
             self.add_student_mobile_number_1.clear()
             self.add_student_mobile_number_2.clear()
-            self.add_student_date_of_birth.clear()
+            self.add_student_date_of_birth.setDate(QDate.currentDate())
             self.add_student_caste.clear()
             self.add_student_aadhaar.clear()
             self.add_student_village.setCurrentIndex(0)

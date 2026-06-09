@@ -55,8 +55,21 @@ def test_update_and_delete_entry(db_session):
     assert rows[0]["amount"] == pytest.approx(4800.0, abs=0.01)
 
     svc.delete_entry(entry.id)
-    assert svc.list_entry_history() == []
+    rows = svc.list_entry_history()
+    assert len(rows) == 1
+    assert rows[0]["particular"] == "2 Ceiling Fans (updated)"
+    assert rows[0]["status"] == "Expense reverted"
+    assert rows[0]["is_reverted"] is True
     assert svc.total_spent() == pytest.approx(0.0, abs=0.01)
+
+
+def test_delete_entry_cannot_run_twice(db_session):
+    svc = MiscExpenseService(db_session)
+    expense = svc.add_new_expense("Infra", date(2026, 3, 10))
+    entry = svc.add_entry(expense.id, "Chair", 1200.0)
+    svc.delete_entry(entry.id)
+    with pytest.raises(ValueError, match="already reverted"):
+        svc.delete_entry(entry.id)
 
 
 def test_expense_head_required(db_session):

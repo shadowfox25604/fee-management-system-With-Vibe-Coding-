@@ -624,25 +624,29 @@ class PaymentRepository:
         return None
 
     def daily_cash_collected_for_month(self, year: int, month: int) -> dict:
-        """Per-day chart data: collected cash by payment date + reverted cash by reversion date."""
+        """Per-day chart data: live collections and reversals both keyed to payment date."""
         last_day = calendar.monthrange(year, month)[1]
         start = date(year, month, 1)
         end = date(year, month, last_day)
         cash = Payment.amount - Payment.discount_amount
+        live_filter = self._not_reverted_filter()
         collected_rows = self.session.execute(
             select(Payment.payment_date, func.sum(cash))
-            .where(Payment.payment_date >= start, Payment.payment_date <= end)
+            .where(
+                Payment.payment_date >= start,
+                Payment.payment_date <= end,
+                live_filter,
+            )
             .group_by(Payment.payment_date)
         ).all()
         reverted_rows = self.session.execute(
-            select(func.date(Payment.reverted_at), func.sum(cash))
+            select(Payment.payment_date, func.sum(cash))
             .where(
                 Payment.is_reverted.is_(True),
-                Payment.reverted_at.is_not(None),
-                func.date(Payment.reverted_at) >= start.isoformat(),
-                func.date(Payment.reverted_at) <= end.isoformat(),
+                Payment.payment_date >= start,
+                Payment.payment_date <= end,
             )
-            .group_by(func.date(Payment.reverted_at))
+            .group_by(Payment.payment_date)
         ).all()
         collected_by_day: dict[int, float] = {}
         reverted_by_day: dict[int, float] = {}
@@ -667,30 +671,19 @@ class PaymentRepository:
         }
 
     def dashboard_period_stats(self, week_start: date, today: date) -> dict:
-        """Aggregated payment metrics; reversals are deducted on reversion date."""
+        """Aggregated payment metrics for the dashboard week tile."""
         cash_collected = Payment.amount - Payment.discount_amount
-        reverted_week = float(
-            self.session.scalar(
-                select(func.coalesce(func.sum(cash_collected), 0.0)).where(
-                    Payment.is_reverted.is_(True),
-                    Payment.reverted_at.is_not(None),
-                    func.date(Payment.reverted_at) >= week_start.isoformat(),
-                    func.date(Payment.reverted_at) <= today.isoformat(),
-                )
-            )
-            or 0.0
-        )
+        live_filter = self._not_reverted_filter()
         collected_week = float(
             self.session.scalar(
                 select(func.coalesce(func.sum(cash_collected), 0.0)).where(
                     Payment.payment_date >= week_start,
                     Payment.payment_date <= today,
+                    live_filter,
                 )
             )
             or 0.0
         )
-        collected_week -= reverted_week
-        live_filter = self._not_reverted_filter()
         payments_week = int(
             self.session.scalar(
                 select(func.count())

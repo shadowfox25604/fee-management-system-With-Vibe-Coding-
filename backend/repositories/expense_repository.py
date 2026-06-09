@@ -500,6 +500,23 @@ class ExpenseRepository:
             "month_label": month_label,
         }
 
+    def sum_salary_expenses_for_calendar_month(self, year: int, month: int) -> float:
+        """Non-reverted salary payouts whose expense date falls in the calendar month."""
+        last_day = calendar.monthrange(int(year), int(month))[1]
+        start = date(int(year), int(month), 1)
+        end = date(int(year), int(month), last_day)
+        return float(
+            self.session.scalar(
+                select(func.coalesce(func.sum(Expense.amount), 0.0)).where(
+                    Expense.expense_type == "salary",
+                    Expense.expense_date >= start,
+                    Expense.expense_date <= end,
+                    self._salary_not_reverted_filter(),
+                )
+            )
+            or 0.0
+        )
+
     def salary_expense_date_bounds(self) -> tuple[date | None, date | None]:
         min_date, max_date = self.session.execute(
             select(func.min(Expense.expense_date), func.max(Expense.expense_date)).where(

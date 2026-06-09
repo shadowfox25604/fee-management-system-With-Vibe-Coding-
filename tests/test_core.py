@@ -1087,6 +1087,7 @@ def test_dashboard_period_stats_match_sql():
         select(func.coalesce(func.sum(Payment.amount - Payment.discount_amount), 0.0)).where(
           Payment.payment_date >= week_start,
           Payment.payment_date <= today,
+          or_(Payment.is_reverted.is_(False), Payment.is_reverted.is_(None)),
         )
       )
       or 0.0

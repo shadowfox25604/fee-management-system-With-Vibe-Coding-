@@ -382,6 +382,34 @@ class ExpenseService:
     def daily_salary_chart_for_month(self, year: int, month: int) -> dict:
         return self.repo.daily_salary_expenses_for_month(year, month)
 
+    def dashboard_expense_pie_for_month(
+        self,
+        year: int,
+        month: int,
+        *,
+        misc_expense_service,
+    ) -> dict:
+        """Pie-chart breakdown: salary plus each miscellaneous expense head for the month."""
+        year_num = int(year)
+        month_num = int(month)
+        if month_num < 1 or month_num > 12:
+            raise ValueError("Month must be between 1 and 12.")
+        salary_total = float(self.repo.sum_salary_expenses_for_calendar_month(year_num, month_num))
+        slices: list[dict] = []
+        if salary_total > 1e-6:
+            slices.append({"label": "Salary", "amount": round(salary_total, 2)})
+        for head, amount in misc_expense_service.expenses_by_head_for_month(year_num, month_num):
+            slices.append({"label": str(head), "amount": round(float(amount), 2)})
+        total = round(sum(float(s["amount"]) for s in slices), 2)
+        month_label = date(year_num, month_num, 1).strftime("%B %Y")
+        return {
+            "year": year_num,
+            "month": month_num,
+            "month_label": month_label,
+            "total": total,
+            "slices": slices,
+        }
+
     @staticmethod
     def merge_daily_charts(*parts: dict) -> dict:
         if not parts:

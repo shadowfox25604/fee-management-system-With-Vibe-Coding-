@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import calendar
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import func, or_, select
 
@@ -11,6 +11,24 @@ from backend.models import MiscExpense, MiscExpenseEntry
 class MiscExpenseRepository:
     def __init__(self, session):
         self.session = session
+
+    @staticmethod
+    def _not_reverted_filter():
+        return or_(MiscExpenseEntry.is_reverted.is_(False), MiscExpenseEntry.is_reverted.is_(None))
+
+    @staticmethod
+    def _entry_history_row(entry: MiscExpenseEntry, expense: MiscExpense) -> dict:
+        reverted = bool(getattr(entry, "is_reverted", False))
+        return {
+            "entry_id": entry.id,
+            "expense_id": expense.id,
+            "head": expense.head or "",
+            "expense_date": entry.entry_date,
+            "particular": entry.particular,
+            "amount": float(entry.amount or 0.0),
+            "is_reverted": reverted,
+            "status": "Expense reverted" if reverted else "Recorded",
+        }
 
     @staticmethod
     def _normalize_head(head: str) -> str:
@@ -129,7 +147,7 @@ class MiscExpenseRepository:
             raise ValueError("Amount must be greater than zero.")
         row = MiscExpenseEntry(
             expense_id=int(expense_id),
-            entry_date=entry_date or expense.expense_date,
+            entry_date=entry_date or date.today(),
             particular=text,
             amount=value,
         )
@@ -147,10 +165,13 @@ class MiscExpenseRepository:
         *,
         particular: str,
         amount: float,
+        entry_date: date | None = None,
     ) -> MiscExpenseEntry:
         row = self.get_entry(entry_id)
         if row is None:
             raise ValueError("Entry not found.")
+        if bool(getattr(row, "is_reverted", False)):
+            raise ValueError("Cannot edit a reverted expense entry.")
         text = (particular or "").strip()
         if not text:
             raise ValueError("Particular is required.")
@@ -159,6 +180,8 @@ class MiscExpenseRepository:
             raise ValueError("Amount must be greater than zero.")
         row.particular = text
         row.amount = value
+        if entry_date is not None:
+            row.entry_date = entry_date
         self.session.commit()
         self.session.refresh(row)
         return row
@@ -167,7 +190,10 @@ class MiscExpenseRepository:
         row = self.get_entry(entry_id)
         if row is None:
             raise ValueError("Entry not found.")
-        self.session.delete(row)
+        if bool(getattr(row, "is_reverted", False)):
+            raise ValueError("This expense entry is already reverted.")
+        row.is_reverted = True
+        row.reverted_at = datetime.now()
         self.session.commit()
 
     def list_entry_history(
@@ -193,19 +219,10 @@ class MiscExpenseRepository:
         stmt = stmt.order_by(
             MiscExpenseEntry.id.desc(),
         ).limit(int(limit))
-        out: list[dict] = []
-        for entry, expense in self.session.execute(stmt).all():
-            out.append(
-                {
-                    "entry_id": entry.id,
-                    "expense_id": expense.id,
-                    "head": expense.head or "",
-                    "expense_date": entry.entry_date,
-                    "particular": entry.particular,
-                    "amount": float(entry.amount or 0.0),
-                }
-            )
-        return out
+        return [
+            self._entry_history_row(entry, expense)
+            for entry, expense in self.session.execute(stmt).all()
+        ]
 
     def list_export_rows(
         self,
@@ -218,7 +235,7 @@ class MiscExpenseRepository:
     ) -> list[dict]:
         stmt = select(MiscExpenseEntry, MiscExpense).join(
             MiscExpense, MiscExpenseEntry.expense_id == MiscExpense.id
-        )
+        ).where(self._not_reverted_filter())
         if month is not None:
             year, mon = month
             start = date(int(year), int(mon), 1)
@@ -276,6 +293,7 @@ class MiscExpenseRepository:
             .where(
                 MiscExpenseEntry.entry_date >= start,
                 MiscExpenseEntry.entry_date <= end,
+                self._not_reverted_filter(),
             )
             .group_by(MiscExpenseEntry.entry_date)
         ).all()
@@ -294,6 +312,31 @@ class MiscExpenseRepository:
             "month_label": month_label,
         }
 
+    def misc_expenses_by_head_for_month(self, year: int, month: int) -> list[tuple[str, float]]:
+        """Miscellaneous expense totals grouped by expense head for a calendar month."""
+        last_day = calendar.monthrange(int(year), int(month))[1]
+        start = date(int(year), int(month), 1)
+        end = date(int(year), int(month), last_day)
+        rows = self.session.execute(
+            select(MiscExpense.head, func.coalesce(func.sum(MiscExpenseEntry.amount), 0.0))
+            .join(MiscExpenseEntry, MiscExpenseEntry.expense_id == MiscExpense.id)
+            .where(
+                MiscExpenseEntry.entry_date >= start,
+                MiscExpenseEntry.entry_date <= end,
+                self._not_reverted_filter(),
+            )
+            .group_by(MiscExpense.head)
+            .order_by(func.sum(MiscExpenseEntry.amount).desc())
+        ).all()
+        out: list[tuple[str, float]] = []
+        for head, total in rows:
+            amount = float(total or 0.0)
+            if amount <= 1e-6:
+                continue
+            label = str(head or "").strip() or "Miscellaneous"
+            out.append((label, amount))
+        return out
+
     def entry_date_bounds(self) -> tuple[date | None, date | None]:
         min_date, max_date = self.session.execute(
             select(
@@ -305,5 +348,10 @@ class MiscExpenseRepository:
 
     def sum_all_entries(self) -> float:
         return float(
-            self.session.scalar(select(func.coalesce(func.sum(MiscExpenseEntry.amount), 0.0))) or 0.0
+            self.session.scalar(
+                select(func.coalesce(func.sum(MiscExpenseEntry.amount), 0.0)).where(
+                    self._not_reverted_filter()
+                )
+            )
+            or 0.0
         )

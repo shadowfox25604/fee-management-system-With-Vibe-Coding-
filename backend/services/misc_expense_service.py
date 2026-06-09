@@ -59,8 +59,20 @@ class MiscExpenseService:
             entry_date=entry_date,
         )
 
-    def update_entry(self, entry_id: int, *, particular: str, amount: float):
-        return self.repo.update_entry(entry_id, particular=particular, amount=amount)
+    def update_entry(
+        self,
+        entry_id: int,
+        *,
+        particular: str,
+        amount: float,
+        entry_date: date | None = None,
+    ):
+        return self.repo.update_entry(
+            entry_id,
+            particular=particular,
+            amount=amount,
+            entry_date=entry_date,
+        )
 
     def delete_entry(self, entry_id: int) -> None:
         self.repo.delete_entry(entry_id)
@@ -76,6 +88,9 @@ class MiscExpenseService:
 
     def daily_misc_chart_for_month(self, year: int, month: int) -> dict:
         return self.repo.daily_misc_expenses_for_month(year, month)
+
+    def expenses_by_head_for_month(self, year: int, month: int) -> list[tuple[str, float]]:
+        return self.repo.misc_expenses_by_head_for_month(year, month)
 
     def count_export_rows(
         self,

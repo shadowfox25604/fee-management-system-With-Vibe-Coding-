@@ -7,17 +7,20 @@ from typing import Callable
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QScrollArea,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from frontend.ui.edudash_widgets import (
     CardTitleBar,
+    ExpensesDonutChartWidget,
     ListRow,
     RevenueChartWidget,
     SolidMetricCard,
@@ -35,15 +38,22 @@ class HomePageTab(QWidget):
         on_navigate: Callable[[str], None],
         on_refresh: Callable[[], dict],
         on_chart_data: Callable[[int, int], dict],
+        on_expense_chart_data: Callable[[int, int], dict],
         on_manage_academic_years: Callable[[], None],
+        on_chart_month_bounds: Callable[[], tuple[date | None, date | None]] | None = None,
         parent=None,
     ):
         super().__init__(parent)
         self._on_navigate = on_navigate
         self._on_refresh = on_refresh
         self._on_chart_data = on_chart_data
+        self._on_expense_chart_data = on_expense_chart_data
+        self._on_chart_month_bounds = on_chart_month_bounds
         self._on_manage_years = on_manage_academic_years
         today = date.today()
+        self._chart_bounds_min = date(today.year, today.month, 1)
+        self._chart_bounds_max = today
+        self._syncing_chart_filter = False
         self._chart_year = today.year
         self._chart_month = today.month
 
@@ -116,9 +126,60 @@ class HomePageTab(QWidget):
         metrics_host.setLayout(metrics)
         root.addWidget(metrics_host)
 
-        # ── Revenue chart (full width) ──
-        revenue_card = SurfaceCard()
-        revenue_card.setMinimumHeight(460)
+        # ── Collections & expenses (single container, month filter) ──
+        charts_card = SurfaceCard()
+        charts_card.setMinimumHeight(480)
+        charts_header = QHBoxLayout()
+        charts_header.setSpacing(12)
+        charts_title_col = QVBoxLayout()
+        charts_title_col.setSpacing(2)
+        self._charts_title = QLabel("Collections & Expenses Review")
+        self._charts_title.setProperty("role", "card-title")
+        self._charts_filter_hint = QLabel("Select a month to review payment collections and expenses.")
+        self._charts_filter_hint.setProperty("role", "muted")
+        charts_title_col.addWidget(self._charts_title)
+        charts_title_col.addWidget(self._charts_filter_hint)
+        charts_header.addLayout(charts_title_col, 1)
+
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(10)
+        filter_row.addWidget(QLabel("Month"))
+        self._chart_month_cb = QComboBox()
+        self._chart_month_cb.addItems(
+            [
+                "January",
+                "February",
+                "March",
+                "April",
+                "May",
+                "June",
+                "July",
+                "August",
+                "September",
+                "October",
+                "November",
+                "December",
+            ]
+        )
+        self._chart_month_cb.setMinimumHeight(36)
+        self._chart_month_cb.setMinimumWidth(130)
+        filter_row.addWidget(self._chart_month_cb)
+        filter_row.addWidget(QLabel("Year"))
+        self._chart_year_spin = QSpinBox()
+        self._chart_year_spin.setRange(2000, today.year)
+        self._chart_year_spin.setValue(today.year)
+        self._chart_year_spin.setMinimumHeight(36)
+        self._chart_year_spin.setMinimumWidth(88)
+        filter_row.addWidget(self._chart_year_spin)
+        charts_header.addLayout(filter_row)
+        charts_card.body.addLayout(charts_header)
+
+        charts_row = QHBoxLayout()
+        charts_row.setSpacing(20)
+        charts_row.setContentsMargins(0, 8, 0, 0)
+
+        revenue_section = QVBoxLayout()
+        revenue_section.setSpacing(8)
         rev_header = QHBoxLayout()
         rev_title_col = QVBoxLayout()
         rev_title_col.setSpacing(2)
@@ -145,11 +206,52 @@ class HomePageTab(QWidget):
         legend.addWidget(dot_reverted)
         legend.addWidget(lbl_reverted)
         legend.addStretch(1)
-        rev_header.addLayout(legend)
-        revenue_card.body.addLayout(rev_header)
+        rev_header.addLayout(legend, 1)
+        revenue_section.addLayout(rev_header)
         self._revenue_chart = RevenueChartWidget()
-        revenue_card.body.addWidget(self._revenue_chart, 1)
-        root.addWidget(revenue_card, 1)
+        revenue_section.addWidget(self._revenue_chart, 1)
+
+        expenses_section = QVBoxLayout()
+        expenses_section.setSpacing(8)
+        exp_header = QHBoxLayout()
+        exp_title_col = QVBoxLayout()
+        exp_title_col.setSpacing(2)
+        self._exp_title = QLabel("Expense Overview")
+        self._exp_title.setProperty("role", "card-title")
+        self._exp_month_lbl = QLabel("")
+        self._exp_month_lbl.setProperty("role", "muted")
+        exp_title_col.addWidget(self._exp_title)
+        exp_title_col.addWidget(self._exp_month_lbl)
+        exp_header.addLayout(exp_title_col)
+        exp_header.addStretch(1)
+        expenses_section.addLayout(exp_header)
+
+        expense_body = QHBoxLayout()
+        expense_body.setSpacing(16)
+        self._expenses_chart = ExpensesDonutChartWidget()
+        self._expenses_chart.setFixedSize(220, 220)
+        expense_body.addWidget(self._expenses_chart, 0, Qt.AlignmentFlag.AlignVCenter)
+        legend_col = QVBoxLayout()
+        legend_col.setSpacing(8)
+        self._exp_legend_host = QVBoxLayout()
+        self._exp_legend_host.setSpacing(8)
+        legend_col.addLayout(self._exp_legend_host)
+        legend_col.addStretch(1)
+        expense_body.addLayout(legend_col, 1)
+        expenses_section.addLayout(expense_body, 1)
+
+        revenue_host = QWidget()
+        revenue_host.setLayout(revenue_section)
+        expenses_host = QWidget()
+        expenses_host.setLayout(expenses_section)
+        charts_row.addWidget(revenue_host, 3)
+        charts_row.addWidget(expenses_host, 2)
+        charts_card.body.addLayout(charts_row, 1)
+        root.addWidget(charts_card, 1)
+
+        self._chart_month_cb.currentIndexChanged.connect(self._on_chart_filter_changed)
+        self._chart_year_spin.valueChanged.connect(self._on_chart_filter_changed)
+        self._sync_chart_filter_widgets()
 
         # ── Payment history (full width) ──
         payments_card = SurfaceCard()
@@ -169,6 +271,53 @@ class HomePageTab(QWidget):
         scroll.setWidget(inner)
         self.reload()
 
+    def _configure_chart_filter_bounds(self) -> None:
+        today = date.today()
+        min_d: date | None = None
+        max_d: date | None = today
+        if self._on_chart_month_bounds is not None:
+            min_d, max_d = self._on_chart_month_bounds()
+        if max_d is None:
+            max_d = today
+        if min_d is None:
+            min_d = date(today.year, today.month, 1)
+        self._chart_bounds_min = date(min_d.year, min_d.month, 1)
+        self._chart_bounds_max = max_d
+        self._chart_year_spin.setMaximum(today.year)
+        self._chart_year_spin.setMinimum(min_d.year)
+
+    def _clamp_chart_month(self, year: int, month: int) -> tuple[int, int]:
+        today = date.today()
+        y, m = int(year), int(max(1, min(12, int(month))))
+        if y > today.year or (y == today.year and m > today.month):
+            return today.year, today.month
+        earliest = self._chart_bounds_min
+        if y < earliest.year or (y == earliest.year and m < earliest.month):
+            return earliest.year, earliest.month
+        return y, m
+
+    def _sync_chart_filter_widgets(self) -> None:
+        self._syncing_chart_filter = True
+        try:
+            self._chart_month_cb.setCurrentIndex(max(0, int(self._chart_month) - 1))
+            self._chart_year_spin.setValue(int(self._chart_year))
+        finally:
+            self._syncing_chart_filter = False
+
+    def _on_chart_filter_changed(self, *_args) -> None:
+        if self._syncing_chart_filter:
+            return
+        year = int(self._chart_year_spin.value())
+        month = int(self._chart_month_cb.currentIndex()) + 1
+        self._set_chart_month(year, month)
+
+    def _set_chart_month(self, year: int, month: int) -> None:
+        y, m = self._clamp_chart_month(year, month)
+        self._chart_year = y
+        self._chart_month = m
+        self._sync_chart_filter_widgets()
+        self._load_chart_from_backend(y, m)
+
     def _apply_revenue_chart(self, daily: dict) -> None:
         month_label = str(daily.get("month_label", ""))
         raw = daily.get("amounts")
@@ -185,15 +334,58 @@ class HomePageTab(QWidget):
             reverted_amounts=reverted_amounts,
         )
 
+    def _apply_expense_chart(self, data: dict) -> None:
+        month_label = str(data.get("month_label", ""))
+        self._exp_month_lbl.setText(
+            f"Salary and miscellaneous expenses — {month_label}"
+            if month_label
+            else "Salary and miscellaneous expenses"
+        )
+        self._expenses_chart.set_expense_breakdown(data)
+        self._rebuild_expense_legend(self._expenses_chart.expense_slices())
+
+    def _rebuild_expense_legend(self, slices: list[tuple[float, str, str]]) -> None:
+        while self._exp_legend_host.count():
+            item = self._exp_legend_host.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        if not slices:
+            empty = QLabel("No expenses recorded this month.")
+            empty.setProperty("role", "muted")
+            self._exp_legend_host.addWidget(empty)
+            return
+        t = theme.current_tokens()
+        for amount, color, label in slices:
+            if amount <= 1e-6:
+                continue
+            item_row = QHBoxLayout()
+            item_row.setSpacing(8)
+            dot = QLabel("●")
+            dot.setStyleSheet(f"color: {color}; font-size: 12px; background: transparent;")
+            name = QLabel(label)
+            name.setStyleSheet(f"color: {t.text_primary}; font-size: 12px; background: transparent;")
+            value = QLabel(f"₹{amount:,.0f}")
+            value.setStyleSheet(
+                f"color: {t.text_secondary}; font-size: 12px; font-weight: 600; background: transparent;"
+            )
+            item_row.addWidget(dot)
+            item_row.addWidget(name)
+            item_row.addStretch(1)
+            item_row.addWidget(value)
+            host = QWidget()
+            host.setLayout(item_row)
+            self._exp_legend_host.addWidget(host)
+
     def _load_chart_from_backend(self, year: int, month: int) -> None:
         self._chart_year = year
         self._chart_month = month
         self._apply_revenue_chart(self._on_chart_data(year, month))
+        self._apply_expense_chart(self._on_expense_chart_data(year, month))
 
     def refresh_chart(self, chart_date: date | None = None) -> None:
         """Reload chart data from the database (e.g. after a new payment)."""
         if isinstance(chart_date, date):
-            self._load_chart_from_backend(chart_date.year, chart_date.month)
+            self._set_chart_month(chart_date.year, chart_date.month)
         else:
             self._load_chart_from_backend(self._chart_year, self._chart_month)
 
@@ -219,6 +411,8 @@ class HomePageTab(QWidget):
             f"letter-spacing: 0.4px; background: transparent;"
         )
         self._rev_month_lbl.setStyleSheet(f"color: {t.text_muted}; font-size: 11px;")
+        self._exp_month_lbl.setStyleSheet(f"color: {t.text_muted}; font-size: 11px;")
+        self._charts_filter_hint.setStyleSheet(f"color: {t.text_muted}; font-size: 11px;")
         for dot, lbl in self._rev_legend:
             color_prop = dot.property("chart_color")
             color = t.danger if color_prop == "danger" else (color_prop or ORANGE)
@@ -227,6 +421,7 @@ class HomePageTab(QWidget):
         for card in self._cards:
             card.refresh_theme()
         self._revenue_chart.refresh_theme()
+        self._expenses_chart.refresh_theme()
         theme.refresh_widget_tree(self)
         self._load_chart_from_backend(self._chart_year, self._chart_month)
 
@@ -239,8 +434,11 @@ class HomePageTab(QWidget):
     def _clear_grid(self, layout: QGridLayout) -> None:
         while layout.count():
             item = layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
 
     def reload(self, chart_date: date | None = None) -> None:
         data = self._on_refresh()
@@ -269,23 +467,33 @@ class HomePageTab(QWidget):
         self._cards[4].update_metric(str(payments_week), week_range)
         self._cards[5].update_metric(str(payments_today), today_s)
 
-        chart_ref = chart_date if isinstance(chart_date, date) else data.get("today")
-        if isinstance(chart_ref, date):
-            self._load_chart_from_backend(chart_ref.year, chart_ref.month)
+        self._configure_chart_filter_bounds()
+        if isinstance(chart_date, date):
+            self._set_chart_month(chart_date.year, chart_date.month)
         else:
-            chart = data.get("revenue_chart") or {}
-            self._apply_revenue_chart(chart)
+            self._load_chart_from_backend(self._chart_year, self._chart_month)
 
         self._clear_grid(self._payments_host)
         cols = 3
+        t = theme.current_tokens()
         for i, p in enumerate(data.get("recent_payments", [])[:12]):
+            is_reverted = bool(p.get("is_reverted", False))
+            status = str(p.get("status") or ("Payment reverted" if is_reverted else "Paid"))
+            subtitle = f"₹{p.get('amount', 0):.2f} · {p.get('mode', '')}"
+            if is_reverted:
+                subtitle = f"{subtitle} · {status}"
             self._payments_host.addWidget(
                 ListRow(
                     p.get("initial", "P"),
                     p.get("name", ""),
-                    f"₹{p.get('amount', 0):.2f} · {p.get('mode', '')}",
+                    subtitle,
                     p.get("date", ""),
+                    accent=t.text_muted if is_reverted else None,
                 ),
                 i // cols,
                 i % cols,
             )
+        self._revenue_chart.update()
+        self._expenses_chart.update()
+        self.update()
+        self.repaint()

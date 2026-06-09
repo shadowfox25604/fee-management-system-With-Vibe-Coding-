@@ -305,6 +305,7 @@ def apply_sqlite_column_migrations(engine) -> None:
     _dedupe_misc_expenses_same_identity(engine)
     _dedupe_misc_expenses_by_head(engine)
     _backfill_misc_expense_entry_dates(engine)
+    _migrate_misc_expense_entry_revert_columns(engine)
     _backfill_payment_split_amounts(engine)
 
 
@@ -1363,6 +1364,26 @@ def _backfill_misc_expense_entry_dates(engine) -> None:
                 """
             )
         )
+
+
+def _migrate_misc_expense_entry_revert_columns(engine) -> None:
+    from sqlalchemy import inspect
+
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("misc_expense_entries"):
+        return
+    entry_cols = {c["name"] for c in insp.get_columns("misc_expense_entries")}
+    with engine.begin() as conn:
+        if "is_reverted" not in entry_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE misc_expense_entries ADD COLUMN is_reverted BOOLEAN NOT NULL DEFAULT 0"
+                )
+            )
+        if "reverted_at" not in entry_cols:
+            conn.execute(text("ALTER TABLE misc_expense_entries ADD COLUMN reverted_at DATETIME"))
 
 
 def _backfill_payment_split_amounts(engine) -> None:

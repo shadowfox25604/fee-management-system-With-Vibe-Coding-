@@ -168,6 +168,8 @@ class MiscExpenseEntry(Base):
     entry_date: Mapped[date] = mapped_column(Date, nullable=False)
     particular: Mapped[str] = mapped_column(String(240), nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
+    is_reverted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    reverted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow

@@ -141,7 +141,7 @@ def test_undo_payment_cannot_run_twice(db_session):
         repo.undo_payment(pay.reference_no)
 
 
-def test_daily_chart_keeps_collection_on_payment_date_and_reversion_on_reverted_date(db_session):
+def test_daily_chart_shows_reversion_on_original_payment_date(db_session):
     pay_day = date.today() - timedelta(days=1)
     tuition, _transport = _fee_heads(db_session)
     st = Student(
@@ -183,7 +183,7 @@ def test_daily_chart_keeps_collection_on_payment_date_and_reversion_on_reverted_
     reverted = repo.undo_payment(pay.reference_no)
     assert reverted.reverted_at is not None
 
-    # Force deterministic reversion date for chart assertions (today).
+    # Reversion happens today, but the chart should attribute it to the payment date.
     payment_row = db_session.scalars(select(Payment).where(Payment.reference_no == pay.reference_no)).first()
     assert payment_row is not None
     payment_row.reverted_at = datetime.combine(date.today(), datetime.min.time())
@@ -196,5 +196,63 @@ def test_daily_chart_keeps_collection_on_payment_date_and_reversion_on_reverted_
 
     pay_idx = pay_day.day - 1
     rev_idx = date.today().day - 1
-    assert collected[pay_idx] == pytest.approx(500.0, abs=0.01)
-    assert reverted_amounts[rev_idx] == pytest.approx(500.0, abs=0.01)
+    assert collected[pay_idx] == pytest.approx(0.0, abs=0.01)
+    assert reverted_amounts[pay_idx] == pytest.approx(500.0, abs=0.01)
+    assert collected[pay_idx] + reverted_amounts[pay_idx] == pytest.approx(500.0, abs=0.01)
+    if rev_idx != pay_idx:
+        assert reverted_amounts[rev_idx] == pytest.approx(0.0, abs=0.01)
+        assert collected[rev_idx] == pytest.approx(0.0, abs=0.01)
+
+
+def test_dashboard_collected_week_ignores_reversions_for_prior_week_payments(db_session):
+    """Reverting an older payment this week must not reduce Amount Collected This Week."""
+    tuition, _transport = _fee_heads(db_session)
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+    prior_week_day = week_start - timedelta(days=1)
+
+    st = Student(
+        student_id="WEEK001",
+        full_name="Week Stats Student",
+        class_name="5",
+        section="A",
+        phone="9000000010",
+        guardian_name="Parent",
+        van_fees=0.0,
+        school_fees=5000.0,
+    )
+    db_session.add(st)
+    db_session.commit()
+    db_session.refresh(st)
+
+    db_session.add(
+        Invoice(
+            student_id_fk=st.student_id,
+            fee_head_id=tuition.id,
+            period_label="2026-01",
+            due_date=prior_week_day,
+            amount_due=5000.0,
+            amount_paid=0.0,
+        )
+    )
+    db_session.commit()
+
+    repo = PaymentRepository(db_session)
+    pay = repo.create_split_payment(
+        st,
+        van_amount=0.0,
+        school_amount=5000.0,
+        mode="cash",
+        operator_name="tester",
+        discount_amount=0.0,
+        payment_date=prior_week_day,
+    )
+    repo.undo_payment(pay.reference_no)
+
+    payment_row = db_session.scalars(select(Payment).where(Payment.reference_no == pay.reference_no)).first()
+    assert payment_row is not None
+    payment_row.reverted_at = datetime.combine(today, datetime.min.time())
+    db_session.commit()
+
+    period = PaymentService(db_session).dashboard_period_stats(week_start, today)
+    assert period["collected_week"] == pytest.approx(0.0, abs=0.01)

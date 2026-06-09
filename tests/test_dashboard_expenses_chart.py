@@ -61,3 +61,27 @@ def test_merge_daily_charts_combines_salary_and_misc(db_session):
         misc_svc.daily_misc_chart_for_month(2026, 5),
     )
     assert merged["amounts"][11] == pytest.approx(24000.0 + 1000.0, abs=0.01)
+
+
+def test_dashboard_expense_pie_includes_salary_and_misc(db_session):
+    expense_svc = ExpenseService(db_session)
+    misc_svc = MiscExpenseService(db_session)
+    faculty = expense_svc.assign_faculty_salary("Ravi Kumar", 30000.0, default_working_days=25)
+    expense_svc.record_salary_from_attendance(
+        faculty.id,
+        attendance_days=20,
+        working_days=25,
+        month_label="2026-05",
+        expense_date=date(2026, 5, 12),
+    )
+    misc_expense = misc_svc.add_new_expense("Rent", date(2026, 5, 6))
+    misc_svc.add_entry(misc_expense.id, "May rent", 5000.0, entry_date=date(2026, 5, 15))
+
+    pie = expense_svc.dashboard_expense_pie_for_month(
+        2026, 5, misc_expense_service=misc_svc
+    )
+    labels = {row["label"] for row in pie["slices"]}
+    assert "Salary" in labels
+    assert "Rent" in labels
+    assert pie["total"] == pytest.approx(24000.0 + 5000.0, abs=0.01)
+    assert sum(row["amount"] for row in pie["slices"]) == pytest.approx(pie["total"], abs=0.01)

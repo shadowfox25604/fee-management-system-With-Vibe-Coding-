@@ -6,6 +6,7 @@ import calendar
 from datetime import date
 
 from PySide6.QtCore import QDate, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
     QDialogButtonBox,
+    QMessageBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -43,6 +45,7 @@ from frontend.ui.table_style import (
 )
 
 _EDIT_COLUMN_WIDTH = 132
+_STATUS_COLUMN_WIDTH = 120
 _DELETE_COLUMN_WIDTH = 160
 
 
@@ -114,6 +117,7 @@ class _EntryDialog(QDialog):
         expense_id: int | None = None,
         particular: str = "",
         amount: str = "",
+        entry_date: date | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -140,7 +144,14 @@ class _EntryDialog(QDialog):
         self._amount = QLineEdit((amount or "").strip())
         self._amount.setPlaceholderText("Amount in ₹")
         self._amount.setMinimumHeight(40)
+        self._date = QDateEdit(QDate.currentDate())
+        self._date.setCalendarPopup(True)
+        self._date.setDisplayFormat("dd/MM/yyyy")
+        self._date.setMinimumHeight(40)
+        if entry_date is not None:
+            self._date.setDate(QDate(entry_date.year, entry_date.month, entry_date.day))
         form.addRow("Expense", self._expense)
+        form.addRow("Date", self._date)
         form.addRow("Particular", self._particular)
         form.addRow("Amount (₹)", self._amount)
         layout.addLayout(form)
@@ -153,8 +164,10 @@ class _EntryDialog(QDialog):
         layout.addWidget(actions)
 
     def payload(self) -> dict:
+        qd = self._date.date()
         return {
             "expense_id": int(self._expense.currentData()),
+            "entry_date": date(qd.year(), qd.month(), qd.day()),
             "particular": (self._particular.text() or "").strip(),
             "amount": float((self._amount.text() or "").strip() or 0.0),
         }
@@ -499,9 +512,10 @@ class _ExportFilterDialog(QDialog):
 class MiscExpensesPage(QWidget):
     PAGE_SIZE = 50
 
-    def __init__(self, service: MiscExpenseService, parent=None):
+    def __init__(self, service: MiscExpenseService, parent=None, *, on_data_changed=None):
         super().__init__(parent)
         self._service = service
+        self._on_data_changed = on_data_changed
         self._page = 0
         self._cache: list[dict] = []
 
@@ -543,9 +557,9 @@ class MiscExpensesPage(QWidget):
 
         card = SurfaceCard()
         card.body.addWidget(CardTitleBar("Expense entry history"))
-        self._table = QTableWidget(0, 6)
+        self._table = QTableWidget(0, 7)
         self._table.setHorizontalHeaderLabels(
-            ["Date", "Head", "Particular", "Amount (₹)", "Edit", "Delete"]
+            ["Date", "Head", "Particular", "Amount (₹)", "Status", "Edit", "Delete"]
         )
         configure_scrollable_data_table(self._table)
         self._table.setProperty("table_variant", "scrollable")
@@ -576,6 +590,10 @@ class MiscExpensesPage(QWidget):
         self._filter.textChanged.connect(lambda _: self.reload(reset_page=True))
         self.reload(reset_page=True)
 
+    def _notify_data_changed(self) -> None:
+        if self._on_data_changed is not None:
+            self._on_data_changed()
+
     def refresh_theme(self) -> None:
         for btn in (
             self._add_new_expense_btn,
@@ -605,36 +623,52 @@ class MiscExpensesPage(QWidget):
         rows = slice_page(self._cache, self._page, page_size=self.PAGE_SIZE)
         tbl = self._table
         tbl.setRowCount(len(rows))
+        tokens = theme.current_tokens()
         for i, row in enumerate(rows):
             d = row.get("expense_date")
             date_text = f"{d.day:02d}/{d.month:02d}/{d.year}" if d else ""
+            is_reverted = bool(row.get("is_reverted", False))
+            status = str(row.get("status") or ("Expense reverted" if is_reverted else "Recorded"))
             tbl.setItem(i, 0, table_item(date_text))
             tbl.setItem(i, 1, table_item(str(row.get("head") or "")))
             tbl.setItem(i, 2, table_item(str(row.get("particular") or "")))
-            tbl.setItem(i, 3, table_item(f"{float(row.get('amount') or 0.0):,.2f}"))
+            amount_item = table_item(f"{float(row.get('amount') or 0.0):,.2f}")
+            status_item = table_item(status)
+            if is_reverted:
+                amount_item.setForeground(QColor(tokens.text_muted))
+                status_item.setForeground(QColor(tokens.text_muted))
+            tbl.setItem(i, 3, amount_item)
+            tbl.setItem(i, 4, status_item)
             entry_id = int(row.get("entry_id") or 0)
             edit_btn = QPushButton("Edit")
             style_fee_action_button(
                 edit_btn,
                 width=fee_action_button_width(edit_btn, min_width=76),
             )
-            edit_btn.clicked.connect(lambda _=False, eid=entry_id: self._on_edit_entry(eid))
-            tbl.setCellWidget(i, 4, edit_btn)
+            if is_reverted:
+                edit_btn.setEnabled(False)
+            else:
+                edit_btn.clicked.connect(lambda _=False, eid=entry_id: self._on_edit_entry(eid))
+            tbl.setCellWidget(i, 5, edit_btn)
             delete_btn = QPushButton("Delete")
             style_fee_action_button(
                 delete_btn,
                 width=fee_action_button_width(delete_btn, min_width=92),
             )
-            delete_btn.clicked.connect(lambda _=False, eid=entry_id: self._on_delete_entry(eid))
-            tbl.setCellWidget(i, 5, delete_btn)
-        for col in range(4):
+            if is_reverted:
+                delete_btn.setEnabled(False)
+            else:
+                delete_btn.clicked.connect(lambda _=False, eid=entry_id: self._on_delete_entry(eid))
+            tbl.setCellWidget(i, 6, delete_btn)
+        for col in range(5):
             tbl.resizeColumnToContents(col)
         tbl.resizeColumnsToContents()
         header = tbl.horizontalHeader()
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        tbl.setColumnWidth(4, max(tbl.columnWidth(4), _EDIT_COLUMN_WIDTH))
-        tbl.setColumnWidth(5, max(tbl.columnWidth(5), _DELETE_COLUMN_WIDTH))
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
+        tbl.setColumnWidth(5, max(tbl.columnWidth(5), _EDIT_COLUMN_WIDTH))
+        tbl.setColumnWidth(6, max(tbl.columnWidth(6), _DELETE_COLUMN_WIDTH))
+        tbl.setColumnWidth(4, max(tbl.columnWidth(4), _STATUS_COLUMN_WIDTH))
         fitted = getattr(tbl, "_fitted_column_widths", None)
         if fitted is None:
             fitted = [tbl.columnWidth(c) for c in range(tbl.columnCount())]
@@ -642,6 +676,7 @@ class MiscExpensesPage(QWidget):
             fitted.append(72)
         fitted[4] = tbl.columnWidth(4)
         fitted[5] = tbl.columnWidth(5)
+        fitted[6] = tbl.columnWidth(6)
         tbl._fitted_column_widths = fitted
         self._pagination.update_state(self._page, len(self._cache), page_size=self.PAGE_SIZE)
 
@@ -667,6 +702,7 @@ class MiscExpensesPage(QWidget):
             return
         theme.message_information(self._window(), "Saved", "New expense added.")
         self.reload(reset_page=True)
+        self._notify_data_changed()
 
     def _on_add_entry(self) -> None:
         if not self._service.list_expenses():
@@ -685,6 +721,7 @@ class MiscExpensesPage(QWidget):
                 payload["expense_id"],
                 payload["particular"],
                 payload["amount"],
+                entry_date=payload["entry_date"],
             )
         except ValueError as exc:
             theme.message_warning(self._window(), "Invalid entry", str(exc))
@@ -694,6 +731,7 @@ class MiscExpensesPage(QWidget):
             return
         theme.message_information(self._window(), "Saved", "Expense entry saved.")
         self.reload(reset_page=False)
+        self._notify_data_changed()
 
     def _on_edit_entry(self, entry_id: int) -> None:
         entry = self._service.repo.get_entry(entry_id)
@@ -707,6 +745,7 @@ class MiscExpensesPage(QWidget):
             expense_id=int(entry.expense_id),
             particular=entry.particular,
             amount=f"{float(entry.amount or 0.0):.2f}",
+            entry_date=entry.entry_date,
             parent=self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -719,12 +758,14 @@ class MiscExpensesPage(QWidget):
                     payload["expense_id"],
                     payload["particular"],
                     payload["amount"],
+                    entry_date=payload["entry_date"],
                 )
             else:
                 self._service.update_entry(
                     entry_id,
                     particular=payload["particular"],
                     amount=payload["amount"],
+                    entry_date=payload["entry_date"],
                 )
         except ValueError as exc:
             theme.message_warning(self._window(), "Invalid entry", str(exc))
@@ -733,14 +774,18 @@ class MiscExpensesPage(QWidget):
             theme.message_critical(self._window(), "Save failed", str(exc))
             return
         self.reload(reset_page=False)
+        self._notify_data_changed()
 
     def _on_delete_entry(self, entry_id: int) -> None:
         reply = theme.message_question(
             self._window(),
-            "Delete entry",
-            "Delete this expense entry permanently?",
+            "Confirm delete entry",
+            "Delete this expense entry?\n\n"
+            "The row will stay in history with status “Expense reverted”.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
-        if reply != Qt.StandardButton.Yes:
+        if reply != QMessageBox.StandardButton.Yes:
             return
         try:
             self._service.delete_entry(entry_id)
@@ -750,7 +795,13 @@ class MiscExpensesPage(QWidget):
         except Exception as exc:
             theme.message_critical(self._window(), "Delete failed", str(exc))
             return
+        theme.message_information(
+            self._window(),
+            "Expense reverted",
+            "The expense entry has been reverted and marked as “Expense reverted”.",
+        )
         self.reload(reset_page=False)
+        self._notify_data_changed()
 
     def _on_export_excel(self) -> None:
         dialog = _ExportFilterDialog(self._service, parent=self)

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from typing import Callable
 
+from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
     QComboBox,
+    QDateEdit,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -56,8 +58,11 @@ class AddStudentPage(QWidget):
         configure_phone_line_edit(self.mobile_number_1)
         self.mobile_number_2 = QLineEdit()
         configure_phone_line_edit(self.mobile_number_2)
-        self.date_of_birth = QLineEdit()
-        self.date_of_birth.setPlaceholderText("DD/MM/YYYY")
+        self.date_of_birth = QDateEdit(QDate.currentDate())
+        self.date_of_birth.setCalendarPopup(True)
+        self.date_of_birth.setDisplayFormat("dd/MM/yyyy")
+        self.date_of_birth.setMinimumHeight(40)
+        self.date_of_birth.setMaximumDate(QDate.currentDate())
         self.caste = QLineEdit()
         self.aadhaar = QLineEdit()
         self.village = QComboBox()
@@ -117,17 +122,12 @@ class AddStudentPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self._wrapped)
 
-    @staticmethod
-    def _optional_date_of_birth(text: str) -> date | None:
-        raw = (text or "").strip()
-        if not raw:
-            return None
-        for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
-            try:
-                return datetime.strptime(raw, fmt).date()
-            except ValueError:
-                continue
-        return None
+    def date_of_birth_value(self) -> date:
+        qd = self.date_of_birth.date()
+        return date(qd.year(), qd.month(), qd.day())
+
+    def reset_date_of_birth(self) -> None:
+        self.date_of_birth.setDate(QDate.currentDate())
 
     def optional_fields_for_submit(self) -> dict:
         """Sanitize optional fields; invalid optional input is ignored (no popup)."""
@@ -141,7 +141,7 @@ class AddStudentPage(QWidget):
         return {
             "mother_name": self.mother_name.text().strip(),
             "mobile_number_2": mobile_2,
-            "date_of_birth": self._optional_date_of_birth(self.date_of_birth.text()),
+            "date_of_birth": self.date_of_birth_value(),
             "caste": self.caste.text().strip(),
             "aadhaar": aadhaar,
             "status": status_text or "active",
