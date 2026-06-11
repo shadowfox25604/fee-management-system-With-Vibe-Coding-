@@ -1,0 +1,5 @@
+{
+  "database": "./data/fee_management.db",
+  "readonly": true,
+  "wal": true
+}

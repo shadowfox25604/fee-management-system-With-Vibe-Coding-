@@ -70,16 +70,23 @@ class StudentService:
         if value is None:
             return None
         if isinstance(value, datetime):
-            return value.date()
+            value = value.date()
         if isinstance(value, date):
+            if value > date.today():
+                raise ValueError("Date of Birth cannot be in the future.")
             return value
         text = str(value or "").strip()
         if not text:
             return None
         for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
             try:
-                return datetime.strptime(text, fmt).date()
-            except ValueError:
+                parsed = datetime.strptime(text, fmt).date()
+                if parsed > date.today():
+                    raise ValueError("Date of Birth cannot be in the future.")
+                return parsed
+            except ValueError as exc:
+                if str(exc) == "Date of Birth cannot be in the future.":
+                    raise
                 continue
         raise ValueError("Date of Birth must be in DD/MM/YYYY format")
 

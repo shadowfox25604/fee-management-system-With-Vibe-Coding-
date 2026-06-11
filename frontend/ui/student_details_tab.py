@@ -62,6 +62,7 @@ class StudentDetailsTab(QWidget):
         tool = QHBoxLayout()
         tool.setSpacing(8)
         self.refresh_btn = QPushButton("Refresh")
+        style_fee_action_button(self.refresh_btn)
         tool.addWidget(self.refresh_btn)
         tool.addWidget(QLabel("Search by"))
         self.search_by = QComboBox()
@@ -386,6 +387,7 @@ class StudentDetailsTab(QWidget):
     def refresh_theme(self) -> None:
         self._profile_card.refresh_theme()
         self._refresh_results_style()
+        style_fee_action_button(self.refresh_btn, width=self.refresh_btn.width() if self.refresh_btn.width() > 0 else None)
         style_fee_action_button(self.btn_edit, width=self.btn_edit.width() if self.btn_edit.width() > 0 else None)
         self._style_status_badge(self._status_badge.text())
         for bar in self.findChildren(CardTitleBar):

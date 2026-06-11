@@ -77,6 +77,7 @@ from frontend.ui.fee_control_page import FeeControlPage
 from frontend.ui.home_page import HomePageTab
 from frontend.ui.misc_expenses_page import MiscExpensesPage
 from frontend.ui.payment_history_export_dialog import PaymentHistoryExportDialog
+from frontend.ui.student_filter_combo import StudentFilterComboBox
 from frontend.ui.salary_history_export_dialog import SalaryHistoryExportDialog
 from frontend.ui.pagination import PAGE_SIZE, PaginationBar, page_count, slice_page
 from frontend.ui.student_details_tab import StudentDetailsTab
@@ -93,6 +94,11 @@ from frontend.ui.table_style import (
     table_item,
 )
 from frontend.ui import theme
+from frontend.ui.date_input import (
+    configure_date_of_birth_edit,
+    date_of_birth_validation_message,
+    read_date_of_birth_value,
+)
 from frontend.ui.phone_input import configure_phone_line_edit, normalize_phone_text, phone_validation_message
 
 
@@ -370,6 +376,10 @@ class MainWindow(QMainWindow):
             getattr(self, "_create_backup_btn", None),
             getattr(self, "_restore_backup_btn", None),
             getattr(self, "_manage_years_btn", None),
+            getattr(self, "_search_refresh_btn", None),
+            getattr(self, "_report_refresh_btn", None),
+            getattr(self, "_payment_history_refresh_btn", None),
+            getattr(self, "_salary_history_tab_refresh_btn", None),
             getattr(self, "_salary_refresh_btn", None),
             getattr(self, "_salary_open_window_btn", None),
             getattr(self, "_salary_control_refresh_btn", None),
@@ -744,9 +754,10 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
 
         toolbar = QHBoxLayout()
-        search_refresh_btn = QPushButton("Refresh")
-        search_refresh_btn.clicked.connect(self._on_student_search_refresh_clicked)
-        toolbar.addWidget(search_refresh_btn)
+        self._search_refresh_btn = QPushButton("Refresh")
+        style_fee_action_button(self._search_refresh_btn)
+        self._search_refresh_btn.clicked.connect(self._on_student_search_refresh_clicked)
+        toolbar.addWidget(self._search_refresh_btn)
         toolbar.addWidget(QLabel("Search by"))
         self.search_by = QComboBox()
         self.search_by.addItems(
@@ -1485,7 +1496,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
         hint = QLabel(
-            "Recorded payments (newest first). Filter by reference, student ID, or name. "
+            "Recorded payments (newest first). Filter by student, reference, or search text. "
             "Collected (₹) is school + van + discount; discount applies to school fees only."
         )
         hint.setWordWrap(True)
@@ -1495,14 +1506,25 @@ class MainWindow(QMainWindow):
         refresh_btn = QPushButton("Refresh")
         style_fee_action_button(refresh_btn)
         refresh_btn.clicked.connect(self._on_payment_history_refresh_clicked)
+        self._payment_history_refresh_btn = refresh_btn
         export_btn = QPushButton("Export Excel")
         style_fee_action_button(export_btn)
         export_btn.clicked.connect(self._on_payment_history_export_excel)
         toolbar.addWidget(refresh_btn)
         toolbar.addWidget(export_btn)
-        toolbar.addWidget(QLabel("Filter"))
+        toolbar.addWidget(QLabel("Student"))
+        self._payment_history_student = StudentFilterComboBox(self.student_service)
+        self._payment_history_student.currentIndexChanged.connect(
+            lambda _: self._refresh_payment_history_table(reset_page=True)
+        )
+        if self._payment_history_student.lineEdit() is not None:
+            self._payment_history_student.lineEdit().returnPressed.connect(
+                lambda: self._refresh_payment_history_table(reset_page=True)
+            )
+        toolbar.addWidget(self._payment_history_student, 2)
+        toolbar.addWidget(QLabel("Search"))
         self._payment_history_filter = QLineEdit()
-        self._payment_history_filter.setPlaceholderText("Reference, student ID, or name…")
+        self._payment_history_filter.setPlaceholderText("Reference or quick text…")
         self._payment_history_filter.textChanged.connect(
             lambda _: self._refresh_payment_history_table(reset_page=True)
         )
@@ -1560,6 +1582,7 @@ class MainWindow(QMainWindow):
         refresh_btn = QPushButton("Refresh")
         style_fee_action_button(refresh_btn)
         refresh_btn.clicked.connect(self._on_salary_history_tab_refresh_clicked)
+        self._salary_history_tab_refresh_btn = refresh_btn
         export_btn = QPushButton("Export Excel")
         style_fee_action_button(export_btn)
         export_btn.clicked.connect(self._on_salary_history_export_excel)
@@ -3341,17 +3364,28 @@ class MainWindow(QMainWindow):
                 self._payment_history_filter.clear()
             finally:
                 self._payment_history_filter.blockSignals(False)
+        if hasattr(self, "_payment_history_student"):
+            self._payment_history_student.blockSignals(True)
+            try:
+                self._payment_history_student.clear_selection()
+            finally:
+                self._payment_history_student.blockSignals(False)
         clear_data_table_selection(getattr(self, "_payment_history_table", None))
         self._refresh_payment_history_table(reset_page=True)
 
     def _on_payment_history_export_excel(self) -> None:
         search = ""
+        student_id = None
         if hasattr(self, "_payment_history_filter"):
             search = self._payment_history_filter.text()
+        if hasattr(self, "_payment_history_student"):
+            student_id = self._payment_history_student.selected_student_id()
         dialog = PaymentHistoryExportDialog(
             self.payment_service,
             self.academic_year_service,
+            self.student_service,
             search=search,
+            student_id=student_id,
             parent=self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -3400,10 +3434,14 @@ class MainWindow(QMainWindow):
         if reset_page:
             self._payment_history_page = 0
         search = self._payment_history_filter.text() if hasattr(self, "_payment_history_filter") else ""
+        student_id = None
+        if hasattr(self, "_payment_history_student"):
+            student_id = self._payment_history_student.selected_student_id()
         self._payment_history_cache = self.payment_service.list_payment_history(
             limit=50000,
             search=search,
             include_reverted=True,
+            student_id=student_id,
         )
         self._render_payment_history_page()
 
@@ -3577,6 +3615,18 @@ class MainWindow(QMainWindow):
             edit.setText(f"{amt:.2f}")
 
     def _on_fee_control_apply_clicked(self, class_key: str):
+        page = getattr(self, "_fee_control_page", None)
+        year_id = page.selected_academic_year_id if page is not None else None
+        if year_id is None:
+            theme.message_warning(self, "Academic year required", "Select an academic year before applying class fees.")
+            return
+        if page is not None and not page.selected_year_editable:
+            theme.message_warning(
+                self,
+                "Academic year locked",
+                "Class fees cannot be changed for an academic year that has already ended.",
+            )
+            return
         edit = self._fee_control_amount_edits.get(class_key)
         if edit is None:
             return
@@ -3590,13 +3640,19 @@ class MainWindow(QMainWindow):
             theme.message_warning(self, "Invalid amount", "School fee cannot be negative.")
             return
         n = self.class_fee_service.count_students_in_class(class_key)
+        year_label = ""
+        if page is not None:
+            year = self.academic_year_service.get(year_id)
+            if year is not None:
+                year_label = self.academic_year_service.format_year_short_label(year)
         reply = theme.message_question(
             self,
             "Confirm class fee update",
-            f"Set school fee for class “{class_key}” to {new_amt:.2f}?\n\n"
-            f"This will update {n} student(s) whose class matches (case-insensitive), set each student’s "
-            f"school_fees to this amount, scale tuition (non-transport) invoice amount_due values, and store "
-            f"this amount for the class. Van fees and transport invoices will not be changed.\n\n"
+            f"Set school fee for class “{class_key}” to {new_amt:.2f} for academic year {year_label or year_id}?\n\n"
+            f"This will update {n} student(s) whose class matches (case-insensitive), update each student’s "
+            f"fee record for that academic year, scale tuition (non-transport) invoice amount_due values for "
+            f"that year, and store this amount as the class tariff for the session. Van fees and transport "
+            f"invoices will not be changed.\n\n"
             f"Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -3604,11 +3660,11 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
         try:
-            updated = self.class_fee_service.apply_class_school_fee(class_key, new_amt)
+            updated = self.class_fee_service.apply_class_school_fee(class_key, new_amt, year_id)
             theme.message_information(
                 self,
                 "Fee updated",
-                f"Class “{class_key}” school fee saved. {updated} student(s) updated.",
+                f"Class “{class_key}” school fee saved for {year_label or year_id}. {updated} student(s) updated.",
             )
             self._refresh_fee_control_amounts()
             self.perform_search(reset_page=True)
@@ -4160,14 +4216,14 @@ class MainWindow(QMainWindow):
             )
             edit_mother_name = QLineEdit(str(getattr(student, "mother_name", None) or ""))
             dob_value = getattr(student, "date_of_birth", None)
-            if isinstance(dob_value, datetime):
-                dob_text = dob_value.strftime("%d/%m/%Y")
-            elif isinstance(dob_value, date):
-                dob_text = dob_value.strftime("%d/%m/%Y")
-            else:
-                dob_text = str(dob_value or "")
-            edit_dob = QLineEdit(dob_text)
-            edit_dob.setPlaceholderText("DD/MM/YYYY")
+            if not isinstance(dob_value, (date, datetime)):
+                dob_value = None
+            edit_dob = QDateEdit()
+            dob_initially_empty = configure_date_of_birth_edit(
+                edit_dob,
+                initial=dob_value,
+                allow_empty=True,
+            )
             edit_caste = QLineEdit(str(getattr(student, "caste", None) or ""))
             edit_aadhaar = QLineEdit(str(getattr(student, "aadhaar", None) or ""))
             lbl_van_fees_editable = QLabel(f"{float(getattr(student, 'van_fees', 0) or 0):.2f}")
@@ -4479,6 +4535,10 @@ class MainWindow(QMainWindow):
             if aadhaar_text and len(aadhaar_text) != 12:
                 theme.message_warning(dialog, "Validation", "Aadhaar must be exactly 12 digits.")
                 return
+            dob_error = date_of_birth_validation_message(edit_dob)
+            if dob_error:
+                theme.message_warning(dialog, "Validation", dob_error)
+                return
             try:
                 updated = self.student_service.update_student(
                     student,
@@ -4498,7 +4558,10 @@ class MainWindow(QMainWindow):
                     mother_name=edit_mother_name.text(),
                     mobile_number_1=edit_mobile_1.text(),
                     mobile_number_2=edit_mobile_2.text(),
-                    date_of_birth=edit_dob.text(),
+                    date_of_birth=read_date_of_birth_value(
+                        edit_dob,
+                        initially_empty=dob_initially_empty,
+                    ),
                     caste=edit_caste.text(),
                     aadhaar=edit_aadhaar.text(),
                 )

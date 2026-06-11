@@ -6,6 +6,7 @@ from typing import Callable
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -65,6 +66,7 @@ class _TariffList(QWidget):
         self._on_apply = on_apply
         self._header = header
         self.amount_edits: dict[str, QLineEdit] = {}
+        self._apply_btns: dict[str, QPushButton] = {}
         self._rows: dict[str, QWidget] = {}
         self._labels: dict[str, str] = {}
         self._apply_w = _apply_w()
@@ -105,6 +107,7 @@ class _TariffList(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         self.amount_edits.clear()
+        self._apply_btns.clear()
         self._rows.clear()
         self._labels.clear()
 
@@ -129,6 +132,7 @@ class _TariffList(QWidget):
             edit.setFixedSize(_AMOUNT_W, 34)
 
             btn = QPushButton("Apply")
+            btn.setObjectName("feeApplyBtn")
             style_fee_action_button(btn, width=self._apply_w)
             btn.clicked.connect(lambda _=False, k=key: self._on_apply(k))
 
@@ -139,6 +143,7 @@ class _TariffList(QWidget):
             row._alt = alt  # type: ignore[attr-defined]
             self._body_lay.addWidget(row)
             self.amount_edits[key] = edit
+            self._apply_btns[key] = btn
             self._rows[key] = row
 
         self.refresh_theme()
@@ -152,6 +157,12 @@ class _TariffList(QWidget):
             if show:
                 n += 1
         return n
+
+    def set_read_only(self, locked: bool) -> None:
+        for edit in self.amount_edits.values():
+            edit.setReadOnly(locked)
+        for btn in self._apply_btns.values():
+            btn.setEnabled(not locked)
 
     def refresh_theme(self) -> None:
         t = theme.current_tokens()
@@ -245,8 +256,8 @@ class FeeControlPage(QWidget):
         lay.addWidget(self._stack, 1)
 
         self._pick(0)
-        self.refresh_amounts()
         self.reload_stats()
+        self.refresh_amounts()
         self.refresh_theme()
 
     @property
@@ -263,11 +274,12 @@ class FeeControlPage(QWidget):
         v = QVBoxLayout(f)
         v.setContentsMargins(16, 12, 16, 12)
         v.setSpacing(4)
-        t = QLabel("Set standard tariffs once — they flow to students and invoices")
+        t = QLabel("Set school fees independently for each academic year")
         t.setObjectName("fcBannerTitle")
         b = QLabel(
-            "School fees apply by class; van fees apply by village for van-transport students. "
-            "Each change requires confirmation before saving."
+            "Choose an academic year, then set class tariffs for that session. "
+            "Apply updates the stored tariff and each enrolled student’s fee record for that year. "
+            "Ended academic years are locked. Van fees remain global."
         )
         b.setWordWrap(True)
         b.setObjectName("fcBannerBody")
@@ -343,9 +355,26 @@ class FeeControlPage(QWidget):
         card.body.addWidget(
             self._card_head(
                 "School fee tariffs",
-                "Fixed class list (LKG through Class 10). Updates school_fees and tuition invoice amounts.",
+                "Annual school fee per class for the selected academic year.",
             )
         )
+        year_bar = QWidget()
+        yh = QHBoxLayout(year_bar)
+        yh.setContentsMargins(20, 0, 20, 8)
+        yh.setSpacing(10)
+        year_lbl = QLabel("Academic year")
+        year_lbl.setProperty("role", "field-label")
+        self._school_year_combo = QComboBox()
+        self._school_year_combo.setMinimumHeight(36)
+        self._school_year_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._school_year_combo.currentIndexChanged.connect(self._on_school_year_changed)
+        self._year_lock_hint = QLabel("")
+        self._year_lock_hint.setProperty("role", "hint")
+        self._year_lock_hint.setWordWrap(True)
+        yh.addWidget(year_lbl)
+        yh.addWidget(self._school_year_combo, 1)
+        card.body.addWidget(year_bar)
+        card.body.addWidget(self._year_lock_hint)
         self._school_list = _TariffList(header="Class", on_apply=on_apply)
         items = [(k, _class_label(k)) for k in FIXED_CLASS_KEYS]
         self._school_list.set_items(items)
@@ -392,6 +421,57 @@ class FeeControlPage(QWidget):
         v.addWidget(card, 1)
         return p
 
+    @property
+    def selected_academic_year_id(self) -> int | None:
+        data = self._school_year_combo.currentData()
+        return int(data) if data is not None else None
+
+    @property
+    def selected_year_editable(self) -> bool:
+        year_id = self.selected_academic_year_id
+        if year_id is None:
+            return False
+        return self._class_svc.is_year_tariff_editable(year_id)
+
+    def _reload_school_year_combo(self) -> None:
+        years = self._class_svc.list_years_for_fee_control()
+        current = self._year_svc.get_current()
+        prev_id = self.selected_academic_year_id
+        self._school_year_combo.blockSignals(True)
+        self._school_year_combo.clear()
+        for year in years:
+            label = self._year_svc.format_year_short_label(year)
+            detail = f"{year.start_date:%d %b %Y} – {year.end_date:%d %b %Y}"
+            self._school_year_combo.addItem(f"{label}  ({detail})", year.id)
+        if prev_id is not None:
+            idx = self._school_year_combo.findData(prev_id)
+            if idx >= 0:
+                self._school_year_combo.setCurrentIndex(idx)
+        elif current is not None:
+            idx = self._school_year_combo.findData(current.id)
+            if idx >= 0:
+                self._school_year_combo.setCurrentIndex(idx)
+        self._school_year_combo.blockSignals(False)
+        self._update_school_year_lock_state()
+
+    def _on_school_year_changed(self, _index: int) -> None:
+        self._update_school_year_lock_state()
+        self.refresh_school_amounts()
+
+    def _update_school_year_lock_state(self) -> None:
+        editable = self.selected_year_editable
+        self._school_list.set_read_only(not editable)
+        if not self.selected_academic_year_id:
+            self._year_lock_hint.setText("Add an academic year before setting class fees.")
+        elif editable:
+            self._year_lock_hint.setText(
+                "Fees for this session can be edited before and during the academic year."
+            )
+        else:
+            self._year_lock_hint.setText(
+                "This academic year has ended — class fees are locked and cannot be changed."
+            )
+
     def _pick(self, idx: int) -> None:
         self._stack.setCurrentIndex(idx)
         self._seg_school.set_active(idx == 0)
@@ -422,8 +502,9 @@ class FeeControlPage(QWidget):
         self.reload_stats()
 
     def refresh_school_amounts(self) -> None:
+        year_id = self.selected_academic_year_id
         for k, e in self.fee_control_amount_edits.items():
-            e.setText(f"{self._class_svc.display_amount_for_class(k):.2f}")
+            e.setText(f"{self._class_svc.display_amount_for_class(k, year_id):.2f}")
 
     def refresh_van_amounts(self) -> None:
         for k, e in self._van_edits.items():
@@ -435,6 +516,7 @@ class FeeControlPage(QWidget):
         self.reload_stats()
 
     def reload_stats(self) -> None:
+        self._reload_school_year_combo()
         n_v = len(self._van_svc.list_village_keys_for_fee_control())
         self._m_classes.update_metric(str(len(FIXED_CLASS_KEYS)), "LKG → Class 10")
         self._m_villages.update_metric(str(n_v), "Van transport routes")

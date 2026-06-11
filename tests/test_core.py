@@ -784,8 +784,24 @@ def test_class_fee_apply_updates_students_scales_tuition_leaves_transport_invoic
         s.add(inv_v)
         s.commit()
 
+        from backend.models import AcademicYear, StudentAcademicYearFee
+        from backend.repositories.academic_year_repository import AcademicYearRepository
+
+        ay_repo = AcademicYearRepository(s)
+        year = ay_repo.ensure_bootstrap_year()
+        s.add(
+            StudentAcademicYearFee(
+                student_id_fk=st.student_id,
+                academic_year_id=year.id,
+                school_fees=20000.0,
+                van_fees=3000.0,
+            )
+        )
+        inv_s.academic_year_id = year.id
+        s.commit()
+
         cfr = ClassFeeRepository(s)
-        n = cfr.apply_class_school_fee("5", 25000.0)
+        n = cfr.apply_class_school_fee("5", 25000.0, year.id)
         assert n == 1
 
         st2 = s.get(Student, st.student_id)
@@ -797,7 +813,7 @@ def test_class_fee_apply_updates_students_scales_tuition_leaves_transport_invoic
         assert float(inv_s.amount_due) == 12500.0
         assert float(inv_v.amount_due) == 500.0
 
-        row = s.get(ClassSchoolFee, "5")
+        row = s.get(ClassSchoolFee, ("5", year.id))
         assert row is not None
         assert float(row.amount) == 25000.0
 

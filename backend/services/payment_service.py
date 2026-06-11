@@ -73,6 +73,7 @@ class PaymentService:
         class_name: str | None = None,
         class_names: list[str] | None = None,
         academic_year_id: int | None = None,
+        student_id: str | None = None,
     ):
         return self.repo.list_recent_payments_with_students(
             limit,
@@ -84,6 +85,7 @@ class PaymentService:
             class_name=class_name,
             class_names=class_names,
             academic_year_id=academic_year_id,
+            student_id=student_id,
         )
 
     def payment_date_bounds(self) -> tuple[date | None, date | None]:
@@ -100,6 +102,7 @@ class PaymentService:
         class_name: str | None = None,
         class_names: list[str] | None = None,
         academic_year_id: int | None = None,
+        student_id: str | None = None,
     ) -> int:
         return len(
             self.repo.list_recent_payments_with_students(
@@ -112,6 +115,7 @@ class PaymentService:
                 class_name=class_name,
                 class_names=class_names,
                 academic_year_id=academic_year_id,
+                student_id=student_id,
             )
         )
 
@@ -127,6 +131,7 @@ class PaymentService:
         class_name: str | None = None,
         class_names: list[str] | None = None,
         academic_year_id: int | None = None,
+        student_id: str | None = None,
     ) -> Path:
         from backend.reports.payment_history_excel_export import PaymentHistoryExcelExporter
 
@@ -140,6 +145,7 @@ class PaymentService:
             class_name=class_name,
             class_names=class_names,
             academic_year_id=academic_year_id,
+            student_id=student_id,
         )
         PaymentHistoryExcelExporter.export(rows, output_path)
         return output_path

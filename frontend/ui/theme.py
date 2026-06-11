@@ -7,7 +7,7 @@ from typing import Callable, Literal
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPalette
-from PySide6.QtWidgets import QApplication, QDialog, QListWidget, QMessageBox, QPushButton, QWidget
+from PySide6.QtWidgets import QApplication, QCompleter, QDialog, QListWidget, QMessageBox, QPushButton, QWidget
 
 ThemeMode = Literal["light", "dark"]
 
@@ -374,6 +374,23 @@ def _stylesheet(t: ThemeTokens) -> str:
         border: 1px solid {t.border};
         selection-background-color: {t.primary_soft};
     }}
+    QListView#completerPopup {{
+        background: {combo_popup_bg};
+        color: {t.text_primary};
+        border: 1px solid {t.border};
+        outline: none;
+        padding: 2px;
+    }}
+    QListView#completerPopup::item {{
+        padding: 6px 10px;
+    }}
+    QListView#completerPopup::item:selected {{
+        background: {t.primary_soft};
+        color: {t.text_primary};
+    }}
+    QListView#completerPopup::item:hover {{
+        background: {t.bg_hover};
+    }}
 
     QPushButton {{
         background: {t.bg_surface};
@@ -563,6 +580,14 @@ def _stylesheet(t: ThemeTokens) -> str:
     }}
     QLabel[role="muted"] {{ color: {t.text_secondary}; font-size: 12px; }}
     QLabel[role="hint"] {{ color: {t.text_muted}; font-size: 11px; }}
+    QPushButton[role="theme-icon"], QLabel[role="theme-icon"],
+    QLabel[role="theme-icon-active"] {{
+        background: transparent;
+        border: none;
+        padding: 0px;
+        font-family: "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
+        font-size: 14px;
+    }}
 
     QFrame[card="surface"] {{
         background: {t.bg_surface};
@@ -576,6 +601,24 @@ def polish(btn: QPushButton, variant: str) -> None:
     btn.setProperty("variant", variant)
     btn.style().unpolish(btn)
     btn.style().polish(btn)
+
+
+def style_completer_popup(completer: QCompleter) -> None:
+    """Theme the QCompleter suggestion list (separate popup, not styled as QComboBox)."""
+    popup = completer.popup()
+    if popup is None:
+        return
+    popup.setObjectName("completerPopup")
+    t = current_tokens()
+    popup.setStyleSheet(
+        f"QListView#completerPopup {{"
+        f"background: {t.bg_surface}; color: {t.text_primary}; "
+        f"border: 1px solid {t.border}; outline: none; padding: 2px; }}"
+        f"QListView#completerPopup::item {{ padding: 6px 10px; }}"
+        f"QListView#completerPopup::item:selected {{"
+        f"background: {t.primary_soft}; color: {t.text_primary}; }}"
+        f"QListView#completerPopup::item:hover {{ background: {t.bg_hover}; }}"
+    )
 
 
 def style_primary(btn: QPushButton) -> None:

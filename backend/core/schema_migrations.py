@@ -307,6 +307,78 @@ def apply_sqlite_column_migrations(engine) -> None:
     _backfill_misc_expense_entry_dates(engine)
     _migrate_misc_expense_entry_revert_columns(engine)
     _backfill_payment_split_amounts(engine)
+    _migrate_class_school_fees_per_year(engine)
+
+
+def _migrate_class_school_fees_per_year(engine) -> None:
+    """Scope class_school_fees by academic_year_id (one tariff matrix per year)."""
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("class_school_fees"):
+        return
+    cols = {c["name"] for c in insp.get_columns("class_school_fees")}
+    if "academic_year_id" in cols:
+        return
+
+    from backend.core.fee_control_constants import FIXED_CLASS_KEYS
+
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        if conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "class_school_fees_per_year_v1"},
+        ).fetchone():
+            return
+
+        conn.execute(text("CREATE TABLE IF NOT EXISTS class_school_fees_backup_mig AS SELECT * FROM class_school_fees"))
+        old_rows = conn.execute(text("SELECT class_key, amount FROM class_school_fees_backup_mig")).fetchall()
+        old_map = {str(k): float(a) for k, a in old_rows}
+
+        conn.execute(text("DROP TABLE class_school_fees"))
+        conn.execute(
+            text(
+                """
+                CREATE TABLE class_school_fees (
+                    class_key VARCHAR(30) NOT NULL,
+                    academic_year_id INTEGER NOT NULL REFERENCES academic_years(id),
+                    amount REAL NOT NULL,
+                    PRIMARY KEY (class_key, academic_year_id)
+                )
+                """
+            )
+        )
+
+        year_ids = [
+            int(r[0])
+            for r in conn.execute(text("SELECT id FROM academic_years ORDER BY start_date ASC")).fetchall()
+        ]
+        if not year_ids:
+            from datetime import date
+
+            start, end = _default_academic_year_bounds(date.today())
+            conn.execute(
+                text(
+                    "INSERT INTO academic_years (start_date, end_date, label) "
+                    "VALUES (:s, :e, :l)"
+                ),
+                {"s": start.isoformat(), "e": end.isoformat(), "l": ""},
+            )
+            year_ids = [int(conn.execute(text("SELECT last_insert_rowid()")).scalar())]
+
+        for year_id in year_ids:
+            for class_key in FIXED_CLASS_KEYS:
+                amount = old_map.get(class_key, 20000.0)
+                conn.execute(
+                    text(
+                        "INSERT INTO class_school_fees (class_key, academic_year_id, amount) "
+                        "VALUES (:k, :y, :a)"
+                    ),
+                    {"k": class_key, "y": year_id, "a": amount},
+                )
+
+        conn.execute(text("DROP TABLE class_school_fees_backup_mig"))
+        conn.execute(text("INSERT INTO app_migrations (name) VALUES ('class_school_fees_per_year_v1')"))
 
 
 def _default_academic_year_bounds(as_of):

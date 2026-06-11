@@ -90,6 +90,7 @@ class Payment(Base):
 class ClassSchoolFee(Base):
     __tablename__ = "class_school_fees"
     class_key: Mapped[str] = mapped_column(String(30), primary_key=True)
+    academic_year_id: Mapped[int] = mapped_column(ForeignKey("academic_years.id"), primary_key=True)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
 
 

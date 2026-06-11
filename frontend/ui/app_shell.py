@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from frontend.ui import theme
+from frontend.ui.theme_toggle import ThemeToggleWidget
 
 
 @dataclass
@@ -130,9 +131,9 @@ class _NavButton(QPushButton):
         if active:
             self.setStyleSheet(
                 f"QPushButton {{ text-align: left; padding: {pad}; "
-                f"border: none; border-radius: {_NAV_ACTIVE_RADIUS}; color: #FFFFFF; "
+                f"border: none; border-radius: {_NAV_ACTIVE_RADIUS}; color: {t.text_on_primary}; "
                 f"font-weight: 700; background: {t.primary}; }}"
-                f"QPushButton:hover {{ background: {t.primary_dark}; color: #FFFFFF; }}"
+                f"QPushButton:hover {{ background: {t.primary_dark}; color: {t.text_on_primary}; }}"
             )
         else:
             self.setStyleSheet(
@@ -251,18 +252,33 @@ class AppShell(QWidget):
         self._nav_layout.addStretch(1)
 
         self._sidebar_footer = QFrame()
-        footer_lay = QHBoxLayout(self._sidebar_footer)
-        footer_lay.setContentsMargins(16, 10, 16, 14)
+        self._sidebar_footer.setObjectName("sidebarFooter")
+        footer_lay = QVBoxLayout(self._sidebar_footer)
+        footer_lay.setContentsMargins(16, 12, 16, 14)
+        footer_lay.setSpacing(0)
+
+        footer_row = QHBoxLayout()
+        footer_row.setContentsMargins(0, 0, 0, 0)
+        footer_row.setSpacing(14)
+        footer_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        theme_text = QVBoxLayout()
+        theme_text.setContentsMargins(0, 0, 0, 0)
+        theme_text.setSpacing(2)
         self._theme_label = QLabel("Theme")
-        self._theme_btn = QPushButton("☀")
-        self._theme_btn.setProperty("variant", "icon")
-        self._theme_btn.setToolTip("Switch to dark theme")
-        self._theme_btn.setFixedSize(40, 40)
-        self._theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._theme_btn.clicked.connect(self._on_theme_toggle)
-        footer_lay.addWidget(self._theme_label)
-        footer_lay.addStretch(1)
-        footer_lay.addWidget(self._theme_btn)
+        self._theme_hint = QLabel("Light or dark mode")
+        self._theme_hint.setProperty("role", "muted")
+        theme_text.addWidget(self._theme_label)
+        theme_text.addWidget(self._theme_hint)
+
+        footer_row.addLayout(theme_text, 1)
+        self._theme_toggle = ThemeToggleWidget(self._on_theme_toggle)
+        footer_row.addWidget(
+            self._theme_toggle,
+            0,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+        )
+        footer_lay.addLayout(footer_row)
         side_outer.addWidget(self._sidebar_footer)
 
         self._main = QWidget()
@@ -323,7 +339,7 @@ class AppShell(QWidget):
             f"border: 1px solid {t.border}; }}"
         )
         self._profile_avatar.setStyleSheet(
-            f"background: {t.primary}; color: white; border-radius: 20px; "
+            f"background: {t.primary}; color: {t.text_on_primary}; border-radius: 20px; "
             f"font-weight: 700; font-size: 15px;"
         )
         self._profile_name.setStyleSheet(
@@ -336,25 +352,26 @@ class AppShell(QWidget):
         )
 
         self._sidebar_footer.setStyleSheet(
-            f"QFrame {{ background: transparent; border-top: 1px solid {t.border}; }}"
+            f"QFrame#sidebarFooter {{ background: {t.bg_sidebar}; "
+            f"border-top: 1px solid {t.border}; }}"
         )
         self._theme_label.setStyleSheet(
-            f"color: {t.text_secondary}; font-size: 12px; font-weight: 600; "
+            f"color: {t.text_primary}; font-size: 13px; font-weight: 700; "
             f"background: transparent;"
         )
+        self._theme_hint.setStyleSheet(
+            f"color: {t.text_muted}; font-size: 11px; font-weight: 500; "
+            f"background: transparent;"
+        )
+
+        self._theme_toggle.set_mode(mode, animate=True)
+        self._theme_toggle.refresh_theme()
 
         self._fab.setStyleSheet(
             f"QPushButton {{ background: {t.primary}; color: white; border-radius: 24px; "
             f"font-size: 18px; border: none; }}"
             f"QPushButton:hover {{ background: {t.primary_dark}; }}"
         )
-
-        self._theme_btn.setText("☀" if mode == "light" else "🌙")
-        self._theme_btn.setToolTip(
-            "Switch to dark theme" if mode == "light" else "Switch to light theme"
-        )
-        self._theme_btn.style().unpolish(self._theme_btn)
-        self._theme_btn.style().polish(self._theme_btn)
 
         for btn in self._nav_buttons.values():
             btn.refresh_theme()

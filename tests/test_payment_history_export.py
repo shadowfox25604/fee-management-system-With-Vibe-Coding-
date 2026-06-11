@@ -79,6 +79,19 @@ def test_payment_history_filter_by_academic_year(db_session):
     assert len(rows) == 1
 
 
+def test_payment_history_filter_by_student(db_session):
+    svc = PaymentService(db_session)
+    s1 = _seed_student(db_session, student_id="S001", class_name="1")
+    s2 = _seed_student(db_session, student_id="S002", class_name="2")
+    pay_day = date.today() - timedelta(days=1)
+    svc.repo.create_payment(s1, 1000.0, "cash", "admin", payment_date=pay_day)
+    svc.repo.create_payment(s2, 800.0, "cash", "admin", payment_date=pay_day)
+
+    rows = svc.list_payment_history(student_id="S001", include_reverted=True)
+    assert len(rows) == 1
+    assert rows[0]["student_roll"] == "S001"
+
+
 def test_payment_history_export_excel(tmp_path, db_session):
     svc = PaymentService(db_session)
     student = _seed_student(db_session)

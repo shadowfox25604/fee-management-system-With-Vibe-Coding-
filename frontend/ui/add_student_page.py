@@ -21,6 +21,11 @@ from backend.core.fee_control_constants import FIXED_CLASS_KEYS, FIXED_SECTION_K
 from frontend.ui.edudash_widgets import FormField, FormGrid, wrap_page
 from frontend.ui.school_branding import breadcrumb_trail
 from frontend.ui import theme
+from frontend.ui.date_input import (
+    configure_date_of_birth_edit,
+    date_of_birth_validation_message,
+    read_date_of_birth_value,
+)
 from frontend.ui.phone_input import configure_phone_line_edit, normalize_phone_text, phone_validation_message
 from frontend.ui.table_style import style_fee_action_button
 
@@ -58,11 +63,8 @@ class AddStudentPage(QWidget):
         configure_phone_line_edit(self.mobile_number_1)
         self.mobile_number_2 = QLineEdit()
         configure_phone_line_edit(self.mobile_number_2)
-        self.date_of_birth = QDateEdit(QDate.currentDate())
-        self.date_of_birth.setCalendarPopup(True)
-        self.date_of_birth.setDisplayFormat("dd/MM/yyyy")
-        self.date_of_birth.setMinimumHeight(40)
-        self.date_of_birth.setMaximumDate(QDate.currentDate())
+        self.date_of_birth = QDateEdit()
+        configure_date_of_birth_edit(self.date_of_birth, minimum_height=40)
         self.caste = QLineEdit()
         self.aadhaar = QLineEdit()
         self.village = QComboBox()
@@ -123,8 +125,7 @@ class AddStudentPage(QWidget):
         outer.addWidget(self._wrapped)
 
     def date_of_birth_value(self) -> date:
-        qd = self.date_of_birth.date()
-        return date(qd.year(), qd.month(), qd.day())
+        return read_date_of_birth_value(self.date_of_birth) or date.today()
 
     def reset_date_of_birth(self) -> None:
         self.date_of_birth.setDate(QDate.currentDate())
@@ -171,6 +172,9 @@ class AddStudentPage(QWidget):
             errors.append("Please fill in Village.")
         if not self.transport.currentText().strip():
             errors.append("Please fill in Transport.")
+        dob_error = date_of_birth_validation_message(self.date_of_birth)
+        if dob_error:
+            errors.append(dob_error)
         return errors
 
     def missing_required_fields(self) -> list[str]:

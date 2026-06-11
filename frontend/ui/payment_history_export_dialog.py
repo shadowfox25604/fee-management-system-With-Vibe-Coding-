@@ -28,20 +28,24 @@ from PySide6.QtWidgets import (
 from backend.core.fee_control_constants import FIXED_CLASS_KEYS, PASSED_OUT_CLASS_KEY
 from backend.services.academic_year_service import AcademicYearService
 from backend.services.payment_service import PaymentService
+from backend.services.student_service import StudentService
 from frontend.ui import theme
+from frontend.ui.student_filter_combo import StudentFilterComboBox
 from frontend.ui.table_style import fee_action_button_width, style_fee_action_button
 
 
 class PaymentHistoryExportDialog(QDialog):
     _DIALOG_WIDTH = 580
-    _DIALOG_HEIGHT = 640
+    _DIALOG_HEIGHT = 720
 
     def __init__(
         self,
         payment_service: PaymentService,
         academic_year_service: AcademicYearService,
+        student_service: StudentService,
         *,
         search: str = "",
+        student_id: str | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -58,7 +62,7 @@ class PaymentHistoryExportDialog(QDialog):
 
         hint = QLabel(
             "Combine filters as needed. Choose a specific month or a date range (not both). "
-            "Pick all classes, one class, or any group from the checklist."
+            "Pick all classes, one class, or any group from the checklist. Optionally filter to one student."
         )
         hint.setWordWrap(True)
         hint.setProperty("role", "hint")
@@ -190,6 +194,20 @@ class PaymentHistoryExportDialog(QDialog):
         class_lay.addLayout(class_actions)
         layout.addWidget(class_group, 1)
 
+        student_group = QGroupBox("Filter by student")
+        student_lay = QVBoxLayout(student_group)
+        student_lay.setSpacing(10)
+        self._student_cb = QCheckBox("Only this student")
+        student_lay.addWidget(self._student_cb)
+        self._student_combo = StudentFilterComboBox(student_service, parent=self)
+        student_lay.addWidget(self._student_combo)
+        if student_id:
+            idx = self._student_combo.findData(student_id)
+            if idx >= 0:
+                self._student_combo.setCurrentIndex(idx)
+                self._student_cb.setChecked(True)
+        layout.addWidget(student_group)
+
         self._year_cb = QCheckBox("Filter by academic year")
         layout.addWidget(self._year_cb)
 
@@ -228,6 +246,7 @@ class PaymentHistoryExportDialog(QDialog):
         self._class_select_all_btn.clicked.connect(lambda: self._set_visible_class_checks(True))
         self._class_clear_all_btn.clicked.connect(lambda: self._set_visible_class_checks(False))
         self._year_cb.toggled.connect(lambda _: self._sync_fields())
+        self._student_cb.toggled.connect(lambda _: self._sync_fields())
         self._sync_fields()
         self._update_class_summary()
 
@@ -264,6 +283,7 @@ class PaymentHistoryExportDialog(QDialog):
             self._class_clear_all_btn,
         ):
             widget.setEnabled(pick_on)
+        self._student_combo.setEnabled(self._student_cb.isChecked())
 
     def _filter_class_list(self) -> None:
         needle = self._class_search.text().strip().lower()
@@ -344,6 +364,11 @@ class PaymentHistoryExportDialog(QDialog):
                 raise ValueError("Select at least one class to export.")
             if len(class_names) < self._class_count:
                 filters["class_names"] = class_names
+        if self._student_cb.isChecked():
+            student_id = self._student_combo.selected_student_id()
+            if not student_id:
+                raise ValueError("Select a student from the list (search by name or ID).")
+            filters["student_id"] = student_id
         if self._year_cb.isChecked():
             year_id = self._academic_year.currentData()
             if year_id is None:
@@ -371,6 +396,10 @@ class PaymentHistoryExportDialog(QDialog):
                 parts.append("-".join(labels))
             elif len(labels) > 3:
                 parts.append(f"{len(labels)}-classes")
+        if self._student_cb.isChecked():
+            sid = self._student_combo.selected_student_id()
+            if sid:
+                parts.append(sid)
         if self._year_cb.isChecked():
             parts.append(str(self._academic_year.currentText() or "year"))
         if len(parts) == 1:

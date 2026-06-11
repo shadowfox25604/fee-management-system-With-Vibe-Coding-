@@ -19,6 +19,9 @@ class AcademicYearService:
     def list_years(self):
         return self.repo.list_all()
 
+    def get(self, year_id: int):
+        return self.repo.get(year_id)
+
     def get_current(self, as_of: date | None = None):
         return self.repo.get_current(as_of)
 
@@ -50,12 +53,19 @@ class AcademicYearService:
         # Commit the year first so it survives app restarts even if provisioning fails.
         self.session.commit()
         self.session.refresh(year)
+        if class_fee_service is not None:
+            try:
+                class_fee_service.copy_tariffs_to_new_year(year.id)
+                self.session.commit()
+            except Exception as exc:
+                self.session.rollback()
+                raise AcademicYearProvisionError(year, exc) from exc
         if provision_students and class_fee_service and village_fee_service:
             try:
                 rollover = FeeRolloverService(self.session)
                 if self._should_promote_classes(year):
                     StudentRepository(self.session).promote_all_student_classes(
-                        class_fee_service.school_fees_for_class_name
+                        lambda cn: class_fee_service.school_fees_for_class_name(cn, year.id)
                     )
                 # Snapshot: new pending = existing pending + current school due + current van due.
                 rolled_by_student = rollover.compute_rollover_snapshot(year)
@@ -110,7 +120,7 @@ class AcademicYearService:
 
     def _provision_students(self, year, class_fee_service, village_fee_service):
         def school_for_class(class_name):
-            return class_fee_service.school_fees_for_class_name(class_name)
+            return class_fee_service.school_fees_for_class_name(class_name, year.id)
 
         def van_for_village(village):
             return village_fee_service.van_fees_for_village_name(village or "")
@@ -118,3 +128,8 @@ class AcademicYearService:
         self.year_fee_repo.provision_all_students_for_year(
             year.id, school_for_class, van_for_village
         )
+
+    def is_year_editable(self, year, as_of: date | None = None) -> bool:
+        if year is None:
+            return False
+        return year.end_date >= (as_of or date.today())

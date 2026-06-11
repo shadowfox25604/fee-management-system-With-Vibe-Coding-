@@ -426,6 +426,11 @@ def test_create_year_promotes_students(db_session):
 
     ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
     db_session.commit()
+    class_svc = ClassFeeService(db_session)
+    year_2024 = ay_repo.list_all()[0]
+    for class_key in ("LKG", "UKG", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
+        class_svc.repo.upsert_stored_amount(class_key, year_2024.id, 20000.0)
+    db_session.commit()
 
     st = Student(
         student_id=f"PROMO-{uuid.uuid4().hex[:8]}",
@@ -441,7 +446,6 @@ def test_create_year_promotes_students(db_session):
     db_session.add(st)
     db_session.commit()
 
-    class_svc = ClassFeeService(db_session)
     village_svc = VillageVanFeeService(db_session)
     ay_svc = AcademicYearService(db_session)
     ay_svc.create_year(
@@ -454,9 +458,12 @@ def test_create_year_promotes_students(db_session):
     db_session.refresh(st)
 
     assert st.class_name == next_class_key("LKG")
-    year_row = StudentYearFeeRepository(db_session).get(st.student_id, ay_repo.list_all()[-1].id)
+    new_year = ay_repo.list_all()[-1]
+    year_row = StudentYearFeeRepository(db_session).get(st.student_id, new_year.id)
     assert year_row is not None
-    assert year_row.school_fees == pytest.approx(class_svc.school_fees_for_class_name("UKG"), abs=0.01)
+    assert year_row.school_fees == pytest.approx(
+        class_svc.school_fees_for_class_name("UKG", new_year.id), abs=0.01
+    )
 
 
 def test_create_year_passes_out_class_10_students(db_session):
@@ -470,6 +477,11 @@ def test_create_year_passes_out_class_10_students(db_session):
     db_session.commit()
 
     ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
+    db_session.commit()
+    class_svc = ClassFeeService(db_session)
+    year_2024 = ay_repo.list_all()[0]
+    for class_key in ("LKG", "UKG", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
+        class_svc.repo.upsert_stored_amount(class_key, year_2024.id, 20000.0)
     db_session.commit()
 
     st = Student(
@@ -486,7 +498,6 @@ def test_create_year_passes_out_class_10_students(db_session):
     db_session.add(st)
     db_session.commit()
 
-    class_svc = ClassFeeService(db_session)
     village_svc = VillageVanFeeService(db_session)
     ay_svc = AcademicYearService(db_session)
     ay_svc.create_year(
@@ -517,6 +528,11 @@ def test_create_year_skips_inactive_students(db_session):
 
     ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
     db_session.commit()
+    class_svc = ClassFeeService(db_session)
+    year_2024 = ay_repo.list_all()[0]
+    for class_key in ("LKG", "UKG", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
+        class_svc.repo.upsert_stored_amount(class_key, year_2024.id, 20000.0)
+    db_session.commit()
 
     st = Student(
         student_id=f"DROP-{uuid.uuid4().hex[:8]}",
@@ -537,7 +553,6 @@ def test_create_year_skips_inactive_students(db_session):
     )
     db_session.commit()
 
-    class_svc = ClassFeeService(db_session)
     village_svc = VillageVanFeeService(db_session)
     ay_svc = AcademicYearService(db_session)
     ay_svc.create_year(

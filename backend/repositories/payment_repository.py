@@ -722,6 +722,7 @@ class PaymentRepository:
         class_name: str | None = None,
         class_names: list[str] | None = None,
         academic_year_id: int | None = None,
+        student_id: str | None = None,
     ):
         """Newest first: reference, student, amounts, mode, operator. Optional filters for export."""
         stmt = select(Payment, Student).join(Student, Student.student_id == Payment.student_id_fk)
@@ -756,6 +757,8 @@ class PaymentRepository:
                 Payment.payment_date >= year.start_date,
                 Payment.payment_date <= year.end_date,
             )
+        if student_id is not None and str(student_id).strip():
+            stmt = stmt.where(Payment.student_id_fk == str(student_id).strip())
         needle = (search or "").strip()
         if needle:
             pat = f"%{needle.lower()}%"

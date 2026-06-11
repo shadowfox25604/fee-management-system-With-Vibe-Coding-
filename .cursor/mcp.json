@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "fee-management-sqlite": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "@graduenz/mcp-sqlite-server",
+        "--config",
+        ".mcp-sqlite.json"
+      ]
+    },
+    "context7": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@upstash/context7-mcp@latest"]
+    }
+  }
+}
