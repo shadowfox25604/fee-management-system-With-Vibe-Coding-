@@ -131,7 +131,7 @@ class CardTitleBar(QWidget):
 
 
 class DashMetricCard(QFrame):
-  # light: (gradient_start, icon_circle_bg, accent)
+  # light: (card_bg, icon_circle_bg, accent)
   _STYLES_LIGHT = [
     ("#FFF4ED", "#FF7043", ORANGE),
     ("#EFF6FF", "#42A5F5", BLUE),
@@ -140,14 +140,14 @@ class DashMetricCard(QFrame):
     ("#F0FDF4", "#66BB6A", GREEN),
     ("#E0F7FA", "#26C6DA", "#26C6DA"),
   ]
-  # dark: (icon_circle_bg, accent) — card uses theme surface color
+  # dark: (card_bg, icon_circle_bg, accent)
   _STYLES_DARK = [
-    ("#3D2E24", ORANGE),
-    ("#243347", BLUE),
-    ("#322447", PURPLE),
-    ("#1A3D35", TEAL),
-    ("#243D2A", GREEN),
-    ("#1A3A40", "#26C6DA"),
+    ("#2A221E", "#3D2E24", ORANGE),
+    ("#1A2433", "#243347", BLUE),
+    ("#261E33", "#322447", PURPLE),
+    ("#152926", "#1A3D35", TEAL),
+    ("#1A2A1F", "#243D2A", GREEN),
+    ("#152A2E", "#1A3A40", "#26C6DA"),
   ]
 
   def __init__(
@@ -159,11 +159,13 @@ class DashMetricCard(QFrame):
     parent=None,
   ):
     super().__init__(parent)
+    self.setObjectName("dashMetricCard")
+    self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
     self._style_idx = style_idx % len(self._STYLES_LIGHT)
     self.setMinimumHeight(110)
     lay = QHBoxLayout(self)
     lay.setContentsMargins(18, 16, 18, 16)
-    self._icon = QLabel("◉")
+    self._icon = QLabel(("▣", "◎", "◷", "₹", "◆", "●")[self._style_idx])
     self._icon.setFixedSize(44, 44)
     self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
     col = QVBoxLayout()
@@ -183,24 +185,23 @@ class DashMetricCard(QFrame):
     t = theme.current_tokens()
     idx = self._style_idx
     if theme.current_theme_mode() == "dark":
-      icon_bg, accent = self._STYLES_DARK[idx]
+      card_bg, icon_bg, accent = self._STYLES_DARK[idx]
       self.setStyleSheet(
-        f"QFrame {{ background: {t.bg_surface}; border: 1px solid {t.border}; "
+        f"QFrame#dashMetricCard {{ background-color: {card_bg}; border: 1px solid {t.border}; "
         f"border-radius: 12px; }}"
       )
       self._icon.setStyleSheet(
-        f"background: {icon_bg}; color: {accent}; border-radius: 22px; "
+        f"background-color: {icon_bg}; color: {accent}; border-radius: 22px; "
         f"font-size: 18px; font-weight: bold;"
       )
     else:
-      bg, icon_bg, accent = self._STYLES_LIGHT[idx]
+      card_bg, icon_bg, accent = self._STYLES_LIGHT[idx]
       self.setStyleSheet(
-        f"QFrame {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
-        f"stop:0 {bg}, stop:1 {t.bg_surface}); border: 1px solid {t.border}; "
+        f"QFrame#dashMetricCard {{ background-color: {card_bg}; border: 1px solid {t.border}; "
         f"border-radius: 12px; }}"
       )
       self._icon.setStyleSheet(
-        f"background: {icon_bg}; color: white; border-radius: 22px; "
+        f"background-color: {icon_bg}; color: white; border-radius: 22px; "
         f"font-size: 18px; font-weight: bold;"
       )
     self._label.setStyleSheet(
@@ -313,6 +314,159 @@ class SolidMetricCard(QFrame):
     )
 
 
+# ── Dashboard layout helpers ───────────────────────────────────────────────────
+
+
+class DashboardHeroStrip(QFrame):
+  """Centered school branding with a crisp logo badge for the dashboard header."""
+
+  _LOGO_SIZE = 92
+  _BADGE_SIZE = 108
+
+  def __init__(self, parent=None):
+    super().__init__(parent)
+    self.setProperty("card", "surface")
+    self._device_pixel_ratio = 1.0
+    self._fallback_initial = "A"
+
+    lay = QVBoxLayout(self)
+    lay.setContentsMargins(28, 24, 28, 22)
+    lay.setSpacing(0)
+    lay.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+    self._logo_badge = QFrame()
+    self._logo_badge.setFixedSize(self._BADGE_SIZE, self._BADGE_SIZE)
+    badge_lay = QVBoxLayout(self._logo_badge)
+    badge_lay.setContentsMargins(6, 6, 6, 6)
+    badge_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+    self._logo = QLabel()
+    self._logo.setFixedSize(self._LOGO_SIZE, self._LOGO_SIZE)
+    self._logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    self._logo.setScaledContents(False)
+    badge_lay.addWidget(self._logo, 0, Qt.AlignmentFlag.AlignCenter)
+
+    self._name = QLabel()
+    self._name.setProperty("role", "page-title")
+    self._name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+    self._accent = QFrame()
+    self._accent.setFixedSize(48, 3)
+
+    self._motto = QLabel()
+    self._motto.setProperty("role", "muted")
+    self._motto.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+    lay.addWidget(self._logo_badge, 0, Qt.AlignmentFlag.AlignHCenter)
+    lay.addSpacing(14)
+    lay.addWidget(self._name, 0, Qt.AlignmentFlag.AlignHCenter)
+    lay.addSpacing(8)
+    lay.addWidget(self._accent, 0, Qt.AlignmentFlag.AlignHCenter)
+    lay.addSpacing(6)
+    lay.addWidget(self._motto, 0, Qt.AlignmentFlag.AlignHCenter)
+
+  def set_device_pixel_ratio(self, ratio: float) -> None:
+    self._device_pixel_ratio = max(1.0, float(ratio or 1.0))
+
+  def set_branding(
+    self,
+    *,
+    name: str,
+    motto: str,
+    fallback_initial: str = "A",
+    device_pixel_ratio: float | None = None,
+  ) -> None:
+    self._name.setText(name)
+    self._motto.setText(motto.upper())
+    self._fallback_initial = fallback_initial[:1].upper() or "A"
+    if device_pixel_ratio is not None:
+      self._device_pixel_ratio = max(1.0, float(device_pixel_ratio))
+    self._apply_logo()
+    self.refresh_theme()
+
+  def _apply_logo(self) -> None:
+    from frontend.ui.school_branding import load_logo_pixmap
+
+    pix = load_logo_pixmap(
+      self._LOGO_SIZE,
+      device_pixel_ratio=self._device_pixel_ratio,
+    )
+    if pix is not None and not pix.isNull():
+      self._logo.setPixmap(pix)
+      self._logo.setText("")
+    else:
+      self._logo.setPixmap(None)
+      self._logo.setText(self._fallback_initial)
+
+  def refresh_theme(self) -> None:
+    t = theme.current_tokens()
+    self._apply_logo()
+    badge_radius = self._BADGE_SIZE // 2
+    logo_radius = self._LOGO_SIZE // 2
+    # White badge keeps JPEG crest backgrounds clean on both themes.
+    self._logo_badge.setStyleSheet(
+      f"QFrame {{ background: #FFFFFF; border: 1px solid {t.border}; "
+      f"border-radius: {badge_radius}px; }}"
+    )
+    if self._logo.pixmap() is None or self._logo.pixmap().isNull():
+      self._logo.setStyleSheet(
+        f"background: {t.primary}; color: white; border-radius: {logo_radius}px; "
+        "font-size: 36px; font-weight: 800;"
+      )
+    else:
+      self._logo.setStyleSheet(
+        f"background: transparent; border-radius: {logo_radius}px;"
+      )
+    self._accent.setStyleSheet(
+      f"background: {t.primary}; border-radius: 2px; border: none;"
+    )
+    self._name.setStyleSheet(
+      f"font-size: 24px; font-weight: 700; color: {t.text_primary}; "
+      f"letter-spacing: 0.4px; background: transparent;"
+    )
+    self._motto.setStyleSheet(
+      f"color: {t.text_muted}; font-size: 11px; font-weight: 700; "
+      f"letter-spacing: 1.2px; background: transparent;"
+    )
+
+
+class SectionHeader(QWidget):
+  """Section title with optional subtitle for dashboard grouping."""
+
+  def __init__(self, title: str, subtitle: str = "", parent=None):
+    super().__init__(parent)
+    lay = QVBoxLayout(self)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(3)
+    self._title = QLabel(title)
+    self._title.setProperty("role", "card-title")
+    self._subtitle = QLabel(subtitle)
+    self._subtitle.setProperty("role", "muted")
+    self._subtitle.setWordWrap(True)
+    lay.addWidget(self._title)
+    if subtitle:
+      lay.addWidget(self._subtitle)
+    else:
+      self._subtitle.hide()
+    self.refresh_theme()
+
+  def set_subtitle(self, text: str) -> None:
+    if text:
+      self._subtitle.setText(text)
+      self._subtitle.show()
+    else:
+      self._subtitle.hide()
+
+  def refresh_theme(self) -> None:
+    t = theme.current_tokens()
+    self._title.setStyleSheet(
+      f"color: {t.text_primary}; font-size: 16px; font-weight: 700; background: transparent;"
+    )
+    self._subtitle.setStyleSheet(
+      f"color: {t.text_muted}; font-size: 12px; background: transparent;"
+    )
+
+
 # ── Charts (QPainter) ──────────────────────────────────────────────────────────
 
 
@@ -324,7 +478,7 @@ class RevenueChartWidget(QWidget):
 
   def __init__(self, parent=None):
     super().__init__(parent)
-    self.setMinimumHeight(400)
+    self.setMinimumHeight(260)
     self.setMouseTracking(True)
     self._month_label = ""
     self._collected: list[float] = []
@@ -918,6 +1072,10 @@ class ExpensesDonutChartWidget(QWidget):
     self._tooltip_opacity = 0.0
     self.update()
 
+  def set_center_caption(self, caption: str) -> None:
+    self._center_caption = str(caption or "").strip() or "Total"
+    self.update()
+
   def expense_slices(self) -> list[tuple[float, str, str]]:
     """(amount, colour hex, label) for legend rendering."""
     return list(self._slices)
@@ -1059,6 +1217,105 @@ class ExpensesDonutChartWidget(QWidget):
 
   def refresh_theme(self) -> None:
     self.update()
+
+
+class DonutBreakdownCard(QFrame):
+  """Donut chart with legend — vertical layout for readable dashboard panels."""
+
+  def __init__(self, title: str, *, center_caption: str = "Total", parent=None):
+    super().__init__(parent)
+    self.setProperty("card", "surface")
+    self._center_caption = center_caption
+    root = QVBoxLayout(self)
+    root.setContentsMargins(20, 18, 20, 20)
+    root.setSpacing(12)
+
+    self._title = QLabel(title)
+    self._title.setProperty("role", "card-title")
+    self._subtitle = QLabel("")
+    self._subtitle.setProperty("role", "muted")
+    self._subtitle.setWordWrap(True)
+    root.addWidget(self._title)
+    root.addWidget(self._subtitle)
+
+    chart_row = QHBoxLayout()
+    chart_row.addStretch(1)
+    self._chart = ExpensesDonutChartWidget()
+    self._chart.set_center_caption(center_caption)
+    self._chart.setFixedSize(200, 200)
+    chart_row.addWidget(self._chart)
+    chart_row.addStretch(1)
+    root.addLayout(chart_row)
+
+    self._legend_host = QVBoxLayout()
+    self._legend_host.setSpacing(6)
+    root.addLayout(self._legend_host)
+    root.addStretch(1)
+    self.refresh_theme()
+
+  def set_subtitle(self, text: str) -> None:
+    self._subtitle.setText(text)
+    self._subtitle.setVisible(bool(text))
+
+  def set_breakdown(self, data: dict | None) -> None:
+    self._chart.set_expense_breakdown(data)
+    self._rebuild_legend(self._chart.expense_slices())
+
+  def chart_slices(self) -> list[tuple[float, str, str]]:
+    return self._chart.expense_slices()
+
+  def _rebuild_legend(self, slices: list[tuple[float, str, str]]) -> None:
+    while self._legend_host.count():
+      item = self._legend_host.takeAt(0)
+      if item.widget():
+        item.widget().deleteLater()
+    empty_msg = (
+      "No income recorded this month."
+      if "income" in self._center_caption.lower()
+      else "No expenses recorded this month."
+    )
+    if not slices:
+      empty = QLabel(empty_msg)
+      empty.setProperty("role", "muted")
+      empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+      t = theme.current_tokens()
+      empty.setStyleSheet(f"color: {t.text_muted}; font-size: 12px; padding: 8px 0;")
+      self._legend_host.addWidget(empty)
+      return
+    t = theme.current_tokens()
+    for amount, color, label in slices:
+      if amount <= 1e-6:
+        continue
+      row = QHBoxLayout()
+      row.setSpacing(10)
+      dot = QLabel("●")
+      dot.setFixedWidth(14)
+      dot.setStyleSheet(f"color: {color}; font-size: 11px; background: transparent;")
+      name = QLabel(label)
+      name.setStyleSheet(
+        f"color: {t.text_primary}; font-size: 12px; font-weight: 500; background: transparent;"
+      )
+      value = QLabel(f"₹{amount:,.0f}")
+      value.setStyleSheet(
+        f"color: {t.text_secondary}; font-size: 12px; font-weight: 600; background: transparent;"
+      )
+      row.addWidget(dot)
+      row.addWidget(name, 1)
+      row.addWidget(value)
+      host = QWidget()
+      host.setLayout(row)
+      self._legend_host.addWidget(host)
+
+  def refresh_theme(self) -> None:
+    t = theme.current_tokens()
+    self._title.setStyleSheet(
+      f"color: {t.text_primary}; font-size: 14px; font-weight: 700; background: transparent;"
+    )
+    self._subtitle.setStyleSheet(
+      f"color: {t.text_muted}; font-size: 11px; background: transparent;"
+    )
+    self._chart.refresh_theme()
+    self._rebuild_legend(self._chart.expense_slices())
 
 
 # ── List rows (notice / leave / event) ───────────────────────────────────────

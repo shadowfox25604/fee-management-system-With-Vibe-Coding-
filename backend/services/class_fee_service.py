@@ -8,6 +8,7 @@ from backend.core.fee_control_constants import (
 )
 from backend.repositories.academic_year_repository import AcademicYearRepository
 from backend.repositories.class_fee_repository import ClassFeeRepository
+from backend.services.audit_service import AuditService
 
 
 class ClassFeeService:
@@ -15,6 +16,7 @@ class ClassFeeService:
         self.session = session
         self.repo = ClassFeeRepository(session)
         self._year_repo = AcademicYearRepository(session)
+        self.audit = AuditService(session)
 
     @staticmethod
     def fixed_class_keys():
@@ -56,7 +58,18 @@ class ClassFeeService:
         year_id = self.resolve_academic_year_id(academic_year_id)
         if not self.is_year_tariff_editable(year_id):
             raise ValueError("Cannot edit class fees for an academic year that has ended.")
-        return self.repo.apply_class_school_fee(class_key, new_amount, year_id)
+        old_amount = self.repo.get_stored_amount(class_key, year_id)
+        if old_amount is None:
+            old_amount = self.display_amount_for_class(class_key, year_id)
+        updated = self.repo.apply_class_school_fee(class_key, new_amount, year_id)
+        self.audit.log_action(
+            "apply_class_school_fee",
+            "class_school_fees",
+            f"{class_key}:{year_id}",
+            old_value={"amount": float(old_amount)},
+            new_value={"amount": float(new_amount), "students_updated": updated},
+        )
+        return updated
 
     def count_students_in_class(self, class_key: str) -> int:
         return len(self.repo.students_in_fixed_class(class_key))

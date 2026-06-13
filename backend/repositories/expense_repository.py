@@ -83,6 +83,33 @@ class ExpenseRepository:
             return "Non Teaching"
         return "Teaching"
 
+    def suggest_next_employee_id(self) -> str:
+        max_num = 0
+        for employee_id in self.session.scalars(select(FacultySalary.employee_id)).all():
+            text_id = str(employee_id or "").strip()
+            if text_id.lower().startswith("fac"):
+                suffix = text_id[3:]
+                if suffix.isdigit():
+                    max_num = max(max_num, int(suffix))
+        return f"Fac{max_num + 1}"
+
+    def _validate_employee_id(
+        self,
+        employee_id: str,
+        *,
+        exclude_faculty_id: int | None = None,
+    ) -> str:
+        emp = (employee_id or "").strip()
+        if not emp:
+            raise ValueError("Employee ID is required.")
+        stmt = select(FacultySalary).where(func.lower(FacultySalary.employee_id) == emp.lower())
+        if exclude_faculty_id is not None:
+            stmt = stmt.where(FacultySalary.id != int(exclude_faculty_id))
+        existing = self.session.scalars(stmt.limit(1)).first()
+        if existing is not None:
+            raise ValueError("Another faculty with this Employee ID already exists.")
+        return emp
+
     def upsert_faculty_salary(
         self,
         faculty_name: str,
@@ -91,7 +118,11 @@ class ExpenseRepository:
         monthly_salary: float,
         default_working_days: int = 26,
         *,
+        employee_id: str,
         is_active: bool = True,
+        phone_number: str = "",
+        aadhaar: str = "",
+        caste: str = "",
     ) -> FacultySalary:
         name = faculty_name.strip()
         row = self.session.scalars(
@@ -100,13 +131,18 @@ class ExpenseRepository:
             .limit(1)
         ).first()
         if row is None:
+            emp = self._validate_employee_id(employee_id)
             row = FacultySalary(
+                employee_id=emp,
                 faculty_name=name,
                 faculty_type=self._normalize_faculty_type(faculty_type),
                 role=role.strip(),
                 monthly_salary=float(monthly_salary),
                 default_working_days=int(default_working_days),
                 is_active=bool(is_active),
+                phone_number=(phone_number or "").strip(),
+                aadhaar=(aadhaar or "").strip(),
+                caste=(caste or "").strip(),
             )
             self.session.add(row)
         else:
@@ -115,6 +151,9 @@ class ExpenseRepository:
             row.monthly_salary = float(monthly_salary)
             row.default_working_days = int(default_working_days)
             row.is_active = bool(is_active)
+            row.phone_number = (phone_number or "").strip()
+            row.aadhaar = (aadhaar or "").strip()
+            row.caste = (caste or "").strip()
         self.session.commit()
         self.session.refresh(row)
         return row
@@ -179,12 +218,16 @@ class ExpenseRepository:
         self,
         faculty_id: int,
         *,
+        employee_id: str,
         faculty_name: str,
         faculty_type: str,
         role: str,
         monthly_salary: float,
         default_working_days: int,
         is_active: bool,
+        phone_number: str = "",
+        aadhaar: str = "",
+        caste: str = "",
     ) -> FacultySalary | None:
         row = self.session.get(FacultySalary, int(faculty_id))
         if row is None:
@@ -192,6 +235,7 @@ class ExpenseRepository:
         new_name = (faculty_name or "").strip()
         if not new_name:
             raise ValueError("Faculty name is required.")
+        emp = self._validate_employee_id(employee_id, exclude_faculty_id=int(faculty_id))
         existing = self.session.scalars(
             select(FacultySalary)
             .where(
@@ -204,12 +248,16 @@ class ExpenseRepository:
             raise ValueError("Another faculty with this name already exists.")
 
         old_name = str(row.faculty_name or "").strip()
+        row.employee_id = emp
         row.faculty_name = new_name
         row.faculty_type = self._normalize_faculty_type(faculty_type)
         row.role = (role or "").strip()
         row.monthly_salary = float(monthly_salary)
         row.default_working_days = int(default_working_days)
         row.is_active = bool(is_active)
+        row.phone_number = (phone_number or "").strip()
+        row.aadhaar = (aadhaar or "").strip()
+        row.caste = (caste or "").strip()
 
         if old_name and old_name.lower() != new_name.lower():
             salary_rows = self.session.scalars(
@@ -244,6 +292,7 @@ class ExpenseRepository:
             stmt = stmt.where(
                 func.lower(FacultySalary.faculty_name).like(pat)
                 | func.lower(FacultySalary.role).like(pat)
+                | func.lower(FacultySalary.employee_id).like(pat)
             )
         stmt = stmt.order_by(FacultySalary.faculty_name.asc())
         return list(self.session.scalars(stmt).all())

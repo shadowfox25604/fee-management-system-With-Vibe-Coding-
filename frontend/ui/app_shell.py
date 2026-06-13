@@ -1,4 +1,4 @@
-"""EduDash application shell: sidebar, top bar, stacked pages, FAB."""
+"""EduDash application shell: sidebar, stacked pages, FAB."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -44,7 +43,6 @@ DEFAULT_NAV: list[NavGroup] = [
         "👥",
         children=[
             NavLeaf("Student List", "Student Search"),
-            NavLeaf("Add New Student", "Add Student"),
             NavLeaf("Student Details", "Student Details"),
         ],
     ),
@@ -61,50 +59,24 @@ DEFAULT_NAV: list[NavGroup] = [
         "💸",
         children=[
             NavLeaf("Salary", "Salary"),
-            NavLeaf("Salary Control", "Salary Control"),
             NavLeaf("Salary History", "Salary History"),
             NavLeaf("Miscellaneous", "Miscellaneous"),
+            NavLeaf("Income Management", "Income Management"),
+        ],
+    ),
+    NavGroup(
+        "Admin Control",
+        "🛡",
+        children=[
+            NavLeaf("Add New Student", "Add Student"),
             NavLeaf("Add Faculty", "Add Faculty"),
+            NavLeaf("Salary Control", "Salary Control"),
+            NavLeaf("Fee Control", "Fee Control"),
         ],
     ),
     NavGroup("Reports", "📊", page_key="Reports"),
-    NavGroup("Fee Control", "⚙", page_key="Fee Control"),
     NavGroup("Backup", "💾", page_key="Backup"),
 ]
-
-_HIDE_TOP_SEARCH: frozenset[str] = frozenset(
-    {
-        "Home Page",
-        "Add Student",
-        "Student Search",
-        "Student Details",
-        "Collect Payment",
-        "Payment History",
-        "Salary",
-        "Salary Control",
-        "Salary History",
-        "Miscellaneous",
-        "Add Faculty",
-        "Reports",
-    }
-)
-_HIDE_TOP_BAR: frozenset[str] = frozenset(
-    {
-        "Home Page",
-        "Add Student",
-        "Student Search",
-        "Student Details",
-        "Collect Payment",
-        "Payment History",
-        "Salary",
-        "Salary Control",
-        "Salary History",
-        "Miscellaneous",
-        "Add Faculty",
-        "Reports",
-    }
-)
-
 
 _NAV_ACTIVE_RADIUS = "8px"
 
@@ -286,21 +258,6 @@ class AppShell(QWidget):
         main_lay.setContentsMargins(28, 20, 28, 20)
         main_lay.setSpacing(0)
 
-        self._top = QFrame()
-        self._top_row = QHBoxLayout(self._top)
-        self._top_row.setContentsMargins(16, 10, 16, 10)
-        self._top_leading_stretch: int | None = None
-        self._search = QLineEdit()
-        self._search.setPlaceholderText("Search")
-        self._search.setClearButtonEnabled(True)
-        self._search.setMinimumHeight(40)
-        self._top_row.addWidget(self._search, 1)
-
-        main_lay.addWidget(self._top)
-        self._content_gap = QWidget()
-        self._content_gap.setFixedHeight(20)
-        main_lay.addWidget(self._content_gap)
-
         self._stack = QStackedWidget()
         self._stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         main_lay.addWidget(self._stack, 1)
@@ -329,10 +286,6 @@ class AppShell(QWidget):
             f"QFrame {{ background: {t.bg_sidebar}; border-right: 1px solid {t.border}; }}"
         )
         self._main.setStyleSheet(f"background: {t.bg_app};")
-        self._top.setStyleSheet(
-            f"QFrame {{ background: {t.bg_surface}; border: 1px solid {t.border}; "
-            f"border-radius: 12px; }}"
-        )
 
         self._profile.setStyleSheet(
             f"QFrame#profileCard {{ background: {t.bg_app}; border-radius: 12px; "
@@ -447,25 +400,7 @@ class AppShell(QWidget):
         self._stack.setCurrentIndex(idx)
         for key, btn in self._nav_buttons.items():
             btn.set_active(key == page_key)
-        self._update_top_search_visibility(page_key)
         self.page_changed.emit(idx)
-
-    def _update_top_search_visibility(self, page_key: str) -> None:
-        hide_search = page_key in _HIDE_TOP_SEARCH
-        hide_top_bar = page_key in _HIDE_TOP_BAR
-        self._search.setVisible(not hide_search)
-        self._top.setVisible(not hide_top_bar)
-        self._content_gap.setFixedHeight(0 if hide_top_bar else 20)
-        main_lay = self._main.layout()
-        if main_lay is not None:
-            m = main_lay.contentsMargins()
-            main_lay.setContentsMargins(m.left(), 12 if hide_top_bar else 20, m.right(), m.bottom())
-        if hide_search and self._top_leading_stretch is None:
-            self._top_row.insertStretch(0, 1)
-            self._top_leading_stretch = 0
-        elif not hide_search and self._top_leading_stretch is not None:
-            self._top_row.takeAt(self._top_leading_stretch)
-            self._top_leading_stretch = None
 
     def set_current_index(self, index: int) -> None:
         if 0 <= index < len(self._page_keys):
@@ -488,12 +423,6 @@ class AppShell(QWidget):
 
     def count(self) -> int:
         return self._stack.count()
-
-    def search_field(self) -> QLineEdit:
-        return self._search
-
-    def set_search_placeholder(self, text: str) -> None:
-        self._search.setPlaceholderText(text)
 
     def add_page(self, tab_name: str, widget: QWidget, **_) -> int:
         return self.register_page(tab_name, widget)

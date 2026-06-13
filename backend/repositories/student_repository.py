@@ -1,5 +1,6 @@
 from sqlalchemy import func, or_, select
 
+from backend.core.fee_control_constants import PASSED_OUT_CLASS_KEY, normalize_class_name
 from backend.core.student_enrollment import student_skips_academic_year_fee_provisioning
 from backend.models import Student
 
@@ -208,6 +209,100 @@ class StudentRepository:
 
     def list_students(self):
         return self.session.scalars(select(Student).order_by(Student.student_id.asc())).all()
+
+    def student_join_date_bounds(self) -> tuple:
+        from datetime import date, datetime
+
+        row = self.session.execute(
+            select(func.min(Student.created_at), func.max(Student.created_at))
+        ).one()
+
+        def _to_date(value):
+            if value is None:
+                return None
+            if isinstance(value, datetime):
+                return value.date()
+            if isinstance(value, date):
+                return value
+            return None
+
+        return _to_date(row[0]), _to_date(row[1])
+
+    def _student_ids_for_class(self, class_key: str) -> list[str]:
+        from backend.repositories.class_fee_repository import ClassFeeRepository
+
+        key = (class_key or "").strip()
+        if not key:
+            return []
+        if normalize_class_name(key) == normalize_class_name(PASSED_OUT_CLASS_KEY):
+            rows = self.session.scalars(
+                select(Student.student_id).where(
+                    func.lower(func.trim(Student.class_name))
+                    == normalize_class_name(PASSED_OUT_CLASS_KEY)
+                )
+            ).all()
+            return [str(value) for value in rows]
+        return [
+            student.student_id
+            for student in ClassFeeRepository(self.session).students_in_fixed_class(key)
+        ]
+
+    def _student_ids_for_classes(self, class_keys: list[str]) -> list[str]:
+        ids: list[str] = []
+        seen: set[str] = set()
+        for key in class_keys:
+            for student_id in self._student_ids_for_class(key):
+                if student_id not in seen:
+                    seen.add(student_id)
+                    ids.append(student_id)
+        return ids
+
+    def list_for_export(
+        self,
+        *,
+        month: tuple[int, int] | None = None,
+        date_from=None,
+        date_to=None,
+        class_names: list[str] | None = None,
+        sections: list[str] | None = None,
+        status: str | None = None,
+        student_id: str | None = None,
+    ):
+        import calendar
+        from datetime import date, datetime
+
+        stmt = select(Student).order_by(Student.student_id.asc())
+        sid = (student_id or "").strip()
+        if sid:
+            stmt = stmt.where(func.lower(Student.student_id) == sid.lower())
+        status_value = (status or "").strip().lower()
+        if status_value == "active":
+            stmt = stmt.where(func.lower(Student.status) == "active")
+        elif status_value == "inactive":
+            stmt = stmt.where(func.lower(Student.status) != "active")
+        if month is not None:
+            year, mon = month
+            start = datetime(int(year), int(mon), 1)
+            last_day = calendar.monthrange(int(year), int(mon))[1]
+            end = datetime(int(year), int(mon), last_day, 23, 59, 59)
+            stmt = stmt.where(Student.created_at >= start, Student.created_at <= end)
+        else:
+            if date_from is not None:
+                start = datetime.combine(date_from, datetime.min.time())
+                stmt = stmt.where(Student.created_at >= start)
+            if date_to is not None:
+                end = datetime.combine(date_to, datetime.max.time().replace(microsecond=0))
+                stmt = stmt.where(Student.created_at <= end)
+        if class_names:
+            ids = self._student_ids_for_classes(class_names)
+            if not ids:
+                return []
+            stmt = stmt.where(Student.student_id.in_(ids))
+        if sections:
+            normalized = [str(section).strip().upper() for section in sections if str(section).strip()]
+            if normalized:
+                stmt = stmt.where(func.upper(func.trim(Student.section)).in_(normalized))
+        return list(self.session.scalars(stmt).all())
 
     def count_active_inactive(self) -> tuple[int, int]:
         """Return (active_count, inactive_count) using case-insensitive status."""

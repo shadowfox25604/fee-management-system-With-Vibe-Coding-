@@ -117,7 +117,7 @@ class AddStudentPage(QWidget):
 
         self._wrapped = wrap_page(
             "Add New Student",
-            breadcrumb_trail("Student", "Add New Student"),
+            breadcrumb_trail("Admin Control", "Add New Student"),
             body,
         )
         outer = QVBoxLayout(self)

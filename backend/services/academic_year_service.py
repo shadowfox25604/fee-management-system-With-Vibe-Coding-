@@ -1,6 +1,12 @@
 from datetime import date
 
-from backend.core.academic_year_dates import academic_year_short_label, format_academic_year_range
+from backend.core.academic_year_dates import (
+    academic_year_bounds_for_start_year,
+    academic_year_short_label,
+    auto_label_for_range,
+    default_academic_year_bounds,
+    format_academic_year_range,
+)
 from backend.repositories.academic_year_repository import AcademicYearRepository
 from backend.repositories.student_repository import StudentRepository
 from backend.repositories.student_year_fee_repository import StudentYearFeeRepository
@@ -31,13 +37,40 @@ class AcademicYearService:
         return f"{year.label} ({format_academic_year_range(year.start_date, year.end_date)})"
 
     def format_year_short_label(self, year) -> str:
-        """Compact label for filters and dropdowns, e.g. 2025-26."""
+        """Compact label for filters and dropdowns, e.g. 2025-2026."""
         if year is None:
             return "—"
         label = (year.label or "").strip()
-        if label and "/" not in label and "–" not in label:
+        if label and "/" not in label and "–" not in label and "-" in label:
             return label
         return academic_year_short_label(year.start_date, year.end_date)
+
+    def next_academic_year_bounds(self) -> tuple[date, date, str]:
+        years = self.repo.list_all()
+        if not years:
+            start, end = default_academic_year_bounds(date.today())
+        else:
+            next_start_year = years[-1].start_date.year + 1
+            start, end = academic_year_bounds_for_start_year(next_start_year)
+        label = auto_label_for_range(start, end)
+        return start, end, label
+
+    def create_next_year(
+        self,
+        *,
+        class_fee_service: ClassFeeService | None = None,
+        village_fee_service: VillageVanFeeService | None = None,
+        provision_students: bool = True,
+    ):
+        start, end, label = self.next_academic_year_bounds()
+        return self.create_year(
+            start,
+            end,
+            label,
+            class_fee_service=class_fee_service,
+            village_fee_service=village_fee_service,
+            provision_students=provision_students,
+        )
 
     def create_year(
         self,

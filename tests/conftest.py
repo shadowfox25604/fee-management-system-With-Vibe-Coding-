@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from backend.core.database import Base
+from backend.core.database import Base, apply_sqlite_pragmas
 from backend.core.schema_migrations import apply_sqlite_column_migrations, apply_sqlite_data_migrations
 from backend.models import entities  # noqa: F401
 
@@ -37,6 +37,7 @@ def isolated_test_database(monkeypatch, tmp_path):
         f"sqlite:///{db_path}",
         connect_args={"check_same_thread": False},
     )
+    apply_sqlite_pragmas(test_engine)
     Base.metadata.create_all(bind=test_engine)
     apply_sqlite_column_migrations(test_engine)
     apply_sqlite_data_migrations(test_engine)

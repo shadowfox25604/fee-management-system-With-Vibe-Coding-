@@ -19,7 +19,9 @@ def test_daily_misc_expenses_chart_groups_by_entry_date(db_session):
 
 def test_daily_salary_expenses_chart_keeps_payout_and_reversal_dates(db_session):
     svc = ExpenseService(db_session)
-    faculty = svc.assign_faculty_salary("Ravi Kumar", 30000.0, default_working_days=25)
+    faculty = svc.assign_faculty_salary(
+        "Ravi Kumar", 30000.0, employee_id="Fac1", default_working_days=25
+    )
     pay_day = date.today() - timedelta(days=1)
     entry = svc.record_salary_from_attendance(
         faculty.id,
@@ -44,7 +46,9 @@ def test_daily_salary_expenses_chart_keeps_payout_and_reversal_dates(db_session)
 def test_merge_daily_charts_combines_salary_and_misc(db_session):
     expense_svc = ExpenseService(db_session)
     misc_svc = MiscExpenseService(db_session)
-    faculty = expense_svc.assign_faculty_salary("Ravi Kumar", 30000.0, default_working_days=25)
+    faculty = expense_svc.assign_faculty_salary(
+        "Ravi Kumar", 30000.0, employee_id="Fac1", default_working_days=25
+    )
     pay_day = date(2026, 5, 12)
     expense_svc.record_salary_from_attendance(
         faculty.id,
@@ -66,7 +70,9 @@ def test_merge_daily_charts_combines_salary_and_misc(db_session):
 def test_dashboard_expense_pie_includes_salary_and_misc(db_session):
     expense_svc = ExpenseService(db_session)
     misc_svc = MiscExpenseService(db_session)
-    faculty = expense_svc.assign_faculty_salary("Ravi Kumar", 30000.0, default_working_days=25)
+    faculty = expense_svc.assign_faculty_salary(
+        "Ravi Kumar", 30000.0, employee_id="Fac1", default_working_days=25
+    )
     expense_svc.record_salary_from_attendance(
         faculty.id,
         attendance_days=20,

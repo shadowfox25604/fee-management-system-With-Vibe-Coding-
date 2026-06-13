@@ -54,16 +54,21 @@ def resolve_logo_path() -> Path | None:
     return None
 
 
-def load_logo_pixmap(size: int = 48) -> QPixmap | None:
+def load_logo_pixmap(size: int = 48, *, device_pixel_ratio: float = 1.0) -> QPixmap | None:
+    """Load school logo scaled crisply for the given logical size and screen density."""
     path = resolve_logo_path()
     if path is None:
         return None
     pix = QPixmap(str(path))
     if pix.isNull():
         return None
-    return pix.scaled(
-        size,
-        size,
+    dpr = max(1.0, float(device_pixel_ratio or 1.0))
+    physical = max(1, int(round(size * dpr)))
+    scaled = pix.scaled(
+        physical,
+        physical,
         Qt.AspectRatioMode.KeepAspectRatio,
         Qt.TransformationMode.SmoothTransformation,
     )
+    scaled.setDevicePixelRatio(dpr)
+    return scaled

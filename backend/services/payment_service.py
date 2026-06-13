@@ -1,12 +1,17 @@
 from datetime import date
 from pathlib import Path
 
+from sqlalchemy import select
+
+from backend.models.entities import Payment
 from backend.repositories.payment_repository import PaymentRepository
+from backend.services.audit_service import AuditService
 
 
 class PaymentService:
     def __init__(self, session):
         self.repo = PaymentRepository(session)
+        self.audit = AuditService(session)
 
     def get_balance(self, student_id_fk):
         return self.repo.get_student_balance(student_id_fk)
@@ -37,7 +42,21 @@ class PaymentService:
             raise ValueError("No outstanding amount for this student")
         if amount > bal:
             raise ValueError("Payment exceeds outstanding balance")
-        return self.repo.create_payment(student, amount, mode, operator_name, payment_date)
+        payment = self.repo.create_payment(student, amount, mode, operator_name, payment_date)
+        self.audit.log_action(
+            "collect_payment",
+            "payments",
+            payment.reference_no,
+            new_value={
+                "student_id": student.student_id,
+                "amount": float(amount),
+                "mode": mode,
+                "operator_name": operator_name,
+                "payment_date": str(payment_date or date.today()),
+            },
+            performed_by=operator_name,
+        )
+        return payment
 
     def collect_split_payment(
         self,
@@ -48,6 +67,7 @@ class PaymentService:
         operator_name="admin",
         discount_amount=0.0,
         payment_date: date | None = None,
+        remark: str = "",
     ):
         va = float(van_amount or 0.0)
         sa = float(school_amount or 0.0)
@@ -59,7 +79,26 @@ class PaymentService:
         due = self.repo.get_student_due_breakdown(student.student_id)
         if due["total"] <= 0:
             raise ValueError("No outstanding amount for this student")
-        return self.repo.create_split_payment(student, va, sa, mode, operator_name, disc, payment_date)
+        payment = self.repo.create_split_payment(
+            student, va, sa, mode, operator_name, disc, payment_date, remark=remark
+        )
+        self.audit.log_action(
+            "collect_split_payment",
+            "payments",
+            payment.reference_no,
+            new_value={
+                "student_id": student.student_id,
+                "van_amount": va,
+                "school_amount": sa,
+                "discount_amount": disc,
+                "mode": mode,
+                "operator_name": operator_name,
+                "payment_date": str(payment_date or date.today()),
+                "remark": remark,
+            },
+            performed_by=operator_name,
+        )
+        return payment
 
     def list_payment_history(
         self,
@@ -151,7 +190,31 @@ class PaymentService:
         return output_path
 
     def undo_payment(self, reference_no: str):
-        return self.repo.undo_payment(reference_no)
+        ref = (reference_no or "").strip()
+        payment = self.repo.session.scalars(
+            select(Payment).where(Payment.reference_no == ref).limit(1)
+        ).first()
+        old_value = None
+        if payment is not None:
+            old_value = {
+                "student_id": payment.student_id_fk,
+                "amount": float(payment.amount or 0.0),
+                "school_amount": float(payment.school_amount or 0.0),
+                "van_amount": float(payment.van_amount or 0.0),
+                "mode": payment.mode,
+                "operator_name": payment.operator_name,
+                "payment_date": str(payment.payment_date),
+            }
+        reverted = self.repo.undo_payment(reference_no)
+        self.audit.log_action(
+            "undo_payment",
+            "payments",
+            reverted.reference_no,
+            old_value=old_value,
+            new_value={"is_reverted": True},
+            performed_by=reverted.operator_name,
+        )
+        return reverted
 
     def dashboard_period_stats(self, week_start: date, today: date) -> dict:
         return self.repo.dashboard_period_stats(week_start, today)

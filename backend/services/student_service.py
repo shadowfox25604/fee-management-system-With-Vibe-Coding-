@@ -263,3 +263,177 @@ class StudentService:
             caste=caste_value,
             aadhaar=aadhaar_value,
         )
+
+    def student_join_date_bounds(self) -> tuple[date | None, date | None]:
+        return self.repo.student_join_date_bounds()
+
+    def list_export_students(
+        self,
+        *,
+        search: str | None = None,
+        search_basis: str | None = None,
+        month: tuple[int, int] | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        class_names: list[str] | None = None,
+        sections: list[str] | None = None,
+        status: str | None = None,
+        student_id: str | None = None,
+    ):
+        from backend.core.student_search_match import student_matches_search
+
+        students = self.repo.list_for_export(
+            month=month,
+            date_from=date_from,
+            date_to=date_to,
+            class_names=class_names,
+            sections=sections,
+            status=status,
+            student_id=student_id,
+        )
+        q = (search or "").strip()
+        basis = (search_basis or "Name").strip()
+        if q:
+            students = [s for s in students if student_matches_search(s, basis, q)]
+        return students
+
+    def count_export_rows(self, **filters) -> int:
+        student_filters = dict(filters)
+        student_filters.pop("columns", None)
+        return len(self.list_export_students(**student_filters))
+
+    @staticmethod
+    def _format_export_date(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, datetime):
+            return value.strftime("%d/%m/%Y")
+        if isinstance(value, date):
+            return value.strftime("%d/%m/%Y")
+        return str(value)
+
+    @staticmethod
+    def _format_export_gender(value) -> str:
+        text = str(value or "").strip()
+        lower = text.lower()
+        if lower in ("male", "boy"):
+            return "Male"
+        if lower in ("female", "girl"):
+            return "Female"
+        return text.title() if text else ""
+
+    def build_list_export_rows(
+        self,
+        students,
+        *,
+        summaries: dict | None = None,
+        van_summaries: dict | None = None,
+        due_map: dict | None = None,
+        discount_map: dict | None = None,
+    ) -> list[dict]:
+        from backend.core.fee_due_display import pending_fees
+
+        summaries = summaries or {}
+        van_summaries = van_summaries or {}
+        due_map = due_map or {}
+        discount_map = discount_map or {}
+        rows: list[dict] = []
+        for student in students:
+            student_id = getattr(student, "student_id", None)
+            summary = summaries.get(
+                student_id,
+                {"fee_paid": 0.0, "fee_due": 0.0, "total_fees": 0.0},
+            )
+            van_summary = van_summaries.get(student_id, {"van_paid": 0.0, "van_due": 0.0})
+            due = due_map.get(
+                student_id,
+                {
+                    "pending_fees": 0.0,
+                    "van_due": 0.0,
+                    "fee_due": 0.0,
+                    "total": 0.0,
+                },
+            )
+            rows.append(
+                {
+                    "student_id": str(student_id or ""),
+                    "full_name": str(getattr(student, "full_name", None) or ""),
+                    "gender": self._format_export_gender(getattr(student, "gender", None)),
+                    "father_name": str(
+                        getattr(student, "father_name", None)
+                        or getattr(student, "guardian_name", None)
+                        or ""
+                    ),
+                    "mother_name": str(getattr(student, "mother_name", None) or ""),
+                    "class_name": str(getattr(student, "class_name", None) or ""),
+                    "section": str(getattr(student, "section", None) or ""),
+                    "mobile_number_1": str(
+                        getattr(student, "mobile_number_1", None)
+                        or getattr(student, "phone", None)
+                        or ""
+                    ),
+                    "mobile_number_2": str(getattr(student, "mobile_number_2", None) or ""),
+                    "date_of_birth": self._format_export_date(getattr(student, "date_of_birth", None)),
+                    "caste": str(getattr(student, "caste", None) or ""),
+                    "aadhaar": str(getattr(student, "aadhaar", None) or ""),
+                    "village": str(getattr(student, "village", None) or ""),
+                    "status": str(getattr(student, "status", None) or ""),
+                    "van_fees": float(getattr(student, "van_fees", 0) or 0.0),
+                    "van_paid": float(van_summary.get("van_paid", 0) or 0.0),
+                    "van_due": float(due.get("van_due", 0) or 0.0),
+                    "school_fees": float(getattr(student, "school_fees", 0) or 0.0),
+                    "school_paid": float(summary.get("fee_paid", 0) or 0.0),
+                    "discount": float(discount_map.get(student_id, 0) or 0.0),
+                    "pending_fees": float(pending_fees(due)),
+                    "school_due": float(due.get("fee_due", 0) or 0.0),
+                    "school_payable": float(due.get("school_payable", 0) or 0.0),
+                    "total_due": float(due.get("total", 0) or 0.0),
+                }
+            )
+        return rows
+
+    def export_list_excel(
+        self,
+        output_path,
+        students,
+        *,
+        summaries: dict | None = None,
+        van_summaries: dict | None = None,
+        due_map: dict | None = None,
+        discount_map: dict | None = None,
+        columns: list[str] | None = None,
+    ):
+        from pathlib import Path
+
+        from backend.reports.student_list_excel_export import StudentListExcelExporter
+
+        path = Path(output_path)
+        rows = self.build_list_export_rows(
+            students,
+            summaries=summaries,
+            van_summaries=van_summaries,
+            due_map=due_map,
+            discount_map=discount_map,
+        )
+        StudentListExcelExporter.export(rows, path, columns=columns)
+        return path
+
+    def export_list_excel_filtered(self, output_path, payment_service, **filters):
+        columns = filters.pop("columns", None)
+        students = self.list_export_students(**filters)
+        student_ids = [s.student_id for s in students]
+        fee_maps = {
+            "summaries": payment_service.get_students_school_fee_summary(student_ids),
+            "van_summaries": payment_service.get_students_van_fee_summary(student_ids),
+            "due_map": payment_service.get_students_due_breakdown(student_ids),
+            "discount_map": payment_service.get_students_cumulative_payment_discount(student_ids),
+        }
+        return self.export_list_excel(
+            output_path,
+            students,
+            summaries=fee_maps["summaries"],
+            van_summaries=fee_maps["van_summaries"],
+            due_map=fee_maps["due_map"],
+            discount_map=fee_maps["discount_map"],
+            columns=columns,
+        )

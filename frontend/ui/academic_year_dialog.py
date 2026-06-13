@@ -1,14 +1,9 @@
-from datetime import date
-
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDateEdit,
     QDialog,
     QDialogButtonBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -31,38 +26,40 @@ class AcademicYearDialog(QDialog):
         self.class_fee_service = class_fee_service
         self.village_fee_service = village_fee_service
         self.setWindowTitle("Manage academic years")
-        self.resize(720, 420)
+        self.resize(760, 420)
         theme.apply_dialog_theme(self)
         layout = QVBoxLayout(self)
         hint = QLabel(
-            "Each academic year is a date range (DD/MM/YYYY). Ranges must not overlap. "
+            "Academic years are set automatically by the system. "
+            "Each year runs from 31 May through 1 June of the following calendar year "
+            "(for example, 2025-2026 is 31 May 2025 - 1 June 2026). "
+            "Use “Add next year” to create the next sequential year with the correct dates and label. "
             "The year that contains today’s date is the current year for new fees and payments. "
             "Adding a new forward year promotes every active student one class (e.g. LKG→UKG→1→2→…→10→Passed Out). "
             "Pending fees for the new year become: existing pending + previous current-year school due + previous current-year van due. "
-            "Class 10 students are marked Passed Out and set to inactive. "
-            "Inactive students (e.g. left school) are not promoted and do not receive new year fees; old pending fees remain. "
-            "Fee records are created for active students using Fee Control class and village tariffs."
+            "Class 10 students are marked Passed Out and set to inactive."
         )
         hint.setWordWrap(True)
         hint.setProperty("role", "muted")
         layout.addWidget(hint)
         self._current_lbl = QLabel()
         layout.addWidget(self._current_lbl)
+        self._next_lbl = QLabel()
+        self._next_lbl.setProperty("role", "hint")
+        self._next_lbl.setWordWrap(True)
+        layout.addWidget(self._next_lbl)
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Label", "Start", "End"])
+        self.table.setHorizontalHeaderLabels(["Academic year", "Start", "End"])
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         configure_data_table(self.table)
         layout.addWidget(self.table, 1)
         btn_row = QHBoxLayout()
-        add_btn = QPushButton("Add year…")
-        edit_btn = QPushButton("Edit year…")
+        self._add_btn = QPushButton("Add next year")
         del_btn = QPushButton("Delete year")
-        add_btn.clicked.connect(self._on_add)
-        edit_btn.clicked.connect(self._on_edit)
+        self._add_btn.clicked.connect(self._on_add)
         del_btn.clicked.connect(self._on_delete)
-        btn_row.addWidget(add_btn)
-        btn_row.addWidget(edit_btn)
+        btn_row.addWidget(self._add_btn)
         btn_row.addWidget(del_btn)
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
@@ -79,13 +76,28 @@ class AcademicYearDialog(QDialog):
             else "Current academic year: none (today is not inside any defined range)"
         )
         years = self.service.list_years()
+        try:
+            next_start, next_end, next_label = self.service.next_academic_year_bounds()
+            if any(y.start_date == next_start and y.end_date == next_end for y in years):
+                self._next_lbl.setText("Next academic year is already in the list.")
+                self._add_btn.setEnabled(False)
+            else:
+                self._next_lbl.setText(
+                    f"Next year to add: {next_label} "
+                    f"({format_academic_year_range(next_start, next_end)})"
+                )
+                self._add_btn.setEnabled(True)
+        except Exception:
+            self._next_lbl.setText("")
+            self._add_btn.setEnabled(True)
+
         self.table.setRowCount(len(years))
-        from backend.core.payment_date_format import format_payment_date_dmY
+        from backend.core.academic_year_dates import format_academic_year_date_display
 
         for i, y in enumerate(years):
             self.table.setItem(i, 0, QTableWidgetItem(y.label or ""))
-            self.table.setItem(i, 1, QTableWidgetItem(format_payment_date_dmY(y.start_date)))
-            self.table.setItem(i, 2, QTableWidgetItem(format_payment_date_dmY(y.end_date)))
+            self.table.setItem(i, 1, QTableWidgetItem(format_academic_year_date_display(y.start_date)))
+            self.table.setItem(i, 2, QTableWidgetItem(format_academic_year_date_display(y.end_date)))
             self.table.item(i, 0).setData(Qt.UserRole, int(y.id))
 
     def _selected_year_id(self) -> int | None:
@@ -95,45 +107,9 @@ class AcademicYearDialog(QDialog):
         item = self.table.item(row, 0)
         return int(item.data(Qt.UserRole)) if item else None
 
-    def _year_form_dialog(self, title: str, start: date | None = None, end: date | None = None, label: str = ""):
-        dlg = QDialog(self)
-        dlg.setWindowTitle(title)
-        theme.apply_dialog_theme(dlg)
-        form = QFormLayout(dlg)
-        label_edit = QLineEdit(label)
-        label_edit.setPlaceholderText("Optional, e.g. 2025-26")
-        start_edit = QDateEdit(QDate.currentDate())
-        start_edit.setCalendarPopup(True)
-        start_edit.setDisplayFormat("dd/MM/yyyy")
-        end_edit = QDateEdit(QDate.currentDate())
-        end_edit.setCalendarPopup(True)
-        end_edit.setDisplayFormat("dd/MM/yyyy")
-        if start:
-            start_edit.setDate(QDate(start.year, start.month, start.day))
-        if end:
-            end_edit.setDate(QDate(end.year, end.month, end.day))
-        form.addRow("Label", label_edit)
-        form.addRow("Start date", start_edit)
-        form.addRow("End date", end_edit)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        form.addRow(buttons)
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return None
-        q1, q2 = start_edit.date(), end_edit.date()
-        return label_edit.text().strip(), date(q1.year(), q1.month(), q1.day()), date(q2.year(), q2.month(), q2.day())
-
     def _on_add(self):
-        data = self._year_form_dialog("Add academic year")
-        if not data:
-            return
-        label, start, end = data
         try:
-            self.service.create_year(
-                start,
-                end,
-                label or None,
+            self.service.create_next_year(
                 class_fee_service=self.class_fee_service,
                 village_fee_service=self.village_fee_service,
             )
@@ -151,25 +127,6 @@ class AcademicYearDialog(QDialog):
         except Exception as e:
             self.session.rollback()
             theme.message_critical(self, "Could not add year", str(e))
-
-    def _on_edit(self):
-        yid = self._selected_year_id()
-        if yid is None:
-            theme.message_information(self, "Select a year", "Select an academic year row to edit.")
-            return
-        year = self.service.repo.get(yid)
-        if year is None:
-            return
-        data = self._year_form_dialog("Edit academic year", year.start_date, year.end_date, year.label)
-        if not data:
-            return
-        label, start, end = data
-        try:
-            self.service.update_year(yid, start, end, label or None)
-            self._reload()
-        except Exception as e:
-            self.session.rollback()
-            theme.message_critical(self, "Could not update year", str(e))
 
     def _on_delete(self):
         yid = self._selected_year_id()

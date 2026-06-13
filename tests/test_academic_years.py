@@ -30,6 +30,47 @@ def _fee_heads(session):
     return t, tr
 
 
+def test_standard_academic_year_bounds_and_labels():
+    from backend.core.academic_year_dates import (
+        academic_year_bounds_for_start_year,
+        academic_year_start_year_for_date,
+        auto_label_for_range,
+        default_academic_year_bounds,
+        format_academic_year_range,
+    )
+
+    start, end = academic_year_bounds_for_start_year(2025)
+    assert start == date(2025, 5, 31)
+    assert end == date(2026, 6, 1)
+    assert auto_label_for_range(start, end) == "2025-2026"
+    assert format_academic_year_range(start, end) == "31 May 2025 - 1 June 2026"
+
+    assert academic_year_start_year_for_date(date(2026, 3, 10)) == 2025
+    assert academic_year_start_year_for_date(date(2026, 6, 12)) == 2026
+    cur_start, cur_end = default_academic_year_bounds(date(2026, 6, 12))
+    assert cur_start == date(2026, 5, 31)
+    assert cur_end == date(2027, 6, 1)
+
+
+def test_create_next_academic_year_uses_standard_bounds(db_session):
+    ay_repo = AcademicYearRepository(db_session)
+    for row in ay_repo.list_all():
+        db_session.delete(row)
+    db_session.commit()
+
+    svc = AcademicYearService(db_session)
+    expected_start, expected_end, expected_label = svc.next_academic_year_bounds()
+    first = svc.create_next_year(provision_students=False)
+    assert first.label == expected_label
+    assert first.start_date == expected_start
+    assert first.end_date == expected_end
+
+    second = svc.create_next_year(provision_students=False)
+    assert second.start_date.year == first.start_date.year + 1
+    assert second.end_date.year == first.end_date.year + 1
+    assert second.label == f"{second.start_date.year}-{second.end_date.year}"
+
+
 def test_academic_year_persists_after_new_session(db_session):
     """Year must be on disk before student provisioning finishes (survives app restart)."""
     from backend.services.academic_year_service import AcademicYearService

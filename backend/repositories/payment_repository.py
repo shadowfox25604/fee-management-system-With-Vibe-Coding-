@@ -359,6 +359,7 @@ class PaymentRepository:
         mode: str,
         operator_name: str,
         payment_date: date | None = None,
+        remark: str = "",
     ):
         d = payment_date or date.today()
         if d > date.today():
@@ -374,6 +375,7 @@ class PaymentRepository:
             mode=mode,
             reference_no=self.new_payment_reference(),
             operator_name=operator_name,
+            remark=(remark or "").strip(),
             is_reverted=False,
         )
         self.session.add(payment)
@@ -456,6 +458,7 @@ class PaymentRepository:
         operator_name: str,
         discount_amount: float = 0.0,
         payment_date: date | None = None,
+        remark: str = "",
     ):
         """Apply payments to combined pending first, then current-year school and van invoices."""
         van_amount, school_amount, discount_amount, d = self.validate_split_payment_inputs(
@@ -475,6 +478,7 @@ class PaymentRepository:
             mode=mode,
             reference_no=self.new_payment_reference(),
             operator_name=operator_name,
+            remark=(remark or "").strip(),
             is_reverted=False,
         )
         self.session.add(payment)
@@ -845,6 +849,7 @@ class PaymentRepository:
             "discount": float(p.discount_amount or 0.0),
             "mode": p.mode or "",
             "operator": p.operator_name or "",
+            "remark": (getattr(p, "remark", None) or "").strip(),
             "is_reverted": bool(getattr(p, "is_reverted", False)),
             "status": "Payment reverted" if bool(getattr(p, "is_reverted", False)) else "Paid",
         }

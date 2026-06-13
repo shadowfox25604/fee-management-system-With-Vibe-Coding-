@@ -322,7 +322,8 @@ class FeeControlPage(QWidget):
             width=fee_action_button_width(self._years_btn, min_width=168),
         )
         self._years_btn.setToolTip(
-            "Add or edit academic year date ranges. Forward rollover promotes students one class "
+            "Academic years use automatic 31 May → 1 June ranges (e.g. 2025-2026). "
+            "Add the next year from Manage academic years. Forward rollover promotes students one class "
             "and carries pending fees into the new year."
         )
         self._years_btn.clicked.connect(on_manage)
@@ -439,9 +440,11 @@ class FeeControlPage(QWidget):
         prev_id = self.selected_academic_year_id
         self._school_year_combo.blockSignals(True)
         self._school_year_combo.clear()
+        from backend.core.academic_year_dates import format_academic_year_range
+
         for year in years:
             label = self._year_svc.format_year_short_label(year)
-            detail = f"{year.start_date:%d %b %Y} – {year.end_date:%d %b %Y}"
+            detail = format_academic_year_range(year.start_date, year.end_date)
             self._school_year_combo.addItem(f"{label}  ({detail})", year.id)
         if prev_id is not None:
             idx = self._school_year_combo.findData(prev_id)
@@ -522,8 +525,10 @@ class FeeControlPage(QWidget):
         self._m_villages.update_metric(str(n_v), "Van transport routes")
         cur = self._year_svc.get_current()
         if cur is not None:
+            from backend.core.academic_year_dates import format_academic_year_range
+
             lbl = self._year_svc.format_year_short_label(cur)
-            det = f"{cur.start_date.strftime('%d %b %Y')} – {cur.end_date.strftime('%d %b %Y')}"
+            det = format_academic_year_range(cur.start_date, cur.end_date)
         else:
             lbl, det = "Not set", "Define an academic year range"
         self._m_year.update_metric(lbl, det)

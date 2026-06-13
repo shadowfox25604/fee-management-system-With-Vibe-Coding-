@@ -12,6 +12,7 @@ def test_assign_faculty_salary_upserts_existing_name(db_session):
     first = svc.assign_faculty_salary(
         "Anita Devi",
         25000.0,
+        employee_id="Fac1",
         faculty_type="Teaching",
         role="Science",
         default_working_days=26,
@@ -19,12 +20,14 @@ def test_assign_faculty_salary_upserts_existing_name(db_session):
     second = svc.assign_faculty_salary(
         "anita devi",
         28000.0,
+        employee_id="Fac2",
         faculty_type="non-teaching",
         role="Senior Science",
         default_working_days=24,
     )
 
     assert first.id == second.id
+    assert second.employee_id == "Fac1"
     assert float(second.monthly_salary) == 28000.0
     assert int(second.default_working_days) == 24
     assert str(second.faculty_type) == "Non Teaching"
@@ -34,8 +37,12 @@ def test_assign_faculty_salary_upserts_existing_name(db_session):
 
 def test_faculty_lists_can_filter_by_type(db_session):
     svc = ExpenseService(db_session)
-    svc.assign_faculty_salary("Rahul Das", 26000.0, faculty_type="Teaching", role="Math")
-    svc.assign_faculty_salary("Nisha Paul", 22000.0, faculty_type="Non Teaching", role="Admin")
+    svc.assign_faculty_salary(
+        "Rahul Das", 26000.0, employee_id="Fac1", faculty_type="Teaching", role="Math"
+    )
+    svc.assign_faculty_salary(
+        "Nisha Paul", 22000.0, employee_id="Fac2", faculty_type="Non Teaching", role="Admin"
+    )
 
     teaching = svc.list_faculty_salaries(faculty_type="Teaching")
     non_teaching = svc.list_faculty_salaries(faculty_type="Non Teaching")
@@ -46,11 +53,53 @@ def test_faculty_lists_can_filter_by_type(db_session):
     assert non_teaching[0].faculty_name == "Nisha Paul"
 
 
+def test_assign_faculty_salary_requires_employee_id(db_session):
+    svc = ExpenseService(db_session)
+    with pytest.raises(ValueError, match="Employee ID is required"):
+        svc.assign_faculty_salary("Anita Rao", 22000.0, employee_id="")
+
+
+def test_assign_faculty_salary_rejects_duplicate_employee_id(db_session):
+    svc = ExpenseService(db_session)
+    svc.assign_faculty_salary("Anita Rao", 22000.0, employee_id="Fac1", role="Science")
+    with pytest.raises(ValueError, match="Employee ID already exists"):
+        svc.assign_faculty_salary("Other Person", 21000.0, employee_id="fac1", role="Math")
+
+
+def test_suggest_next_faculty_employee_id(db_session):
+    svc = ExpenseService(db_session)
+    assert svc.suggest_next_faculty_employee_id() == "Fac1"
+    svc.assign_faculty_salary("One", 20000.0, employee_id="Fac1", role="A")
+    svc.assign_faculty_salary("Two", 21000.0, employee_id="Fac7", role="B")
+    assert svc.suggest_next_faculty_employee_id() == "Fac8"
+
+
+def test_assign_faculty_salary_stores_optional_profile_fields(db_session):
+    svc = ExpenseService(db_session)
+    faculty = svc.assign_faculty_salary(
+        "Anita Rao",
+        22000.0,
+        employee_id="Fac1",
+        faculty_type="Teaching",
+        role="Science",
+        phone_number="9876543210",
+        aadhaar="123456789012",
+        caste="OBC",
+        is_active=False,
+    )
+    assert faculty.employee_id == "Fac1"
+    assert faculty.phone_number == "9876543210"
+    assert faculty.aadhaar == "123456789012"
+    assert faculty.caste == "OBC"
+    assert bool(faculty.is_active) is False
+
+
 def test_update_faculty_profile_updates_salary_and_details(db_session):
     svc = ExpenseService(db_session)
     faculty = svc.assign_faculty_salary(
         "Meena Kumari",
         24000.0,
+        employee_id="Fac1",
         faculty_type="Teaching",
         role="Hindi",
         default_working_days=26,
@@ -59,21 +108,29 @@ def test_update_faculty_profile_updates_salary_and_details(db_session):
 
     updated = svc.update_faculty_profile(
         faculty.id,
+        employee_id="Fac9",
         faculty_name="Meena K.",
         faculty_type="Non Teaching",
         role="Office Admin",
         monthly_salary=27500.0,
         default_working_days=24,
         is_active=False,
+        phone_number="9123456789",
+        aadhaar="998877665544",
+        caste="General",
     )
 
     assert updated.id == faculty.id
+    assert updated.employee_id == "Fac9"
     assert updated.faculty_name == "Meena K."
     assert updated.faculty_type == "Non Teaching"
     assert updated.role == "Office Admin"
     assert float(updated.monthly_salary) == pytest.approx(27500.0, abs=0.01)
     assert int(updated.default_working_days) == 24
     assert bool(updated.is_active) is False
+    assert updated.phone_number == "9123456789"
+    assert updated.aadhaar == "998877665544"
+    assert updated.caste == "General"
 
 
 def test_update_faculty_profile_renames_salary_history_person_name(db_session):
@@ -81,6 +138,7 @@ def test_update_faculty_profile_renames_salary_history_person_name(db_session):
     faculty = svc.assign_faculty_salary(
         "Ravi Kumar",
         30000.0,
+        employee_id="Fac1",
         role="English",
         default_working_days=25,
     )
@@ -95,6 +153,7 @@ def test_update_faculty_profile_renames_salary_history_person_name(db_session):
 
     updated = svc.update_faculty_profile(
         faculty.id,
+        employee_id="Fac1",
         faculty_name="Ravi K.",
         faculty_type="Teaching",
         role="Senior English",
@@ -115,11 +174,13 @@ def test_update_faculty_profile_renames_salary_history_person_name(db_session):
     assert len(overview["history"]) == 1
     assert overview["history"][0].person_name == "Ravi K."
 
+
 def test_record_salary_from_attendance_creates_salary_expense(db_session):
     svc = ExpenseService(db_session)
     faculty = svc.assign_faculty_salary(
         "Ravi Kumar",
         30000.0,
+        employee_id="Fac1",
         role="English",
         default_working_days=25,
     )
@@ -146,6 +207,7 @@ def test_salary_save_replaces_prior_entry_for_same_faculty_month(db_session):
     faculty = svc.assign_faculty_salary(
         "Ravi Kumar",
         30000.0,
+        employee_id="Fac1",
         role="English",
         default_working_days=25,
     )
@@ -198,6 +260,7 @@ def test_mark_attendance_persists_for_month(db_session):
     faculty = svc.assign_faculty_salary(
         "Nirmala",
         31000.0,
+        employee_id="Fac1",
         role="Office",
         default_working_days=26,
     )
@@ -220,7 +283,9 @@ def test_mark_attendance_persists_for_month(db_session):
 
 def test_purge_faculty_by_name_removes_salary_history_without_profile(db_session):
     svc = ExpenseService(db_session)
-    faculty = svc.assign_faculty_salary("Temp Faculty", 20000.0, faculty_type="Teaching")
+    faculty = svc.assign_faculty_salary(
+        "Temp Faculty", 20000.0, employee_id="Fac1", faculty_type="Teaching"
+    )
     svc.record_salary_from_attendance(
         faculty.id,
         attendance_days=20,
@@ -256,6 +321,7 @@ def test_salary_from_marked_attendance_is_calculated_not_saved(db_session):
     faculty = svc.assign_faculty_salary(
         "Prakash",
         31000.0,
+        employee_id="Fac1",
         role="Teacher",
         default_working_days=26,
     )

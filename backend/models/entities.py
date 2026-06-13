@@ -83,6 +83,7 @@ class Payment(Base):
     mode: Mapped[str] = mapped_column(String(20), default="cash")
     reference_no: Mapped[str] = mapped_column(String(16), unique=True, nullable=False)
     operator_name: Mapped[str] = mapped_column(String(60), default="admin")
+    remark: Mapped[str] = mapped_column(Text, default="", nullable=False)
     is_reverted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     reverted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     student = relationship("Student", back_populates="payments")
@@ -103,12 +104,16 @@ class VillageVanFee(Base):
 class FacultySalary(Base):
     __tablename__ = "faculty_salaries"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
     faculty_name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
     faculty_type: Mapped[str] = mapped_column(String(20), default="Teaching", nullable=False)
     role: Mapped[str] = mapped_column(String(80), default="", nullable=False)
     monthly_salary: Mapped[float] = mapped_column(Float, nullable=False)
     default_working_days: Mapped[int] = mapped_column(Integer, default=26, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    phone_number: Mapped[str] = mapped_column(String(20), default="", nullable=False)
+    aadhaar: Mapped[str] = mapped_column(String(20), default="", nullable=False)
+    caste: Mapped[str] = mapped_column(String(80), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -176,6 +181,32 @@ class MiscExpenseEntry(Base):
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
     expense = relationship("MiscExpense", back_populates="entries")
+
+
+class MiscIncome(Base):
+    __tablename__ = "misc_incomes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    head: Mapped[str] = mapped_column(String(80), nullable=False)
+    income_date: Mapped[date] = mapped_column(Date, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    entries = relationship("MiscIncomeEntry", back_populates="income", cascade="all, delete-orphan")
+
+
+class MiscIncomeEntry(Base):
+    __tablename__ = "misc_income_entries"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    income_id: Mapped[int] = mapped_column(ForeignKey("misc_incomes.id"), nullable=False)
+    entry_date: Mapped[date] = mapped_column(Date, nullable=False)
+    particular: Mapped[str] = mapped_column(String(240), nullable=False)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    is_reverted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    reverted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    income = relationship("MiscIncome", back_populates="entries")
 
 
 class FeePlan(Base):

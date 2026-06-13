@@ -22,19 +22,29 @@ class ExpenseService:
             return "Non Teaching"
         return "Teaching"
 
+    def suggest_next_faculty_employee_id(self) -> str:
+        return self.repo.suggest_next_employee_id()
+
     def assign_faculty_salary(
         self,
         faculty_name: str,
         monthly_salary: float,
         *,
+        employee_id: str,
         faculty_type: str = "Teaching",
         role: str = "",
         default_working_days: int = 26,
         is_active: bool = True,
+        phone_number: str = "",
+        aadhaar: str = "",
+        caste: str = "",
     ):
         name = (faculty_name or "").strip()
         if not name:
             raise ValueError("Faculty name is required.")
+        emp = (employee_id or "").strip()
+        if not emp:
+            raise ValueError("Employee ID is required.")
         salary = float(monthly_salary or 0.0)
         if salary <= 0:
             raise ValueError("Monthly salary must be greater than zero.")
@@ -47,7 +57,11 @@ class ExpenseService:
             role or "",
             salary,
             working_days,
+            employee_id=emp,
             is_active=bool(is_active),
+            phone_number=(phone_number or "").strip(),
+            aadhaar=(aadhaar or "").strip(),
+            caste=(caste or "").strip(),
         )
 
     def list_faculty_salaries(
@@ -69,16 +83,23 @@ class ExpenseService:
         self,
         faculty_id: int,
         *,
+        employee_id: str,
         faculty_name: str,
         faculty_type: str,
         role: str,
         monthly_salary: float,
         default_working_days: int,
         is_active: bool,
+        phone_number: str = "",
+        aadhaar: str = "",
+        caste: str = "",
     ):
         name = (faculty_name or "").strip()
         if not name:
             raise ValueError("Faculty name is required.")
+        emp = (employee_id or "").strip()
+        if not emp:
+            raise ValueError("Employee ID is required.")
         salary = float(monthly_salary or 0.0)
         if salary <= 0:
             raise ValueError("Monthly salary must be greater than zero.")
@@ -87,12 +108,16 @@ class ExpenseService:
             raise ValueError("Working days must be greater than zero.")
         row = self.repo.update_faculty_profile(
             int(faculty_id),
+            employee_id=emp,
             faculty_name=name,
             faculty_type=self.normalize_faculty_type(faculty_type),
             role=(role or "").strip(),
             monthly_salary=salary,
             default_working_days=working_days,
             is_active=bool(is_active),
+            phone_number=(phone_number or "").strip(),
+            aadhaar=(aadhaar or "").strip(),
+            caste=(caste or "").strip(),
         )
         if row is None:
             raise ValueError("Selected faculty does not exist.")

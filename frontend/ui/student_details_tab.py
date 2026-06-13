@@ -1,4 +1,4 @@
-"""Student Details view with richer analytics and activity cards."""
+"""Student Details view for browsing and editing student records."""
 
 from __future__ import annotations
 
@@ -6,11 +6,9 @@ from datetime import date, datetime
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFormLayout,
-    QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
@@ -29,15 +27,10 @@ from backend.core.fee_due_display import pending_fees
 from frontend.ui import theme
 
 
-def _money(value: float) -> str:
-    return f"₹{float(value or 0.0):,.2f}"
-
-
 class StudentDetailsTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._running_animations: list[QPropertyAnimation] = []
-        self._stat_values: list[QLabel] = []
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -53,7 +46,7 @@ class StudentDetailsTab(QWidget):
 
         title = QLabel("Find students")
         title.setProperty("role", "section-title")
-        title_hint = QLabel("Search and pick a student to preview profile details.")
+        title_hint = QLabel("Search and pick a student, then use Edit profile to update their record.")
         title_hint.setProperty("role", "muted")
         title_hint.setWordWrap(True)
         ll.addWidget(title)
@@ -102,9 +95,7 @@ class StudentDetailsTab(QWidget):
         filters = QHBoxLayout()
         filters.setSpacing(14)
         self.filter_active_only = QCheckBox("Active only")
-        self.filter_outstanding_only = QCheckBox("Outstanding only")
         filters.addWidget(self.filter_active_only)
-        filters.addWidget(self.filter_outstanding_only)
         filters.addStretch(1)
         ll.addLayout(filters)
 
@@ -178,23 +169,8 @@ class StudentDetailsTab(QWidget):
         btn_row.addStretch(1)
         dl.addLayout(btn_row)
 
-        stats_row = QHBoxLayout()
-        stats_row.setSpacing(10)
-        card_total, self.lbl_stat_total = self._create_stat_card("Total payable")
-        card_school, self.lbl_stat_school = self._create_stat_card("School payable")
-        card_van, self.lbl_stat_van = self._create_stat_card("Van payable")
-        card_year, self.lbl_stat_year = self._create_stat_card("Academic year")
-        stats_row.addWidget(card_total, 1)
-        stats_row.addWidget(card_school, 1)
-        stats_row.addWidget(card_van, 1)
-        stats_row.addWidget(card_year, 1)
-        dl.addLayout(stats_row)
-
-        middle_row = QHBoxLayout()
-        middle_row.setSpacing(14)
-
         contact_card = SurfaceCard()
-        contact_card.body.addWidget(CardTitleBar("Contact details"))
+        contact_card.body.addWidget(CardTitleBar("Contact and enrollment details"))
         contact_form = QFormLayout()
         contact_form.setHorizontalSpacing(16)
         contact_form.setVerticalSpacing(8)
@@ -208,6 +184,9 @@ class StudentDetailsTab(QWidget):
         self.lbl_date_of_birth = QLabel("—")
         self.lbl_caste = QLabel("—")
         self.lbl_aadhaar = QLabel("—")
+        self.lbl_school_fees = QLabel("—")
+        self.lbl_van_fees = QLabel("—")
+        self.lbl_pending_fees = QLabel("—")
         contact_form.addRow("Mobile number 1", self.lbl_phone)
         contact_form.addRow("Mobile number 2", self.lbl_mobile_2)
         contact_form.addRow("Village", self.lbl_village)
@@ -218,72 +197,20 @@ class StudentDetailsTab(QWidget):
         contact_form.addRow("Date of birth", self.lbl_date_of_birth)
         contact_form.addRow("Caste", self.lbl_caste)
         contact_form.addRow("Aadhaar", self.lbl_aadhaar)
+        contact_form.addRow("School fees (tariff)", self.lbl_school_fees)
+        contact_form.addRow("Van fees (tariff)", self.lbl_van_fees)
+        contact_form.addRow("Pending fees", self.lbl_pending_fees)
         contact_card.body.addLayout(contact_form)
-        middle_row.addWidget(contact_card, 1)
+        dl.addWidget(contact_card, 1)
 
-        fee_card = SurfaceCard()
-        fee_card.body.addWidget(CardTitleBar("Fee summary"))
-        fee_form = QFormLayout()
-        fee_form.setHorizontalSpacing(16)
-        fee_form.setVerticalSpacing(8)
-        self.lbl_fee_year = QLabel("—")
-        self.lbl_pending_fees = QLabel("—")
-        self.lbl_school_current = QLabel("—")
-        self.lbl_school_payable = QLabel("—")
-        self.lbl_van_current = QLabel("—")
-        self.lbl_van_payable = QLabel("—")
-        self.lbl_total_payable = QLabel("—")
-        fee_form.addRow("Academic year", self.lbl_fee_year)
-        fee_form.addRow("Pending fees", self.lbl_pending_fees)
-        fee_form.addRow("School due (current)", self.lbl_school_current)
-        fee_form.addRow("School payable", self.lbl_school_payable)
-        fee_form.addRow("Van due (current)", self.lbl_van_current)
-        fee_form.addRow("Van payable", self.lbl_van_payable)
-        fee_form.addRow("Total payable", self.lbl_total_payable)
-        fee_card.body.addLayout(fee_form)
-        middle_row.addWidget(fee_card, 1)
-        dl.addLayout(middle_row)
-
-        activity_card = SurfaceCard()
-        activity_card.body.addWidget(CardTitleBar("Recent payment activity"))
-        self.recent_payments_list = QListWidget()
-        self.recent_payments_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.recent_payments_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.recent_payments_list.setMinimumHeight(170)
-        activity_card.body.addWidget(self.recent_payments_list)
-        self.summary_title = QLabel("Select a student to view a profile summary.")
-        self.summary_title.setProperty("role", "section-title")
-        self.summary_title.setWordWrap(True)
-        self.summary_text = QLabel("Payment behaviour and due insights will appear here.")
-        self.summary_text.setProperty("role", "muted")
-        self.summary_text.setWordWrap(True)
         self.summary_hint = QLabel("Tip: use Edit profile to update student records.")
         self.summary_hint.setProperty("role", "hint")
         self.summary_hint.setWordWrap(True)
-        activity_card.body.addWidget(self.summary_title)
-        activity_card.body.addWidget(self.summary_text)
-        activity_card.body.addWidget(self.summary_hint)
-        dl.addWidget(activity_card, 1)
+        dl.addWidget(self.summary_hint)
 
         scroll.setWidget(self._detail_body)
         root.addWidget(scroll, 7)
         self.clear_detail()
-
-    def _create_stat_card(self, title: str, *, register: bool = True) -> tuple[QFrame, QLabel]:
-        card = QFrame()
-        card.setObjectName("studentDetailStatCard")
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(12, 10, 12, 10)
-        lay.setSpacing(4)
-        title_lbl = QLabel(title)
-        title_lbl.setProperty("role", "muted")
-        value_lbl = QLabel("—")
-        value_lbl.setProperty("role", "section-title")
-        lay.addWidget(title_lbl)
-        lay.addWidget(value_lbl)
-        if register:
-            self._stat_values.append(value_lbl)
-        return card, value_lbl
 
     def _style_status_badge(self, status_text: str) -> None:
         t = theme.current_tokens()
@@ -302,10 +229,10 @@ class StudentDetailsTab(QWidget):
             f"background: {bg}; color: {fg}; padding: 4px 10px; border-radius: 10px; font-weight: 700;"
         )
 
-    def _style_payable_label(self, label: QLabel, amount: float) -> None:
+    def _style_pending_fees_label(self, amount: float) -> None:
         t = theme.current_tokens()
         color = t.danger if amount > 0.01 else t.success
-        label.setStyleSheet(f"color: {color}; font-weight: 700; background: transparent;")
+        self.lbl_pending_fees.setStyleSheet(f"color: {color}; font-weight: 700; background: transparent;")
 
     def _animate_widget(self, widget: QWidget, *, start: float = 0.78, duration: int = 200) -> None:
         effect = widget.graphicsEffect()
@@ -354,32 +281,6 @@ class StudentDetailsTab(QWidget):
             }}
             """
         )
-        if hasattr(self, "recent_payments_list"):
-            self.recent_payments_list.setStyleSheet(
-                f"""
-                QListWidget {{
-                    background: {t.bg_surface};
-                    color: {t.text_primary};
-                    border: 1px solid {t.border};
-                    border-radius: 10px;
-                    padding: 6px;
-                }}
-                QListWidget::item {{
-                    border: 1px solid transparent;
-                    border-radius: 6px;
-                    padding: 7px 8px;
-                    margin: 1px 0;
-                }}
-                QListWidget::item:hover {{
-                    background: {t.bg_hover};
-                }}
-                """
-            )
-        for card in self.findChildren(QFrame):
-            if card.objectName() == "studentDetailStatCard":
-                card.setStyleSheet(
-                    f"background: {t.bg_surface}; border: 1px solid {t.border}; border-radius: 12px;"
-                )
 
     def animate_results_refresh(self) -> None:
         self._animate_widget(self.student_results, start=0.72, duration=160)
@@ -390,6 +291,13 @@ class StudentDetailsTab(QWidget):
         style_fee_action_button(self.refresh_btn, width=self.refresh_btn.width() if self.refresh_btn.width() > 0 else None)
         style_fee_action_button(self.btn_edit, width=self.btn_edit.width() if self.btn_edit.width() > 0 else None)
         self._style_status_badge(self._status_badge.text())
+        if hasattr(self, "lbl_pending_fees"):
+            pending_text = self.lbl_pending_fees.text().replace("₹", "").replace(",", "").strip()
+            try:
+                pending_amount = float(pending_text) if pending_text and pending_text != "—" else 0.0
+            except ValueError:
+                pending_amount = 0.0
+            self._style_pending_fees_label(pending_amount)
         for bar in self.findChildren(CardTitleBar):
             bar.refresh_theme()
 
@@ -402,14 +310,6 @@ class StudentDetailsTab(QWidget):
         if isinstance(created_at, date):
             return created_at.strftime("%d/%m/%Y")
         return str(created_at)
-
-    @staticmethod
-    def format_payment_date(value) -> str:
-        if isinstance(value, datetime):
-            return value.strftime("%d/%m/%Y")
-        if isinstance(value, date):
-            return value.strftime("%d/%m/%Y")
-        return str(value or "—")
 
     @staticmethod
     def format_gender(value) -> str:
@@ -439,41 +339,19 @@ class StudentDetailsTab(QWidget):
         self.lbl_date_of_birth.setText("—")
         self.lbl_caste.setText("—")
         self.lbl_aadhaar.setText("—")
-        self.lbl_stat_total.setText("—")
-        self.lbl_stat_school.setText("—")
-        self.lbl_stat_van.setText("—")
-        self.lbl_stat_year.setText("—")
-        self.lbl_fee_year.setText("—")
+        self.lbl_school_fees.setText("—")
+        self.lbl_van_fees.setText("—")
         self.lbl_pending_fees.setText("—")
-        self.lbl_school_current.setText("—")
-        self.lbl_school_payable.setText("—")
-        self.lbl_van_current.setText("—")
-        self.lbl_van_payable.setText("—")
-        self.lbl_total_payable.setText("—")
+        self._style_pending_fees_label(0.0)
         self._style_status_badge("—")
-        self.summary_title.setText("Select a student to view a profile summary.")
-        self.summary_text.setText("Payment behaviour and due insights will appear here.")
         self.summary_hint.setText("Tip: use Edit profile to update student records.")
-        self.recent_payments_list.clear()
-        self.recent_payments_list.addItem("No payment activity to display.")
         self.btn_edit.setEnabled(False)
 
-    def show_detail(self, data: dict) -> None:
-        student = data["student"]
-        due = dict(data.get("due") or {})
-        recent_payments = list(data.get("recent_payments") or [])
+    def show_detail(self, student, *, pending_fees_amount: float = 0.0) -> None:
         class_name = str(student.class_name or "—")
         section = str(student.section or "").strip()
         class_section = f"{class_name}-{section}" if section else class_name
         status = str(student.status or "—")
-
-        pending_total = pending_fees(due)
-        school_current = float(due.get("fee_due", 0) or 0)
-        school_payable = float(due.get("school_payable", 0) or 0)
-        van_current = float(due.get("van_due", 0) or 0)
-        van_payable = float(due.get("van_payable", 0) or 0)
-        total_payable = float(due.get("total", school_payable + van_payable) or 0)
-        year_label = str(due.get("current_year_label") or "—")
 
         self._profile_card.set_student(
             str(student.full_name or "—"),
@@ -481,7 +359,7 @@ class StudentDetailsTab(QWidget):
             str(student.student_id or "—"),
         )
         self.detail_heading.setText(f"{student.full_name or 'Student'}")
-        self.hint_label.setText("Profile, fee analytics, and recent payment activity.")
+        self.hint_label.setText("Review profile details below, then click Edit profile to make changes.")
 
         self.lbl_student_id.setText(str(student.student_id or "—"))
         self.lbl_name.setText(str(student.full_name or "—"))
@@ -511,52 +389,15 @@ class StudentDetailsTab(QWidget):
             self.lbl_date_of_birth.setText(str(dob or "—"))
         self.lbl_caste.setText(str(getattr(student, "caste", None) or "—"))
         self.lbl_aadhaar.setText(str(getattr(student, "aadhaar", None) or "—"))
+        self.lbl_school_fees.setText(f"₹{float(getattr(student, 'school_fees', 0) or 0):,.2f}")
+        self.lbl_van_fees.setText(f"₹{float(getattr(student, 'van_fees', 0) or 0):,.2f}")
+        self.lbl_pending_fees.setText(f"₹{float(pending_fees_amount or 0):,.2f}")
+        self._style_pending_fees_label(float(pending_fees_amount or 0))
 
-        self.lbl_fee_year.setText(year_label)
-        self.lbl_pending_fees.setText(_money(pending_total))
-        self.lbl_school_current.setText(_money(school_current))
-        self.lbl_school_payable.setText(_money(school_payable))
-        self.lbl_van_current.setText(_money(van_current))
-        self.lbl_van_payable.setText(_money(van_payable))
-        self.lbl_total_payable.setText(_money(total_payable))
-        self._style_payable_label(self.lbl_school_payable, school_payable)
-        self._style_payable_label(self.lbl_van_payable, van_payable)
-        self._style_payable_label(self.lbl_total_payable, total_payable)
-
-        self.lbl_stat_total.setText(_money(total_payable))
-        self.lbl_stat_school.setText(_money(school_payable))
-        self.lbl_stat_van.setText(_money(van_payable))
-        self.lbl_stat_year.setText(year_label)
-
-        if total_payable > 0.01:
-            dominant = "school" if school_payable >= van_payable else "van"
-            self.summary_title.setText(f"{student.full_name or 'Student'} - Outstanding {_money(total_payable)}")
-            self.summary_text.setText(
-                f"{status.title()} profile with pending dues. School payable: {_money(school_payable)} | "
-                f"Van payable: {_money(van_payable)}. Highest contribution: {dominant} dues."
-            )
-        else:
-            self.summary_title.setText(f"{student.full_name or 'Student'} - All dues cleared")
-            self.summary_text.setText(
-                "No pending amount at the moment. This student is currently fully paid for the tracked fee buckets."
-            )
         self.summary_hint.setText(
             f"Joined on {self.lbl_joining.text()} • Transport: {self.lbl_transport.text()} • "
             "Use Edit profile to update personal and enrollment details."
         )
-
-        self.recent_payments_list.clear()
-        if recent_payments:
-            for row in recent_payments[:8]:
-                status_text = str(row.get("status") or "Paid")
-                paid = float(row.get("amount", 0) or 0) - float(row.get("discount", 0) or 0)
-                payment_line = (
-                    f"{self.format_payment_date(row.get('payment_date'))}  •  {_money(paid)}  •  "
-                    f"{str(row.get('mode') or '').title()}  •  Ref {str(row.get('reference_no') or '')}  •  {status_text}"
-                )
-                self.recent_payments_list.addItem(payment_line)
-        else:
-            self.recent_payments_list.addItem("No payment records found for this student.")
 
         self._style_status_badge(status)
         self.btn_edit.setEnabled(True)

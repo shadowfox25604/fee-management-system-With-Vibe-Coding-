@@ -5,8 +5,14 @@ import pytest
 from backend.services.expense_service import ExpenseService
 
 
-def _seed_faculty(svc: ExpenseService, name: str, *, salary: float = 30000.0):
-    return svc.assign_faculty_salary(name, salary, role="Teacher", default_working_days=25)
+def _seed_faculty(svc: ExpenseService, name: str, *, salary: float = 30000.0, employee_id: str | None = None):
+    return svc.assign_faculty_salary(
+        name,
+        salary,
+        employee_id=employee_id or svc.suggest_next_faculty_employee_id(),
+        role="Teacher",
+        default_working_days=25,
+    )
 
 
 def test_salary_history_filter_by_month(db_session):

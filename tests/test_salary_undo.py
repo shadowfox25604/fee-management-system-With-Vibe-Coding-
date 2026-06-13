@@ -11,6 +11,7 @@ def test_undo_salary_payment_reverts_and_keeps_history(db_session):
     faculty = svc.assign_faculty_salary(
         "Undo Faculty",
         26000.0,
+        employee_id="Fac1",
         role="Math",
         default_working_days=26,
     )
@@ -44,6 +45,7 @@ def test_undo_salary_payment_cannot_run_twice(db_session):
     faculty = svc.assign_faculty_salary(
         "Undo Twice",
         24000.0,
+        employee_id="Fac1",
         default_working_days=26,
     )
     entry = svc.record_salary_from_attendance(

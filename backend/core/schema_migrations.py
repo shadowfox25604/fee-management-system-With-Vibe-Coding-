@@ -34,12 +34,16 @@ def apply_sqlite_column_migrations(engine) -> None:
                 """
                 CREATE TABLE IF NOT EXISTS faculty_salaries (
                     id INTEGER NOT NULL PRIMARY KEY,
+                    employee_id VARCHAR(20) NOT NULL UNIQUE,
                     faculty_name VARCHAR(120) NOT NULL UNIQUE,
                     faculty_type VARCHAR(20) NOT NULL DEFAULT 'Teaching',
                     role VARCHAR(80) NOT NULL DEFAULT '',
                     monthly_salary REAL NOT NULL,
                     default_working_days INTEGER NOT NULL DEFAULT 26,
                     is_active BOOLEAN NOT NULL DEFAULT 1,
+                    phone_number VARCHAR(20) NOT NULL DEFAULT '',
+                    aadhaar VARCHAR(20) NOT NULL DEFAULT '',
+                    caste VARCHAR(80) NOT NULL DEFAULT '',
                     created_at DATETIME,
                     updated_at DATETIME
                 )
@@ -108,6 +112,36 @@ def apply_sqlite_column_migrations(engine) -> None:
                     entry_date DATE NOT NULL,
                     particular VARCHAR(240) NOT NULL,
                     amount REAL NOT NULL,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS misc_incomes (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    head VARCHAR(80) NOT NULL,
+                    income_date DATE NOT NULL,
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS misc_income_entries (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    income_id INTEGER NOT NULL REFERENCES misc_incomes(id),
+                    entry_date DATE NOT NULL,
+                    particular VARCHAR(240) NOT NULL,
+                    amount REAL NOT NULL,
+                    is_reverted BOOLEAN NOT NULL DEFAULT 0,
+                    reverted_at DATETIME,
                     created_at DATETIME,
                     updated_at DATETIME
                 )
@@ -197,6 +231,10 @@ def apply_sqlite_column_migrations(engine) -> None:
                 )
             if "reference_no" not in pay_cols:
                 conn.execute(text("ALTER TABLE payments ADD COLUMN reference_no VARCHAR(16)"))
+            if "remark" not in pay_cols:
+                conn.execute(
+                    text("ALTER TABLE payments ADD COLUMN remark TEXT NOT NULL DEFAULT ''")
+                )
 
     if insp.has_table("invoices"):
         inv_cols = {c["name"] for c in insp.get_columns("invoices")}
@@ -215,6 +253,23 @@ def apply_sqlite_column_migrations(engine) -> None:
                         "ALTER TABLE faculty_salaries ADD COLUMN faculty_type VARCHAR(20) NOT NULL DEFAULT 'Teaching'"
                     )
                 )
+            if "phone_number" not in fac_cols:
+                conn.execute(
+                    text("ALTER TABLE faculty_salaries ADD COLUMN phone_number VARCHAR(20) NOT NULL DEFAULT ''")
+                )
+            if "aadhaar" not in fac_cols:
+                conn.execute(
+                    text("ALTER TABLE faculty_salaries ADD COLUMN aadhaar VARCHAR(20) NOT NULL DEFAULT ''")
+                )
+            if "caste" not in fac_cols:
+                conn.execute(
+                    text("ALTER TABLE faculty_salaries ADD COLUMN caste VARCHAR(80) NOT NULL DEFAULT ''")
+                )
+            if "employee_id" not in fac_cols:
+                conn.execute(
+                    text("ALTER TABLE faculty_salaries ADD COLUMN employee_id VARCHAR(20) NOT NULL DEFAULT ''")
+                )
+    _backfill_faculty_employee_ids(engine)
 
     if insp.has_table("faculty_attendance"):
         att_cols = {c["name"] for c in insp.get_columns("faculty_attendance")}
@@ -306,8 +361,137 @@ def apply_sqlite_column_migrations(engine) -> None:
     _dedupe_misc_expenses_by_head(engine)
     _backfill_misc_expense_entry_dates(engine)
     _migrate_misc_expense_entry_revert_columns(engine)
+    _ensure_payments_remark_column(engine)
     _backfill_payment_split_amounts(engine)
     _migrate_class_school_fees_per_year(engine)
+    _migrate_academic_years_may_june_v2(engine)
+    _seed_misc_income_sample_v1(engine)
+    _ensure_payments_remark_column(engine)
+    _ensure_payment_invoice_indexes(engine)
+
+
+def _ensure_payments_remark_column(engine) -> None:
+    """Add payments.remark after any migration that rebuilds the payments table."""
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("payments"):
+        return
+    pay_cols = {c["name"] for c in insp.get_columns("payments")}
+    if "remark" in pay_cols:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE payments ADD COLUMN remark TEXT NOT NULL DEFAULT ''")
+        )
+
+
+def _ensure_payment_invoice_indexes(engine) -> None:
+    """Add indexes for common payment and invoice lookups."""
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        if insp.has_table("payments"):
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_payments_payment_date "
+                    "ON payments(payment_date)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_payments_student_id_fk "
+                    "ON payments(student_id_fk)"
+                )
+            )
+        if insp.has_table("invoices"):
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_invoices_student_id_fk "
+                    "ON invoices(student_id_fk)"
+                )
+            )
+
+
+def _migrate_academic_years_may_june_v2(engine) -> None:
+    """Replace all academic years with the standard 31 May → 1 June calendar."""
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("academic_years"):
+        return
+    from datetime import date
+
+    from backend.core.academic_year_dates import (
+        auto_label_for_range,
+        default_academic_year_bounds,
+    )
+    from backend.core.fee_control_constants import FIXED_CLASS_KEYS
+
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        if conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "academic_years_may_june_v2"},
+        ).fetchone():
+            return
+
+        if insp.has_table("student_academic_year_fees"):
+            conn.execute(text("DELETE FROM student_academic_year_fees"))
+        if insp.has_table("class_school_fees"):
+            conn.execute(text("DELETE FROM class_school_fees"))
+        if insp.has_table("invoices"):
+            conn.execute(text("UPDATE invoices SET academic_year_id = NULL"))
+        conn.execute(text("DELETE FROM academic_years"))
+
+        start, end = default_academic_year_bounds(date.today())
+        label = auto_label_for_range(start, end)
+        conn.execute(
+            text(
+                "INSERT INTO academic_years (start_date, end_date, label) "
+                "VALUES (:s, :e, :lbl)"
+            ),
+            {"s": start.isoformat(), "e": end.isoformat(), "lbl": label},
+        )
+        year_id = int(conn.execute(text("SELECT last_insert_rowid()")).scalar())
+
+        if insp.has_table("class_school_fees"):
+            for class_key in FIXED_CLASS_KEYS:
+                conn.execute(
+                    text(
+                        "INSERT INTO class_school_fees (class_key, academic_year_id, amount) "
+                        "VALUES (:k, :y, :a)"
+                    ),
+                    {"k": class_key, "y": year_id, "a": 20000.0},
+                )
+
+        if insp.has_table("students") and insp.has_table("student_academic_year_fees"):
+            students = conn.execute(
+                text("SELECT student_id, school_fees, van_fees FROM students")
+            ).fetchall()
+            for st_id, school_fees, van_fees in students:
+                conn.execute(
+                    text(
+                        "INSERT INTO student_academic_year_fees "
+                        "(student_id_fk, academic_year_id, school_fees, van_fees, opening_pending_fees) "
+                        "VALUES (:sid, :yid, :sf, :vf, 0.0)"
+                    ),
+                    {
+                        "sid": str(st_id),
+                        "yid": year_id,
+                        "sf": float(school_fees or 0.0),
+                        "vf": float(van_fees or 0.0),
+                    },
+                )
+
+        if insp.has_table("invoices"):
+            conn.execute(
+                text("UPDATE invoices SET academic_year_id = :yid WHERE academic_year_id IS NULL"),
+                {"yid": year_id},
+            )
+
+        conn.execute(text("INSERT INTO app_migrations (name) VALUES ('academic_years_may_june_v2')"))
 
 
 def _migrate_class_school_fees_per_year(engine) -> None:
@@ -382,13 +566,9 @@ def _migrate_class_school_fees_per_year(engine) -> None:
 
 
 def _default_academic_year_bounds(as_of):
-    from datetime import date
+    from backend.core.academic_year_dates import default_academic_year_bounds
 
-    d = as_of or date.today()
-    y = d.year
-    if d >= date(y, 5, 17):
-        return date(y, 5, 17), date(y + 1, 4, 18)
-    return date(y - 1, 5, 17), date(y, 4, 18)
+    return default_academic_year_bounds(as_of)
 
 
 def apply_sqlite_data_migrations(engine) -> None:
@@ -544,6 +724,7 @@ def apply_sqlite_data_migrations(engine) -> None:
 
     finally:
         _migrate_payments_receipt_to_uuid_reference(engine)
+        _ensure_payments_remark_column(engine)
 
 
 def _migrate_students_student_id_primary_sqlite(conn) -> None:
@@ -687,6 +868,7 @@ def _migrate_students_student_id_primary_sqlite(conn) -> None:
                     mode VARCHAR(20) NOT NULL,
                     reference_no VARCHAR(16),
                     operator_name VARCHAR(60) NOT NULL,
+                    remark TEXT NOT NULL DEFAULT '',
                     is_reverted BOOLEAN NOT NULL DEFAULT 0,
                     reverted_at DATETIME
                 )
@@ -697,11 +879,11 @@ def _migrate_students_student_id_primary_sqlite(conn) -> None:
             text(
                 """
                 INSERT INTO payments
-                (id, student_id_fk, payment_date, amount, school_amount, van_amount, discount_amount, mode, reference_no, operator_name, is_reverted, reverted_at)
+                (id, student_id_fk, payment_date, amount, school_amount, van_amount, discount_amount, mode, reference_no, operator_name, remark, is_reverted, reverted_at)
                 SELECT
                     p.id, m.student_id, p.payment_date, p.amount,
                     COALESCE(p.school_amount, 0.0), COALESCE(p.van_amount, 0.0), COALESCE(p.discount_amount, 0.0),
-                    p.mode, p.reference_no, p.operator_name, COALESCE(p.is_reverted, 0), p.reverted_at
+                    p.mode, p.reference_no, p.operator_name, '', COALESCE(p.is_reverted, 0), p.reverted_at
                 FROM payments_backup_sid_mig p
                 JOIN student_id_map_mig m ON m.old_id = p.student_id_fk
                 """
@@ -818,6 +1000,7 @@ def _sqlite_rebuild_payments_strip_receipt(conn) -> None:
                 mode VARCHAR(20) NOT NULL,
                 reference_no VARCHAR(16) NOT NULL,
                 operator_name VARCHAR(60) NOT NULL,
+                remark TEXT NOT NULL DEFAULT '',
                 is_reverted BOOLEAN NOT NULL DEFAULT 0,
                 reverted_at DATETIME,
                 PRIMARY KEY (id),
@@ -855,8 +1038,8 @@ def _sqlite_rebuild_payments_strip_receipt(conn) -> None:
         conn.execute(
             text(
                 "INSERT INTO payments "
-                "(id, student_id_fk, payment_date, amount, school_amount, van_amount, discount_amount, mode, reference_no, operator_name, is_reverted, reverted_at) "
-                "VALUES (:id, :sid, :pdate, :amt, :school, :van, :disc, :mode, :ref, :op, :reverted, :rev_at)"
+                "(id, student_id_fk, payment_date, amount, school_amount, van_amount, discount_amount, mode, reference_no, operator_name, remark, is_reverted, reverted_at) "
+                "VALUES (:id, :sid, :pdate, :amt, :school, :van, :disc, :mode, :ref, :op, :remark, :reverted, :rev_at)"
             ),
             {
                 "id": pid,
@@ -869,6 +1052,7 @@ def _sqlite_rebuild_payments_strip_receipt(conn) -> None:
                 "mode": mode,
                 "ref": ref_s,
                 "op": op,
+                "remark": "",
                 "reverted": 0,
                 "rev_at": None,
             },
@@ -1140,6 +1324,60 @@ def _backfill_salary_expense_references(engine) -> None:
             )
             reserved.add(cand)
         conn.execute(text("INSERT INTO app_migrations (name) VALUES ('salary_expense_reference_v1')"))
+
+
+def _backfill_faculty_employee_ids(engine) -> None:
+    """Assign Fac1, Fac2, ... to existing faculty rows missing an employee ID."""
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("faculty_salaries"):
+        return
+    with engine.begin() as conn:
+        fac_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(faculty_salaries)")).fetchall()}
+        if "employee_id" not in fac_cols:
+            return
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        row_done = conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "faculty_employee_id_v1"},
+        ).fetchone()
+        if row_done:
+            return
+        rows = conn.execute(
+            text(
+                """
+                SELECT id, employee_id
+                FROM faculty_salaries
+                ORDER BY id ASC
+                """
+            )
+        ).fetchall()
+        max_num = 0
+        for _row_id, employee_id in rows:
+            text_id = str(employee_id or "").strip()
+            if text_id.lower().startswith("fac"):
+                suffix = text_id[3:]
+                if suffix.isdigit():
+                    max_num = max(max_num, int(suffix))
+        next_num = max_num
+        for row_id, employee_id in rows:
+            if str(employee_id or "").strip():
+                continue
+            next_num += 1
+            conn.execute(
+                text("UPDATE faculty_salaries SET employee_id = :employee_id WHERE id = :id"),
+                {"employee_id": f"Fac{next_num}", "id": int(row_id)},
+            )
+        conn.execute(
+            text(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_faculty_salaries_employee_id
+                ON faculty_salaries(employee_id)
+                """
+            )
+        )
+        conn.execute(text("INSERT INTO app_migrations (name) VALUES ('faculty_employee_id_v1')"))
 
 
 def _backfill_salary_expense_faculty_type(engine) -> None:
@@ -1479,10 +1717,11 @@ def _backfill_payment_split_amounts(engine) -> None:
         ).fetchone():
             return
 
-    from backend.core.database import SessionLocal
+    from sqlalchemy.orm import sessionmaker
+
     from backend.repositories.payment_repository import PaymentRepository
 
-    session = SessionLocal()
+    session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
     try:
         PaymentRepository(session).backfill_legacy_payment_splits()
     finally:
@@ -1491,4 +1730,82 @@ def _backfill_payment_split_amounts(engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text("INSERT INTO app_migrations (name) VALUES ('backfill_payment_split_amounts_v1')")
+        )
+
+
+def _seed_misc_income_sample_v1(engine) -> None:
+    """Seed sample miscellaneous income sources and entries for dashboard testing."""
+    import os
+
+    if os.environ.get("FEE_MANAGEMENT_TESTING") == "1":
+        return
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("misc_incomes"):
+        return
+
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        if conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "seed_misc_income_sample_v1"},
+        ).fetchone():
+            return
+
+    from datetime import date
+
+    from sqlalchemy.orm import sessionmaker
+
+    from backend.services.misc_income_service import MiscIncomeService
+
+    today = date.today()
+    month_start = date(today.year, today.month, 1)
+    samples: list[tuple[str, date, list[tuple[str, float, date]]]] = [
+        (
+            "Books",
+            month_start,
+            [
+                ("Grade 1 textbooks", 12500.0, today),
+                ("Library reference set", 3500.0, today),
+            ],
+        ),
+        (
+            "Uniform",
+            month_start,
+            [
+                ("Summer batch sales", 18000.0, today),
+            ],
+        ),
+        (
+            "Stationary",
+            month_start,
+            [
+                ("Notebooks and pens", 4200.0, today),
+                ("Art supplies", 2100.0, today),
+            ],
+        ),
+        (
+            "Donations",
+            month_start,
+            [
+                ("Alumni contribution", 5000.0, today),
+            ],
+        ),
+    ]
+
+    session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
+    try:
+        svc = MiscIncomeService(session)
+        if not svc.list_incomes():
+            for head, income_date, entries in samples:
+                income = svc.add_new_income(head, income_date, notes=f"Sample {head.lower()} income")
+                for particular, amount, entry_date in entries:
+                    svc.add_entry(income.id, particular, amount, entry_date=entry_date)
+    finally:
+        session.close()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO app_migrations (name) VALUES ('seed_misc_income_sample_v1')")
         )

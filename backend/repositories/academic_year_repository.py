@@ -2,7 +2,11 @@ from datetime import date
 
 from sqlalchemy import and_, or_, select
 
-from backend.core.academic_year_dates import auto_label_for_range
+from backend.core.academic_year_dates import (
+    auto_label_for_range,
+    default_academic_year_bounds,
+    is_standard_academic_year_bounds,
+)
 from backend.models import AcademicYear
 
 
@@ -14,13 +18,12 @@ class AcademicYearRepository:
         """Guarantee at least one academic year exists (for legacy DBs and in-memory tests)."""
         from datetime import date
 
-        from backend.core.schema_migrations import _default_academic_year_bounds
         from backend.models import Student, StudentAcademicYearFee
 
         existing = self.list_all()
         if existing:
             return existing[-1]
-        start, end = _default_academic_year_bounds(date.today())
+        start, end = default_academic_year_bounds(date.today())
         year = self.create(start, end)
         from backend.core.student_enrollment import student_skips_academic_year_fee_provisioning
 
@@ -67,6 +70,11 @@ class AcademicYearRepository:
         )
 
     def _overlaps(self, start: date, end: date, exclude_id: int | None = None) -> bool:
+        if is_standard_academic_year_bounds(start, end):
+            stmt = select(AcademicYear.id).where(AcademicYear.start_date == start)
+            if exclude_id is not None:
+                stmt = stmt.where(AcademicYear.id != int(exclude_id))
+            return self.session.scalar(stmt.limit(1)) is not None
         stmt = select(AcademicYear.id).where(
             AcademicYear.start_date <= end,
             AcademicYear.end_date >= start,

@@ -107,5 +107,5 @@ def test_payment_history_export_excel(tmp_path, db_session):
 def test_academic_year_short_label():
     from backend.core.academic_year_dates import academic_year_short_label
 
-    assert academic_year_short_label(date(2025, 5, 17), date(2026, 5, 15)) == "2025-26"
-    assert academic_year_short_label(date(2026, 6, 1), date(2027, 6, 4)) == "2026-27"
+    assert academic_year_short_label(date(2025, 5, 31), date(2026, 6, 1)) == "2025-2026"
+    assert academic_year_short_label(date(2026, 6, 1), date(2027, 6, 4)) == "1 June 2026 - 4 June 2027"
