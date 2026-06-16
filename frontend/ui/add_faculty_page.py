@@ -66,7 +66,7 @@ class AddFacultyPage(QWidget):
         profile_grid.add_field(FormField("Employee ID", self.employee_id, required=True))
         profile_grid.add_field(FormField("Faculty Name", self.faculty_name, required=True))
         profile_grid.add_field(FormField("Category", self.faculty_type, required=True))
-        profile_grid.add_field(FormField("Role / Designation", self.role, required=True))
+        profile_grid.add_field(FormField("Role / Designation", self.role))
         profile_grid.add_field(FormField("Phone Number", self.phone_number))
         profile_grid.add_field(FormField("Aadhaar", self.aadhaar))
         profile_grid.add_field(FormField("Caste", self.caste))
@@ -74,7 +74,7 @@ class AddFacultyPage(QWidget):
         body_lay.addWidget(profile_grid)
 
         self._type_hint = QLabel(
-            "Phone number, Aadhaar, caste, and status are optional. "
+            "Role / designation, phone number, Aadhaar, caste, and status are optional. "
             "Choose Teaching or Non Teaching so faculty records stay clean and easy to filter."
         )
         self._type_hint.setWordWrap(True)
@@ -152,8 +152,6 @@ class AddFacultyPage(QWidget):
             errors.append("Please fill in Faculty Name.")
         if not self.faculty_type.currentText().strip():
             errors.append("Please select Category.")
-        if not self.role.text().strip():
-            errors.append("Please fill in Role / Designation.")
 
         salary_text = self.monthly_salary.text().strip()
         if not salary_text:

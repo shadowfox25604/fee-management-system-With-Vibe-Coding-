@@ -23,11 +23,16 @@ def timed(label: str, fn, repeat: int = 3) -> float:
 def main() -> None:
     from PySide6.QtWidgets import QApplication
     from backend.core.database import SessionLocal
+    from backend.models.entities import User
+    from backend.services.auth_service import AuthService
     from frontend.ui.main_window import MainWindow
 
     app = QApplication.instance() or QApplication([])
     session = SessionLocal()
-    win = MainWindow(session)
+    user = AuthService(session).authenticate("Admin", "Admin@1123")
+    if user is None:
+        raise RuntimeError("Admin login user is not configured")
+    win = MainWindow(session, current_user=user)
     n = len(win.student_service.search_students(""))
 
     print(f"Students: {n}\n")

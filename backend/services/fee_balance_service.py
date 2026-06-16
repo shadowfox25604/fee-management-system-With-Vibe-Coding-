@@ -262,8 +262,10 @@ class FeeBalanceService:
             current_row = self.year_fee_repo.get(i, current_id)
             opening = float(current_row.opening_pending_fees or 0) if current_row else 0.0
             pending_fees_total = max(0.0, prior_unpaid)
+            # School payments clear combined pending first, then current-year school.
             school_payable = max(0.0, pending_fees_total + school_current - disc)
-            van_payable = max(0.0, pending_fees_total + van_current)
+            # Prior-year van is part of combined pending; van payments apply to current-year van only.
+            van_payable = max(0.0, van_current)
             total_payable = max(0.0, pending_fees_total + school_current + van_current - disc)
             out[i] = {
                 "pending_fees": pending_fees_total,

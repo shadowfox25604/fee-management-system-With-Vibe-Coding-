@@ -3,6 +3,7 @@ import random
 from backend.core.database import SessionLocal, engine
 from backend.core.schema_migrations import apply_sqlite_column_migrations, apply_sqlite_data_migrations
 from backend.core.fee_control_constants import FIXED_CLASS_KEYS, FIXED_VILLAGE_KEYS
+from backend.core.app_roles import DEFAULT_APP_USERS
 from backend.core.security import hash_password
 from backend.models import FeeHead, FeePlan, Invoice, Student, User
 
@@ -50,7 +51,20 @@ def seed(target_students=200):
     apply_sqlite_data_migrations(engine)
     s=SessionLocal()
     try:
-        if not s.query(User).filter(User.username=="admin").first(): s.add(User(username="admin", password_hash=hash_password("admin123"), role="admin"))
+        for cred in DEFAULT_APP_USERS:
+            row = s.query(User).filter(User.username.ilike(cred.username)).first()
+            if row is None:
+                s.add(
+                    User(
+                        username=cred.username,
+                        password_hash=hash_password(cred.password),
+                        role=cred.role,
+                    )
+                )
+            else:
+                row.username = cred.username
+                row.password_hash = hash_password(cred.password)
+                row.role = cred.role
         t = s.query(FeeHead).filter(FeeHead.head_name == "Tuition").first()
         tr = s.query(FeeHead).filter(FeeHead.head_name == "Transport").first()
         if not t:

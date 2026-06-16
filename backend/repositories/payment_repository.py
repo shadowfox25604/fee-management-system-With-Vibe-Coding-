@@ -219,19 +219,64 @@ class PaymentRepository:
         school_invoices,
         van_invoices,
     ) -> tuple[float, float]:
-        """Debit combined pending first, then current-year school and van from remaining budgets."""
+        """
+        Allocate a split payment across invoices.
+
+        - Combined pending (prior-year school + prior-year van) is cleared by school
+          cash + discount only, oldest invoices first.
+        - Van cash clears current-year van invoices only (never pending).
+        - School cash + discount then clears current-year school invoices.
+        """
         eps = 1e-6
+        current_id = self._current_academic_year_id()
+        years = self._year_repo.list_all()
+        fallback_id = int(years[-1].id) if years else None
+        current_id_effective = int(current_id) if current_id is not None else fallback_id
+
         school_budget = float(school_amount or 0.0) + float(discount_amount or 0.0)
         van_budget = float(van_amount or 0.0)
-        for inv in self._pending_invoice_order(school_invoices, van_invoices):
-            if school_budget <= eps and van_budget <= eps:
+
+        def _inv_year_int(inv) -> int:
+            # Match fee_balance_service: NULL academic_year_id counts as current year.
+            y = getattr(inv, "academic_year_id", None)
+            if y is not None:
+                return int(y)
+            if current_id_effective is not None:
+                return int(current_id_effective)
+            return 0
+
+        pending_invoices: list = []
+        current_school: list = []
+        current_van: list = []
+
+        for inv in list(school_invoices):
+            inv_y = _inv_year_int(inv)
+            if current_id_effective is not None and inv_y == current_id_effective:
+                current_school.append(inv)
+            else:
+                pending_invoices.append(inv)
+
+        for inv in list(van_invoices):
+            inv_y = _inv_year_int(inv)
+            if current_id_effective is not None and inv_y == current_id_effective:
+                current_van.append(inv)
+            else:
+                pending_invoices.append(inv)
+
+        pending_invoices = self._sort_invoices_chronologically(pending_invoices)
+        current_school = self._sort_invoices_chronologically(current_school)
+        current_van = self._sort_invoices_chronologically(current_van)
+
+        # Allocate all pending invoices from school budget only (combined pending bucket).
+        for inv in pending_invoices:
+            if school_budget <= eps:
                 break
             bal = float(inv.amount_due or 0.0) - float(inv.amount_paid or 0.0)
             if bal <= eps:
                 continue
-            alloc = min(bal, school_budget + van_budget)
-            from_school = min(alloc, school_budget)
-            from_van = alloc - from_school
+            alloc = min(bal, school_budget)
+            if alloc <= eps:
+                continue
             inv.amount_paid += alloc
             self.session.add(
                 PaymentAllocation(
@@ -240,15 +285,19 @@ class PaymentRepository:
                     allocated_amount=float(alloc),
                 )
             )
-            school_budget -= from_school
-            van_budget -= from_van
-        school_budget = self._allocate_to_invoices(
-            payment_id, school_budget, self._current_school_invoice_order(school_invoices)
-        )
-        van_budget = self._allocate_to_invoices(
-            payment_id, van_budget, self._current_van_invoice_order(van_invoices)
-        )
-        return school_budget, van_budget
+            school_budget -= float(alloc)
+
+        # Allocate remaining school budget to current-year school; van budget to current van.
+        school_budget = self._allocate_to_invoices(payment_id, school_budget, current_school)
+        van_budget = self._allocate_to_invoices(payment_id, van_budget, current_van)
+
+        # Remaining budgets should be ~0 when validation caps are correct.
+        if abs(school_budget) <= eps:
+            school_budget = 0.0
+        if abs(van_budget) <= eps:
+            van_budget = 0.0
+
+        return float(school_budget), float(van_budget)
 
     def get_students_school_fee_summary(self, student_ids):
         return self._balance.get_students_school_fee_summary(student_ids)
@@ -441,9 +490,9 @@ class PaymentRepository:
             raise ValueError("School fee payment plus discount exceeds school fees due (pending + current year)")
         van_cap = float(due.get("van_payable", 0.0))
         if van_cap <= 0:
-            van_cap = max(0.0, pending_total + van_current)
+            van_cap = max(0.0, van_current)
         if van_amount > van_cap + eps:
-            raise ValueError("Van fee payment exceeds van fees due (pending + current year)")
+            raise ValueError("Van fee payment exceeds current-year van fees due")
         max_total = max(0.0, school_cap + van_current)
         if van_amount + school_amount + discount_amount > max_total + eps:
             raise ValueError("Total payment exceeds outstanding fees (pending + current year)")
@@ -460,7 +509,7 @@ class PaymentRepository:
         payment_date: date | None = None,
         remark: str = "",
     ):
-        """Apply payments to combined pending first, then current-year school and van invoices."""
+        """School payments clear combined pending first; van payments clear van dues only."""
         van_amount, school_amount, discount_amount, d = self.validate_split_payment_inputs(
             student, van_amount, school_amount, discount_amount, payment_date
         )

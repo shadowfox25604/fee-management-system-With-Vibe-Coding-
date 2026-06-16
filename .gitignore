@@ -7,3 +7,4 @@ dist/
 *.spec
 data/*.sqlite3
 data/*.db
+data/master_key.txt

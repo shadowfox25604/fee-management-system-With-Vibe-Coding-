@@ -1,0 +1,144 @@
+"""Remove all data except faculty profiles (salaries + attendance) and login users.
+
+Clears: students, payments, invoices, academic years, expenses, misc income/expense,
+fee configuration, audit logs.
+
+Keeps: faculty_salaries, faculty_attendance, users.
+
+Usage:
+    python -m backend.scripts.clear_non_faculty_data
+    python -m backend.scripts.clear_non_faculty_data --yes
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+from sqlalchemy import delete, func, select
+
+from backend.core.database import SessionLocal, engine
+from backend.core.schema_migrations import apply_sqlite_column_migrations, apply_sqlite_data_migrations
+from backend.models import (
+    AcademicYear,
+    AuditLog,
+    ClassSchoolFee,
+    Expense,
+    FeeHead,
+    FeePlan,
+    Invoice,
+    MiscExpense,
+    MiscExpenseEntry,
+    MiscIncome,
+    MiscIncomeEntry,
+    Payment,
+    PaymentAllocation,
+    Student,
+    StudentAcademicYearFee,
+    User,
+    VillageVanFee,
+)
+from backend.models.entities import FacultyAttendance, FacultySalary
+
+
+def _count(session, model) -> int:
+    return int(session.scalar(select(func.count()).select_from(model)) or 0)
+
+
+def clear_non_faculty_data(*, dry_run: bool = False) -> dict[str, int]:
+    apply_sqlite_column_migrations(engine)
+    apply_sqlite_data_migrations(engine)
+    session = SessionLocal()
+    before = {
+        "students": _count(session, Student),
+        "payments": _count(session, Payment),
+        "invoices": _count(session, Invoice),
+        "faculty": _count(session, FacultySalary),
+        "faculty_attendance": _count(session, FacultyAttendance),
+        "users": _count(session, User),
+    }
+    try:
+        if dry_run:
+            session.close()
+            return before
+
+        # Child tables first (FK order).
+        session.execute(delete(PaymentAllocation))
+        session.execute(delete(Payment))
+        session.execute(delete(Invoice))
+        session.execute(delete(FeePlan))
+        session.execute(delete(StudentAcademicYearFee))
+        session.execute(delete(Student))
+        session.execute(delete(ClassSchoolFee))
+        session.execute(delete(AcademicYear))
+        session.execute(delete(MiscExpenseEntry))
+        session.execute(delete(MiscExpense))
+        session.execute(delete(MiscIncomeEntry))
+        session.execute(delete(MiscIncome))
+        session.execute(delete(Expense))
+        session.execute(delete(VillageVanFee))
+        session.execute(delete(FeeHead))
+        session.execute(delete(AuditLog))
+        session.commit()
+
+        after = {
+            "students": _count(session, Student),
+            "payments": _count(session, Payment),
+            "faculty_kept": _count(session, FacultySalary),
+            "faculty_attendance_kept": _count(session, FacultyAttendance),
+            "users_kept": _count(session, User),
+        }
+        return {"before": before, "after": after}
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Clear student/payment data; keep faculty and users.")
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip confirmation prompt.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show counts only; do not delete.",
+    )
+    args = parser.parse_args()
+
+    preview = clear_non_faculty_data(dry_run=True)
+    print("Current database counts:")
+    for key, value in preview.items():
+        print(f"  {key}: {value}")
+
+    if args.dry_run:
+        print("\nDry run — no changes made.")
+        return 0
+
+    if not args.yes:
+        print(
+            "\nThis will DELETE all students, payments, academic years, expenses, "
+            "misc income/expense, fee heads, and audit logs."
+        )
+        print("Faculty salaries, faculty attendance, and login users will be KEPT.")
+        answer = input("Type YES to continue: ").strip()
+        if answer != "YES":
+            print("Cancelled.")
+            return 1
+
+    result = clear_non_faculty_data(dry_run=False)
+    print("\nDone.")
+    print(f"  Removed {result['before']['students']} students")
+    print(f"  Removed {result['before']['payments']} payments")
+    print(f"  Kept {result['after']['faculty_kept']} faculty records")
+    print(f"  Kept {result['after']['faculty_attendance_kept']} faculty attendance rows")
+    print(f"  Kept {result['after']['users_kept']} users")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

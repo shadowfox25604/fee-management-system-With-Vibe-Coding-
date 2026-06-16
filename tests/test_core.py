@@ -14,6 +14,7 @@ from backend.models import ClassSchoolFee, FeeHead, Invoice, Payment, Student, e
 from backend.repositories.class_fee_repository import ClassFeeRepository
 from backend.core.payment_reference import REF_LEN, is_compact_payment_reference
 from backend.repositories.payment_repository import PaymentRepository
+from tests.academic_year_helpers import clear_all_academic_years
 def test_class_name_matches_query_exact_not_substring():
     from backend.core.fee_control_constants import (
         class_name_matches_query,
@@ -251,9 +252,9 @@ def test_split_payment_with_discount_records_total_amount():
         assert float(pay.discount_amount) == 500.0
         assert float(pay.amount) == 3500.0
         due_after = repo.get_student_due_breakdown(st.student_id)
-        assert due_after["fee_due"] == 8500.0  # tariff school due minus cash + discount applied to school
-        assert due_after["school_payable"] == 8000.0  # payable reduced by cash + cumulative discount
-        assert due_after["van_due"] == 3000.0
+        assert due_after["fee_due"] == 7500.0  # tariff school due minus school cash + discount
+        assert due_after["school_payable"] == 7000.0  # cumulative discount reduces payable cap
+        assert due_after["van_due"] == 4000.0
         assert due_after["total"] == 11000.0
     finally:
         s.close()
@@ -357,9 +358,7 @@ def test_orphan_discount_on_non_school_allocation_does_not_reduce_school_payable
         from backend.repositories.student_year_fee_repository import StudentYearFeeRepository
 
         ay_repo = AcademicYearRepository(s)
-        for row in ay_repo.list_all():
-            s.delete(row)
-        s.commit()
+        clear_all_academic_years(s)
         y_cur = ay_repo.create(date(2026, 5, 16), date(2027, 5, 31), "2026-27")
         s.commit()
         StudentYearFeeRepository(s).get_or_create(st, y_cur.id, school_fees=20000.0, van_fees=5272.73)
@@ -435,9 +434,7 @@ def test_school_payment_can_clear_pending_van_before_current_school():
         from backend.repositories.academic_year_repository import AcademicYearRepository
 
         ay_repo = AcademicYearRepository(s)
-        for row in ay_repo.list_all():
-            s.delete(row)
-        s.commit()
+        clear_all_academic_years(s)
         y_prev = ay_repo.create(date(2025, 5, 17), date(2026, 5, 15), "2025-26")
         y_cur = ay_repo.create(date(2026, 6, 1), date(2027, 6, 4), "2026-27")
         s.commit()

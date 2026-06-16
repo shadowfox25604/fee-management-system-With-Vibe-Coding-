@@ -119,7 +119,8 @@ def test_corrupt_backup_is_rejected(isolated_test_database, tmp_path):
 
 def test_has_backup_for_today(isolated_test_database, tmp_path):
     service = _backup_service(isolated_test_database, tmp_path)
-    today = datetime(2026, 6, 13, 10, 30, 0)
+    # Use real "now" so create_daily_backup_if_needed() matches the same day.
+    today = datetime.now().replace(hour=10, minute=30, second=0, microsecond=0)
     assert service.has_backup_for_today(today=today) is False
 
     stamp = today.strftime("%Y%m%d_%H%M%S")

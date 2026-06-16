@@ -15,11 +15,12 @@ from backend.services.class_fee_service import ClassFeeService
 from backend.services.village_van_fee_service import VillageVanFeeService
 
 
+from tests.academic_year_helpers import clear_all_academic_years
+
+
 def _seed_year(db_session, start: date, end: date, label: str) -> AcademicYear:
+    clear_all_academic_years(db_session)
     repo = AcademicYearRepository(db_session)
-    for row in repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
     year = repo.create(start, end, label)
     db_session.commit()
     return year

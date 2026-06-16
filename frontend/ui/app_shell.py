@@ -72,11 +72,26 @@ DEFAULT_NAV: list[NavGroup] = [
             NavLeaf("Add Faculty", "Add Faculty"),
             NavLeaf("Salary Control", "Salary Control"),
             NavLeaf("Fee Control", "Fee Control"),
+            NavLeaf("Login Access", "Login Access"),
         ],
     ),
     NavGroup("Reports", "📊", page_key="Reports"),
     NavGroup("Backup", "💾", page_key="Backup"),
 ]
+
+ACCOUNTANT_NAV: list[NavGroup] = [
+    NavGroup("Collect Payment", "₹", page_key="Collect Payment"),
+    NavGroup("Income Management", "📥", page_key="Income Management"),
+]
+
+
+def navigation_for_role(role: str) -> list[NavGroup]:
+    from backend.core.app_roles import ROLE_ACCOUNTANT
+
+    if role == ROLE_ACCOUNTANT:
+        return list(ACCOUNTANT_NAV)
+    return list(DEFAULT_NAV)
+
 
 _NAV_ACTIVE_RADIUS = "8px"
 
@@ -147,9 +162,11 @@ class _GroupHeader(QPushButton):
 
 class AppShell(QWidget):
     page_changed = Signal(int)
+    logout_requested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, *, nav: list[NavGroup] | None = None, parent=None):
         super().__init__(parent)
+        self._nav_groups = list(nav if nav is not None else DEFAULT_NAV)
         self._page_keys: list[str] = []
         self._key_to_index: dict[str, int] = {}
         self._nav_buttons: dict[str, _NavButton] = {}
@@ -218,10 +235,21 @@ class AppShell(QWidget):
         nav_scroll.setWidget(nav_host)
         side_outer.addWidget(nav_scroll, 1)
 
-        for group in DEFAULT_NAV:
+        for group in self._nav_groups:
             self._add_nav_group(group)
 
         self._nav_layout.addStretch(1)
+
+        self._logout_section = QFrame()
+        self._logout_section.setObjectName("sidebarLogoutSection")
+        logout_lay = QVBoxLayout(self._logout_section)
+        logout_lay.setContentsMargins(12, 8, 12, 8)
+        logout_lay.setSpacing(0)
+        self._logout_btn = _NavButton("  ↪   Log out")
+        self._logout_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._logout_btn.clicked.connect(self.logout_requested.emit)
+        logout_lay.addWidget(self._logout_btn)
+        side_outer.addWidget(self._logout_section)
 
         self._sidebar_footer = QFrame()
         self._sidebar_footer.setObjectName("sidebarFooter")
@@ -272,6 +300,15 @@ class AppShell(QWidget):
         root.addWidget(self._main, 1)
 
         self.refresh_theme()
+
+    def set_user_profile(self, display_name: str, role_label: str) -> None:
+        letter = (display_name.strip()[:1] or "?").upper()
+        self._profile_avatar.setText(letter)
+        self._profile_name.setText(display_name)
+        self._profile_role.setText(role_label)
+
+    def set_fab_visible(self, visible: bool) -> None:
+        self._fab.setVisible(visible)
 
     def _on_theme_toggle(self) -> None:
         app = QApplication.instance()
@@ -325,6 +362,12 @@ class AppShell(QWidget):
             f"font-size: 18px; border: none; }}"
             f"QPushButton:hover {{ background: {t.primary_dark}; }}"
         )
+
+        self._logout_section.setStyleSheet(
+            f"QFrame#sidebarLogoutSection {{ background: {t.bg_sidebar}; "
+            f"border-top: 1px solid {t.border}; }}"
+        )
+        self._logout_btn.refresh_theme()
 
         for btn in self._nav_buttons.values():
             btn.refresh_theme()
@@ -386,7 +429,7 @@ class AppShell(QWidget):
         idx = self._key_to_index.get(page_key)
         if idx is None:
             return
-        for group in DEFAULT_NAV:
+        for group in self._nav_groups:
             if group.children:
                 for leaf in group.children:
                     if leaf.page_key == page_key:

@@ -15,6 +15,7 @@ from backend.services.academic_year_service import AcademicYearService
 from backend.services.class_fee_service import ClassFeeService
 from backend.services.fee_balance_service import FeeBalanceService
 from backend.services.village_van_fee_service import VillageVanFeeService
+from tests.academic_year_helpers import clear_all_academic_years
 
 
 def _set_joining_date(student: Student, d: date) -> None:
@@ -37,9 +38,7 @@ def _fee_heads(session):
 def test_new_year_rollover_combines_pending_and_current_dues(db_session):
     _fee_heads(db_session)
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
 
     y_old = ay_repo.create(date(2022, 5, 17), date(2023, 4, 18), "2022-23")
     y_prev = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
@@ -105,9 +104,7 @@ def test_new_year_rollover_combines_pending_and_current_dues(db_session):
 def test_rollover_pending_decreases_when_prior_balance_paid(db_session):
     _fee_heads(db_session)
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
 
     y_prev = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
     y_cur = ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")

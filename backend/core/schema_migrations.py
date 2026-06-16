@@ -211,15 +211,21 @@ def apply_sqlite_column_migrations(engine) -> None:
         with engine.begin() as conn:
             if "discount_amount" not in pay_cols:
                 conn.execute(
-                    text("ALTER TABLE payments ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0.0")
+                    text(
+                        "ALTER TABLE payments ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0.0"
+                    )
                 )
             if "school_amount" not in pay_cols:
                 conn.execute(
-                    text("ALTER TABLE payments ADD COLUMN school_amount REAL NOT NULL DEFAULT 0.0")
+                    text(
+                        "ALTER TABLE payments ADD COLUMN school_amount REAL NOT NULL DEFAULT 0.0"
+                    )
                 )
             if "van_amount" not in pay_cols:
                 conn.execute(
-                    text("ALTER TABLE payments ADD COLUMN van_amount REAL NOT NULL DEFAULT 0.0")
+                    text(
+                        "ALTER TABLE payments ADD COLUMN van_amount REAL NOT NULL DEFAULT 0.0"
+                    )
                 )
             if "is_reverted" not in pay_cols:
                 conn.execute(
@@ -366,6 +372,7 @@ def apply_sqlite_column_migrations(engine) -> None:
     _migrate_class_school_fees_per_year(engine)
     _migrate_academic_years_may_june_v2(engine)
     _seed_misc_income_sample_v1(engine)
+    _seed_app_login_users_v1(engine)
     _ensure_payments_remark_column(engine)
     _ensure_payment_invoice_indexes(engine)
 
@@ -1730,6 +1737,57 @@ def _backfill_payment_split_amounts(engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text("INSERT INTO app_migrations (name) VALUES ('backfill_payment_split_amounts_v1')")
+        )
+
+
+def _seed_app_login_users_v1(engine) -> None:
+    """Ensure Admin and Accountant login accounts exist with required credentials."""
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("users"):
+        return
+
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        if conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "seed_app_login_users_v1"},
+        ).fetchone():
+            return
+
+    from backend.core.app_roles import DEFAULT_APP_USERS
+    from backend.core.security import hash_password
+    from backend.models.entities import User
+    from sqlalchemy.orm import sessionmaker
+
+    session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
+    try:
+        for cred in DEFAULT_APP_USERS:
+            row = (
+                session.query(User)
+                .filter(User.username.ilike(cred.username))
+                .first()
+            )
+            if row is None:
+                session.add(
+                    User(
+                        username=cred.username,
+                        password_hash=hash_password(cred.password),
+                        role=cred.role,
+                    )
+                )
+            else:
+                row.username = cred.username
+                row.password_hash = hash_password(cred.password)
+                row.role = cred.role
+        session.commit()
+    finally:
+        session.close()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO app_migrations (name) VALUES ('seed_app_login_users_v1')")
         )
 
 

@@ -17,6 +17,7 @@ from backend.repositories.payment_repository import PaymentRepository
 from backend.repositories.student_year_fee_repository import StudentYearFeeRepository
 from backend.services.fee_balance_service import FeeBalanceService
 from backend.services.report_service import ReportService
+from tests.academic_year_helpers import clear_all_academic_years
 
 
 def _set_joining_date(student: Student, d: date) -> None:
@@ -55,9 +56,7 @@ def _student(db_session, *, sid: str, name: str, cls: str = "5", section: str = 
 def test_report_fee_filters_by_class_section(db_session):
     _fee_heads(db_session)
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
     y1 = ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
     y2 = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
     db_session.commit()
@@ -82,8 +81,10 @@ def test_report_fee_filters_by_class_section(db_session):
     db_session.commit()
 
     pay_repo = PaymentRepository(db_session)
-    pay_repo.create_split_payment(current_st, 1000.0, 5000.0, "cash", "test", 0.0, date(2025, 6, 1))
-    pay_repo.create_split_payment(paid_st, 2000.0, 10000.0, "cash", "test", 0.0, date(2025, 6, 1))
+    # School payment clears combined pending (prior school + prior van); van pays current-year van only.
+    pay_repo.create_split_payment(current_st, 1000.0, 6000.0, "cash", "test", 0.0, date(2025, 6, 1))
+    # Prior-year van is in combined pending; school payment clears pending + current school; van pays current van only.
+    pay_repo.create_split_payment(paid_st, 1000.0, 11000.0, "cash", "test", 0.0, date(2025, 6, 1))
     db_session.commit()
 
     balance = FeeBalanceService(db_session)

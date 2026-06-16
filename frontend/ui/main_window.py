@@ -2,7 +2,7 @@ import calendar
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from PySide6.QtCore import QDate, QEasingCurve, QPropertyAnimation, Qt, QTimer
+from PySide6.QtCore import QDate, QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -43,7 +43,9 @@ from backend.core.fee_control_constants import (
     canonical_class_for_student_class,
     class_section_matches_query,
 )
+from backend.core.app_roles import ROLE_ACCOUNTANT, allowed_page_keys, default_page_key, role_display_name
 from backend.models import Student
+from backend.models.entities import User
 from backend.services.academic_year_service import AcademicYearService
 from backend.services.backup_service import (
     BackupIntegrityError,
@@ -71,12 +73,15 @@ from backend.core.report_fee_constants import (
 from backend.services.report_service import ReportService
 from backend.services.student_service import StudentService
 from frontend.app_restart import relaunch_application
+from frontend.single_instance import release_single_instance_lock
 from frontend.ui.academic_year_dialog import AcademicYearDialog
 from frontend.ui.add_faculty_page import AddFacultyPage
 from frontend.ui.add_student_page import AddStudentPage
-from frontend.ui.app_shell import AppShell
+from frontend.ui.app_shell import AppShell, navigation_for_role
 from frontend.ui.backup_page import BackupPage
 from frontend.ui.school_branding import (
+    APP_WINDOW_HEIGHT,
+    APP_WINDOW_WIDTH,
     breadcrumb_trail,
     load_logo_pixmap,
     resolve_logo_path,
@@ -87,6 +92,7 @@ from frontend.ui.fee_control_page import FeeControlPage
 from frontend.ui.home_page import HomePageTab
 from frontend.ui.misc_expenses_page import MiscExpensesPage
 from frontend.ui.income_management_page import IncomeManagementPage
+from frontend.ui.login_access_page import LoginAccessPage
 from frontend.ui.payment_history_export_dialog import PaymentHistoryExportDialog
 from frontend.ui.student_list_export_dialog import StudentListExportDialog
 from frontend.ui.student_filter_combo import StudentFilterComboBox
@@ -176,9 +182,19 @@ class PaymentLikePane:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, session, *, startup_daily_backup: Path | None = None):
+    logout_requested = Signal()
+
+    def __init__(
+        self,
+        session,
+        *,
+        current_user: User,
+        startup_daily_backup: Path | None = None,
+    ):
         super().__init__()
         self.session = session
+        self._current_user = current_user
+        self._allowed_pages = allowed_page_keys(current_user.role)
         self.student_service = StudentService(session)
         self.payment_service = PaymentService(session)
         self.report_service = ReportService(session)
@@ -223,8 +239,8 @@ class MainWindow(QMainWindow):
         logo_path = resolve_logo_path()
         if logo_path is not None:
             self.setWindowIcon(QIcon(str(logo_path)))
-        self.resize(1360, 860)
-        self._shell = AppShell()
+        self.resize(APP_WINDOW_WIDTH, APP_WINDOW_HEIGHT)
+        self._shell = AppShell(nav=navigation_for_role(current_user.role))
         self._tab_names = [
             "Home Page",
             "Student Search",
@@ -241,6 +257,7 @@ class MainWindow(QMainWindow):
             "Reports",
             "Backup",
             "Fee Control",
+            "Login Access",
         ]
         builders = [
             self._build_home_tab,
@@ -258,9 +275,14 @@ class MainWindow(QMainWindow):
             self._build_reports_tab,
             self._build_backup_tab,
             self._build_fee_control_tab,
+            self._build_login_access_tab,
         ]
+        self._registered_tab_names: list[str] = []
         for key, builder in zip(self._tab_names, builders):
+            if key not in self._allowed_pages:
+                continue
             idx = self._shell.register_page(key, builder())
+            self._registered_tab_names.append(key)
             if key == "Home Page":
                 self._home_tab_index = idx
             if key == "Fee Control":
@@ -281,17 +303,35 @@ class MainWindow(QMainWindow):
                 self._add_faculty_tab_index = idx
             if key == "Backup":
                 self._backup_tab_index = idx
+        self._shell.set_user_profile(current_user.username, role_display_name(current_user.role))
+        self._shell.logout_requested.connect(self._confirm_logout)
         self._shell.page_changed.connect(self._on_main_tab_changed)
         theme.ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
         self.setCentralWidget(self._shell)
-        self._shell._fab.clicked.connect(lambda: self._shell.go("Fee Control"))
-        self._shell.go("Home Page")
-        self.perform_search(reset_page=True)
-        self._refresh_backup_tab()
+        if current_user.role != ROLE_ACCOUNTANT:
+            self._shell._fab.clicked.connect(lambda: self._shell.go("Fee Control"))
+        else:
+            self._shell.set_fab_visible(False)
+        self._shell.go(default_page_key(current_user.role))
+        if "Student Search" in self._allowed_pages:
+            self.perform_search(reset_page=True)
+        if "Backup" in self._allowed_pages:
+            self._refresh_backup_tab()
         if self._startup_daily_backup is not None:
             self._set_backup_status(
                 f"Automatic backup created today: {self._startup_daily_backup.name}"
             )
+
+    def _confirm_logout(self) -> None:
+        reply = theme.message_question(
+            self,
+            "Log out",
+            "Are you sure you want to log out?",
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.logout_requested.emit()
+            self.close()
+
     def _build_home_tab(self) -> HomePageTab:
         self._home_page = HomePageTab(
             on_navigate=self._navigate_to_tab,
@@ -364,7 +404,10 @@ class MainWindow(QMainWindow):
 
     def _navigate_to_tab(self, tab_name: str) -> None:
         aliases = {"Student List": "Student Search", "Add New Student": "Add Student"}
-        self._shell.go(aliases.get(tab_name, tab_name))
+        target = aliases.get(tab_name, tab_name)
+        if target not in self._allowed_pages:
+            return
+        self._shell.go(target)
 
     def _on_theme_changed(self, _mode: str) -> None:
         self._shell.refresh_theme()
@@ -1534,6 +1577,10 @@ class MainWindow(QMainWindow):
         self._manage_years_btn = self._fee_control_page.manage_years_btn
         return wrap_page("Fee Control", breadcrumb_trail("Admin Control", "Fee Control"), self._fee_control_page)
 
+    def _build_login_access_tab(self):
+        self._login_access_page = LoginAccessPage(self.session, parent=self)
+        return self._login_access_page.wrapped
+
     def _on_manage_academic_years_clicked(self) -> None:
         dlg = AcademicYearDialog(
             self.session,
@@ -1606,7 +1653,9 @@ class MainWindow(QMainWindow):
             home = getattr(self, "_home_page", None)
             if home is not None:
                 home.reload()
-        tab_name = self._tab_names[index] if 0 <= index < len(self._tab_names) else ""
+        tab_name = self._shell.current_page_key()
+        if not tab_name:
+            return
         if tab_name == "Add Student":
             self._populate_village_combo(self.add_student_village)
         if index == getattr(self, "_add_faculty_tab_index", -1):
@@ -4829,6 +4878,22 @@ class MainWindow(QMainWindow):
             pay_date = date(qd.year(), qd.month(), qd.day())
             return school_amt, van_amt, disc_amt, pay_date, (popup_remark.text() or "").strip()
 
+        def _parse_split_payment_form():
+            """Read Collect Payment popup fields into (school, van, discount, pay_date, remark)."""
+            # QLineEdit placeholders don't count as text; only parse explicit user input.
+            school_txt = (popup_school_pay.text() or "").strip()
+            van_txt = (popup_van_pay.text() or "").strip()
+            disc_txt = (popup_discount.text() or "").strip()
+
+            school_amt = float(school_txt) if school_txt else 0.0
+            van_amt = float(van_txt) if van_txt else 0.0
+            disc_amt = float(disc_txt) if disc_txt else 0.0
+
+            qd = popup_payment_date.date()
+            pay_date = date(qd.year(), qd.month(), qd.day())
+            remark = (popup_remark.text() or "").strip() if popup_remark is not None else ""
+            return school_amt, van_amt, disc_amt, pay_date, remark
+
         def _finalize_after_payment_saved(pay_date: date | None = None):
             self.session.refresh(student)
             d = self.payment_service.get_student_due_breakdown(student.student_id)
@@ -5615,6 +5680,7 @@ class MainWindow(QMainWindow):
             self.session.close()
             engine.dispose()
             self.backup_service.apply_restore(backup_path)
+            release_single_instance_lock()
             if not relaunch_application():
                 theme.message_critical(
                     self,

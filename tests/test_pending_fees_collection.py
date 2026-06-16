@@ -11,6 +11,7 @@ from backend.repositories.academic_year_repository import AcademicYearRepository
 from backend.repositories.payment_repository import PaymentRepository
 from backend.repositories.student_year_fee_repository import StudentYearFeeRepository
 from backend.services.fee_balance_service import FeeBalanceService
+from tests.academic_year_helpers import clear_all_academic_years
 
 
 def _set_joining_date(student: Student, d: date) -> None:
@@ -33,9 +34,7 @@ def _fee_heads(session):
 def test_pending_fees_equals_school_plus_van_from_prior_years(db_session):
     _fee_heads(db_session)
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
     y_prev = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
     y_cur = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
     db_session.commit()
@@ -68,9 +67,7 @@ def test_pending_fees_equals_school_plus_van_from_prior_years(db_session):
 def test_school_payment_debits_combined_pending_before_current_year(db_session):
     _fee_heads(db_session)
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
     y_prev = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
     y_cur = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
     db_session.commit()
@@ -105,12 +102,10 @@ def test_school_payment_debits_combined_pending_before_current_year(db_session):
     assert after["van_due"] == pytest.approx(1000.0, abs=0.01)
 
 
-def test_van_payment_debits_combined_pending_before_current_year(db_session):
+def test_van_payment_only_clears_current_year_van(db_session):
     _fee_heads(db_session)
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
     y_prev = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
     y_cur = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
     db_session.commit()
@@ -137,9 +132,13 @@ def test_van_payment_debits_combined_pending_before_current_year(db_session):
     pay_repo = PaymentRepository(db_session)
     before = balance.get_students_due_breakdown([st.student_id])[st.student_id]
     assert before["pending_fees"] == pytest.approx(2000.0, abs=0.01)
+    assert before["school_pending"] == pytest.approx(1500.0, abs=0.01)
+    assert before["van_pending"] == pytest.approx(500.0, abs=0.01)
 
-    pay_repo.create_split_payment(st, 2000.0, 0.0, "cash", "test", 0.0, date(2025, 6, 1))
+    pay_repo.create_split_payment(st, 1000.0, 0.0, "cash", "test", 0.0, date(2025, 6, 1))
     after = balance.get_students_due_breakdown([st.student_id])[st.student_id]
-    assert after["pending_fees"] == pytest.approx(0.0, abs=0.01)
+    assert after["pending_fees"] == pytest.approx(2000.0, abs=0.01)
+    assert after["school_pending"] == pytest.approx(1500.0, abs=0.01)
+    assert after["van_pending"] == pytest.approx(500.0, abs=0.01)
     assert after["fee_due"] == pytest.approx(5000.0, abs=0.01)
-    assert after["van_due"] == pytest.approx(1000.0, abs=0.01)
+    assert after["van_due"] == pytest.approx(0.0, abs=0.01)

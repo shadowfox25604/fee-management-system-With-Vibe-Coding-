@@ -11,6 +11,7 @@ from backend.repositories.payment_repository import PaymentRepository
 from backend.repositories.student_year_fee_repository import StudentYearFeeRepository
 from backend.services.academic_year_service import AcademicYearService
 from backend.services.fee_balance_service import FeeBalanceService
+from tests.academic_year_helpers import clear_all_academic_years
 
 
 def _set_joining_date(student: Student, d: date) -> None:
@@ -53,10 +54,7 @@ def test_standard_academic_year_bounds_and_labels():
 
 
 def test_create_next_academic_year_uses_standard_bounds(db_session):
-    ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
 
     svc = AcademicYearService(db_session)
     expected_start, expected_end, expected_label = svc.next_academic_year_bounds()
@@ -75,10 +73,7 @@ def test_academic_year_persists_after_new_session(db_session):
     """Year must be on disk before student provisioning finishes (survives app restart)."""
     from backend.services.academic_year_service import AcademicYearService
 
-    ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
 
     svc = AcademicYearService(db_session)
     y = svc.create_year(
@@ -100,9 +95,7 @@ def test_academic_year_persists_after_new_session(db_session):
 
 def test_academic_year_overlap_rejected(db_session):
     repo = AcademicYearRepository(db_session)
-    for row in repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
     repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
     db_session.commit()
     with pytest.raises(ValueError, match="overlap"):
@@ -112,9 +105,7 @@ def test_academic_year_overlap_rejected(db_session):
 def test_payment_applies_to_pending_year_first(db_session):
     t, tr = _fee_heads(db_session)
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
     y1 = ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
     y2 = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
     db_session.commit()
@@ -183,9 +174,7 @@ def test_tariff_only_pending_cleared_before_current_year(db_session):
     """Prior-year debt with no invoices: payment must reduce school_pending before school_current."""
     t, _tr = _fee_heads(db_session)
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
     y_old = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
     y_cur = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
     db_session.commit()
@@ -236,9 +225,7 @@ def test_tariff_only_pending_cleared_before_current_year(db_session):
 def test_due_breakdown_splits_pending_and_current(db_session):
     t, tr = _fee_heads(db_session)
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
     y_prev = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
     y_cur = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
     db_session.commit()
@@ -276,9 +263,7 @@ def test_new_student_has_no_pending_from_older_years(db_session):
     """Student joining in the current year must not inherit tariffs from prior academic years."""
     _fee_heads(db_session)
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
     ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
     ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
     y_cur = ay_repo.create(date(2026, 5, 17), date(2027, 4, 18), "2026-27")
@@ -312,9 +297,7 @@ def test_new_student_has_no_pending_from_older_years(db_session):
 def test_school_payment_clears_pending_before_current_year(db_session):
     t, _tr = _fee_heads(db_session)
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
     y_old = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
     y_cur = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
     db_session.commit()
@@ -349,12 +332,11 @@ def test_school_payment_clears_pending_before_current_year(db_session):
     assert after["fee_due"] == pytest.approx(5500.0, abs=0.02)
 
 
-def test_van_payment_clears_pending_before_current_year(db_session):
+def test_van_payment_only_clears_current_year_not_pending(db_session):
+    """Prior-year van is in combined pending; van payment clears current-year van only."""
     _t, tr = _fee_heads(db_session)
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
     y_old = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
     y_cur = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
     db_session.commit()
@@ -385,17 +367,16 @@ def test_van_payment_clears_pending_before_current_year(db_session):
 
     pay_repo.create_split_payment(st, 500.0, 0.0, "cash", "test", 0.0, date(2025, 6, 1))
     after = balance.get_students_due_breakdown([st.student_id], {st.student_id: 0.0})[st.student_id]
-    assert after["van_pending"] == pytest.approx(0.0, abs=0.02)
-    assert after["van_due"] == pytest.approx(600.0, abs=0.02)
+    assert after["pending_fees"] == pytest.approx(300.0, abs=0.02)
+    assert after["van_pending"] == pytest.approx(300.0, abs=0.02)
+    assert after["van_due"] == pytest.approx(300.0, abs=0.02)
 
 
-def test_van_payment_clears_combined_pending_including_school(db_session):
-    """Van fee payment debits combined pending (prior-year school + van) before current-year van."""
+def test_van_payment_does_not_clear_pending_only_current_van(db_session):
+    """Van payment must not reduce combined pending; only current-year van due."""
     t, tr = _fee_heads(db_session)
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
     y_old = ay_repo.create(date(2023, 5, 17), date(2024, 4, 18), "2023-24")
     y_cur = ay_repo.create(date(2025, 5, 17), date(2026, 4, 18), "2025-26")
     db_session.commit()
@@ -422,13 +403,17 @@ def test_van_payment_clears_combined_pending_including_school(db_session):
     pay_repo = PaymentRepository(db_session)
     before = balance.get_students_due_breakdown([st.student_id], {st.student_id: 0.0})[st.student_id]
     assert before["pending_fees"] == pytest.approx(2000.0, abs=0.02)
-    assert before["van_payable"] == pytest.approx(3000.0, abs=0.02)
+    assert before["school_pending"] == pytest.approx(1500.0, abs=0.02)
+    assert before["van_pending"] == pytest.approx(500.0, abs=0.02)
+    assert before["van_payable"] == pytest.approx(1000.0, abs=0.02)
 
-    pay_repo.create_split_payment(st, 2000.0, 0.0, "cash", "test", 0.0, date(2025, 6, 1))
+    pay_repo.create_split_payment(st, 1000.0, 0.0, "cash", "test", 0.0, date(2025, 6, 1))
     after = balance.get_students_due_breakdown([st.student_id], {st.student_id: 0.0})[st.student_id]
-    assert after["pending_fees"] == pytest.approx(0.0, abs=0.02)
+    assert after["pending_fees"] == pytest.approx(2000.0, abs=0.02)
+    assert after["school_pending"] == pytest.approx(1500.0, abs=0.02)
+    assert after["van_pending"] == pytest.approx(500.0, abs=0.02)
     assert after["fee_due"] == pytest.approx(2000.0, abs=0.02)
-    assert after["van_due"] == pytest.approx(1000.0, abs=0.02)
+    assert after["van_due"] == pytest.approx(0.0, abs=0.02)
 
 
 def test_next_class_key_progression():
@@ -461,9 +446,7 @@ def test_create_year_promotes_students(db_session):
     from backend.services.village_van_fee_service import VillageVanFeeService
 
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
 
     ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
     db_session.commit()
@@ -513,9 +496,7 @@ def test_create_year_passes_out_class_10_students(db_session):
     from backend.services.village_van_fee_service import VillageVanFeeService
 
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
 
     ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
     db_session.commit()
@@ -563,9 +544,7 @@ def test_create_year_skips_inactive_students(db_session):
     from backend.services.village_van_fee_service import VillageVanFeeService
 
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
 
     ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
     db_session.commit()
@@ -621,9 +600,7 @@ def test_inactive_student_no_phantom_current_year_due_after_increment(db_session
     from backend.services.village_van_fee_service import VillageVanFeeService
 
     ay_repo = AcademicYearRepository(db_session)
-    for row in ay_repo.list_all():
-        db_session.delete(row)
-    db_session.commit()
+    clear_all_academic_years(db_session)
 
     y1 = ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
     db_session.commit()
