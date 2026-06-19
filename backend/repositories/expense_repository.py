@@ -5,6 +5,7 @@ from datetime import date, datetime
 
 from sqlalchemy import func, or_, select
 
+from backend.core.app_roles import format_operator_display
 from backend.core.salary_reference import allocate_unique_salary_reference
 from backend.models import Expense, FacultyAttendance, FacultySalary
 
@@ -477,7 +478,7 @@ class ExpenseRepository:
                     "base_amount": float(exp.base_amount or 0.0),
                     "amount": float(exp.amount or 0.0),
                     "notes": exp.notes or "",
-                    "operator": getattr(exp, "operator_name", "") or "",
+                    "operator": format_operator_display(getattr(exp, "operator_name", "") or ""),
                     "is_reverted": reverted,
                     "status": "Salary reverted" if reverted else "Paid",
                 }
@@ -675,6 +676,50 @@ class ExpenseRepository:
                 select(Expense).where(
                     Expense.expense_type == "salary",
                     func.lower(func.trim(Expense.person_name)) == needle,
+                )
+            ).all()
+        )
+        for row in expense_rows:
+            self.session.delete(row)
+        self.session.commit()
+        return {
+            "faculty_deleted": faculty_deleted,
+            "attendance_deleted": attendance_deleted,
+            "salary_expenses_deleted": len(expense_rows),
+        }
+
+    def purge_faculty_by_employee_id(self, employee_id: str) -> dict[str, int]:
+        """Remove faculty profile, attendance, and salary history by employee ID."""
+        eid = (employee_id or "").strip()
+        if not eid:
+            raise ValueError("Employee ID is required.")
+        faculty = self.session.scalars(
+            select(FacultySalary)
+            .where(func.lower(func.trim(FacultySalary.employee_id)) == eid.lower())
+            .limit(1)
+        ).first()
+        if faculty is None:
+            raise ValueError(f"Faculty not found: {eid}")
+        faculty_name = (faculty.faculty_name or "").strip()
+        attendance_deleted = 0
+        faculty_deleted = 0
+        attendance_rows = list(
+            self.session.scalars(
+                select(FacultyAttendance).where(
+                    FacultyAttendance.faculty_id_fk == int(faculty.id)
+                )
+            ).all()
+        )
+        for row in attendance_rows:
+            self.session.delete(row)
+        attendance_deleted = len(attendance_rows)
+        self.session.delete(faculty)
+        faculty_deleted = 1
+        expense_rows = list(
+            self.session.scalars(
+                select(Expense).where(
+                    Expense.expense_type == "salary",
+                    func.lower(func.trim(Expense.person_name)) == faculty_name.lower(),
                 )
             ).all()
         )

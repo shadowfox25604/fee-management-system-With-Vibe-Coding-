@@ -385,9 +385,9 @@ class DashboardHeroStrip(QFrame):
     self.refresh_theme()
 
   def _apply_logo(self) -> None:
-    from frontend.ui.school_branding import load_logo_pixmap
+    from frontend.ui.school_branding import load_login_logo_pixmap
 
-    pix = load_logo_pixmap(
+    pix = load_login_logo_pixmap(
       self._LOGO_SIZE,
       device_pixel_ratio=self._device_pixel_ratio,
     )
@@ -401,22 +401,15 @@ class DashboardHeroStrip(QFrame):
   def refresh_theme(self) -> None:
     t = theme.current_tokens()
     self._apply_logo()
-    badge_radius = self._BADGE_SIZE // 2
-    logo_radius = self._LOGO_SIZE // 2
-    # White badge keeps JPEG crest backgrounds clean on both themes.
-    self._logo_badge.setStyleSheet(
-      f"QFrame {{ background: #FFFFFF; border: 1px solid {t.border}; "
-      f"border-radius: {badge_radius}px; }}"
-    )
+    self._logo_badge.setStyleSheet("QFrame { background: transparent; border: none; }")
     if self._logo.pixmap() is None or self._logo.pixmap().isNull():
+      logo_radius = self._LOGO_SIZE // 2
       self._logo.setStyleSheet(
         f"background: {t.primary}; color: white; border-radius: {logo_radius}px; "
         "font-size: 36px; font-weight: 800;"
       )
     else:
-      self._logo.setStyleSheet(
-        f"background: transparent; border-radius: {logo_radius}px;"
-      )
+      self._logo.setStyleSheet("background: transparent;")
     self._accent.setStyleSheet(
       f"background: {t.primary}; border-radius: 2px; border: none;"
     )

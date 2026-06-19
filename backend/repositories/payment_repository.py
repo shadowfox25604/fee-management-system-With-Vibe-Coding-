@@ -3,6 +3,7 @@ from datetime import date, datetime
 
 from sqlalchemy import func, not_, or_, select
 
+from backend.core.app_roles import format_operator_display
 from backend.core.fee_due_display import pending_fees as combined_pending_fees
 from backend.core.fee_heads import van_fee_head_filter, van_fee_head_name_match
 from backend.core.payment_reference import allocate_unique_payment_reference
@@ -897,7 +898,7 @@ class PaymentRepository:
             "van_amount": van_amount,
             "discount": float(p.discount_amount or 0.0),
             "mode": p.mode or "",
-            "operator": p.operator_name or "",
+            "operator": format_operator_display(p.operator_name or ""),
             "remark": (getattr(p, "remark", None) or "").strip(),
             "is_reverted": bool(getattr(p, "is_reverted", False)),
             "status": "Payment reverted" if bool(getattr(p, "is_reverted", False)) else "Paid",

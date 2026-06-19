@@ -2,6 +2,7 @@ from datetime import date
 
 import pytest
 
+from backend.core.app_roles import ROLE_ADMIN
 from backend.services.misc_expense_service import MiscExpenseService
 
 
@@ -49,12 +50,17 @@ def test_update_and_delete_entry(db_session):
     expense = svc.add_new_expense("Infra", date(2026, 3, 10))
     entry = svc.add_entry(expense.id, "2 Ceiling Fans", 4500.0)
 
-    svc.update_entry(entry.id, particular="2 Ceiling Fans (updated)", amount=4800.0)
+    svc.update_entry(
+        entry.id,
+        particular="2 Ceiling Fans (updated)",
+        amount=4800.0,
+        actor_role=ROLE_ADMIN,
+    )
     rows = svc.list_entry_history()
     assert rows[0]["particular"] == "2 Ceiling Fans (updated)"
     assert rows[0]["amount"] == pytest.approx(4800.0, abs=0.01)
 
-    svc.delete_entry(entry.id)
+    svc.delete_entry(entry.id, actor_role=ROLE_ADMIN)
     rows = svc.list_entry_history()
     assert len(rows) == 1
     assert rows[0]["particular"] == "2 Ceiling Fans (updated)"
@@ -67,9 +73,9 @@ def test_delete_entry_cannot_run_twice(db_session):
     svc = MiscExpenseService(db_session)
     expense = svc.add_new_expense("Infra", date(2026, 3, 10))
     entry = svc.add_entry(expense.id, "Chair", 1200.0)
-    svc.delete_entry(entry.id)
+    svc.delete_entry(entry.id, actor_role=ROLE_ADMIN)
     with pytest.raises(ValueError, match="already reverted"):
-        svc.delete_entry(entry.id)
+        svc.delete_entry(entry.id, actor_role=ROLE_ADMIN)
 
 
 def test_expense_head_required(db_session):

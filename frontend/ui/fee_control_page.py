@@ -274,12 +274,13 @@ class FeeControlPage(QWidget):
         v = QVBoxLayout(f)
         v.setContentsMargins(16, 12, 16, 12)
         v.setSpacing(4)
-        t = QLabel("Set school fees independently for each academic year")
+        t = QLabel("Set school and van fees independently for each academic year")
         t.setObjectName("fcBannerTitle")
         b = QLabel(
-            "Choose an academic year, then set class tariffs for that session. "
+            "Choose an academic year, then set class and village tariffs for that session. "
             "Apply updates the stored tariff and each enrolled student’s fee record for that year. "
-            "Ended academic years are locked. Van fees remain global."
+            "When you add the next academic year, current tariffs are copied forward automatically. "
+            "Ended academic years are locked."
         )
         b.setWordWrap(True)
         b.setObjectName("fcBannerBody")
@@ -393,9 +394,26 @@ class FeeControlPage(QWidget):
         card.body.addWidget(
             self._card_head(
                 "Van fee tariffs",
-                "Per-village van rates. Own-transport students are skipped.",
+                "Per-village van rates for the selected academic year. Own-transport students are skipped.",
             )
         )
+        year_bar = QWidget()
+        yh = QHBoxLayout(year_bar)
+        yh.setContentsMargins(20, 0, 20, 8)
+        yh.setSpacing(10)
+        year_lbl = QLabel("Academic year")
+        year_lbl.setProperty("role", "field-label")
+        self._van_year_combo = QComboBox()
+        self._van_year_combo.setMinimumHeight(36)
+        self._van_year_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._van_year_combo.currentIndexChanged.connect(self._on_van_year_changed)
+        self._van_year_lock_hint = QLabel("")
+        self._van_year_lock_hint.setProperty("role", "hint")
+        self._van_year_lock_hint.setWordWrap(True)
+        yh.addWidget(year_lbl)
+        yh.addWidget(self._van_year_combo, 1)
+        card.body.addWidget(year_bar)
+        card.body.addWidget(self._van_year_lock_hint)
         tool = QWidget()
         th = QHBoxLayout(tool)
         th.setContentsMargins(20, 0, 20, 8)
@@ -428,11 +446,23 @@ class FeeControlPage(QWidget):
         return int(data) if data is not None else None
 
     @property
+    def selected_van_academic_year_id(self) -> int | None:
+        data = self._van_year_combo.currentData()
+        return int(data) if data is not None else None
+
+    @property
     def selected_year_editable(self) -> bool:
         year_id = self.selected_academic_year_id
         if year_id is None:
             return False
         return self._class_svc.is_year_tariff_editable(year_id)
+
+    @property
+    def selected_van_year_editable(self) -> bool:
+        year_id = self.selected_van_academic_year_id
+        if year_id is None:
+            return False
+        return self._van_svc.is_year_tariff_editable(year_id)
 
     def _reload_school_year_combo(self) -> None:
         years = self._class_svc.list_years_for_fee_control()
@@ -456,10 +486,39 @@ class FeeControlPage(QWidget):
                 self._school_year_combo.setCurrentIndex(idx)
         self._school_year_combo.blockSignals(False)
         self._update_school_year_lock_state()
+        self._reload_van_year_combo()
+
+    def _reload_van_year_combo(self) -> None:
+        years = self._van_svc.list_years_for_fee_control()
+        current = self._year_svc.get_current()
+        prev_id = self.selected_van_academic_year_id
+        self._van_year_combo.blockSignals(True)
+        self._van_year_combo.clear()
+        from backend.core.academic_year_dates import format_academic_year_range
+
+        for year in years:
+            label = self._year_svc.format_year_short_label(year)
+            detail = format_academic_year_range(year.start_date, year.end_date)
+            self._van_year_combo.addItem(f"{label}  ({detail})", year.id)
+        if prev_id is not None:
+            idx = self._van_year_combo.findData(prev_id)
+            if idx >= 0:
+                self._van_year_combo.setCurrentIndex(idx)
+        elif current is not None:
+            idx = self._van_year_combo.findData(current.id)
+            if idx >= 0:
+                self._van_year_combo.setCurrentIndex(idx)
+        self._van_year_combo.blockSignals(False)
+        self._update_van_year_lock_state()
 
     def _on_school_year_changed(self, _index: int) -> None:
         self._update_school_year_lock_state()
         self.refresh_school_amounts()
+
+    def _on_van_year_changed(self, _index: int) -> None:
+        self._update_van_year_lock_state()
+        self._rebuild_van()
+        self.refresh_van_amounts()
 
     def _update_school_year_lock_state(self) -> None:
         editable = self.selected_year_editable
@@ -473,6 +532,22 @@ class FeeControlPage(QWidget):
         else:
             self._year_lock_hint.setText(
                 "This academic year has ended — class fees are locked and cannot be changed."
+            )
+
+    def _update_van_year_lock_state(self) -> None:
+        editable = self.selected_van_year_editable
+        self._van_list.set_read_only(not editable)
+        if self.add_village_btn is not None:
+            self.add_village_btn.setEnabled(editable)
+        if not self.selected_van_academic_year_id:
+            self._van_year_lock_hint.setText("Add an academic year before setting village van fees.")
+        elif editable:
+            self._van_year_lock_hint.setText(
+                "Van fees for this session can be edited before and during the academic year."
+            )
+        else:
+            self._van_year_lock_hint.setText(
+                "This academic year has ended — village van fees are locked and cannot be changed."
             )
 
     def _pick(self, idx: int) -> None:
@@ -493,7 +568,8 @@ class FeeControlPage(QWidget):
         self._hint.setText(f"{n} of {total} villages" if q else f"{total} villages")
 
     def _rebuild_van(self) -> None:
-        keys = self._van_svc.list_village_keys_for_fee_control()
+        year_id = self.selected_van_academic_year_id
+        keys = self._van_svc.list_village_keys_for_fee_control(year_id)
         self._van_keys = list(keys)
         self._van_list.set_items([(k, k) for k in keys])
         self._van_edits = self._van_list.amount_edits
@@ -510,8 +586,9 @@ class FeeControlPage(QWidget):
             e.setText(f"{self._class_svc.display_amount_for_class(k, year_id):.2f}")
 
     def refresh_van_amounts(self) -> None:
+        year_id = self.selected_van_academic_year_id
         for k, e in self._van_edits.items():
-            e.setText(f"{self._van_svc.display_amount_for_village(k):.2f}")
+            e.setText(f"{self._van_svc.display_amount_for_village(k, year_id):.2f}")
 
     def refresh_amounts(self) -> None:
         self.refresh_school_amounts()
@@ -520,7 +597,7 @@ class FeeControlPage(QWidget):
 
     def reload_stats(self) -> None:
         self._reload_school_year_combo()
-        n_v = len(self._van_svc.list_village_keys_for_fee_control())
+        n_v = len(self._van_svc.list_village_keys_for_fee_control(self.selected_van_academic_year_id))
         self._m_classes.update_metric(str(len(FIXED_CLASS_KEYS)), "LKG → Class 10")
         self._m_villages.update_metric(str(n_v), "Van transport routes")
         cur = self._year_svc.get_current()

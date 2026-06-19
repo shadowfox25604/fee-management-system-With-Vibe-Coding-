@@ -61,6 +61,7 @@ def test_role_page_access():
     assert "Login Access" in admin_pages
     assert "Home Page" not in accountant_pages
     assert "Login Access" not in accountant_pages
+    assert "Miscellaneous" in accountant_pages
     assert accountant_pages == ACCOUNTANT_PAGE_KEYS
     assert default_page_key(ROLE_ADMIN) == "Home Page"
     assert default_page_key(ROLE_ACCOUNTANT) == "Collect Payment"

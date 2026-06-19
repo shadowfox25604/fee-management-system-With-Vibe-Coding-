@@ -13,8 +13,7 @@ if (Test-Path ".venv\Scripts\python.exe") {
 & $Python scripts\make_app_icon.py
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$Icon = Join-Path $Root "build\ace_school_management.ico"
-$Logo = Join-Path $Root "School Logo.jpeg"
+$Icon = Join-Path $Root "frontend\assets\ace_school_management.ico"
 $Assets = Join-Path $Root "frontend\assets"
 
 if (-not (Test-Path $Icon)) {
@@ -30,7 +29,6 @@ Write-Host "Building ACE School Management.exe with PyInstaller..."
     --onefile `
     --icon "$Icon" `
     --paths "$Root" `
-    --add-data "$Logo;." `
     --add-data "$Assets;frontend\assets" `
     --hidden-import backend.models.entities `
     --hidden-import sqlalchemy.dialects.sqlite `

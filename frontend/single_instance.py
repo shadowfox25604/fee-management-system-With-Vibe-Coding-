@@ -4,23 +4,26 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QLockFile
+from PySide6.QtCore import QLockFile, Qt
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QWidget
 
-from backend.core.config import BASE_DIR
+from backend.core.config import DATA_DIR
 
 _SERVER_NAME = "ACE.SchoolManagement.SingleInstance"
-_LOCK_PATH = BASE_DIR / "data" / ".single_instance.lock"
+_LOCK_PATH = DATA_DIR / ".single_instance.lock"
 
 _lock: QLockFile | None = None
 _server: QLocalServer | None = None
 
 
 def _raise_window(widget: QWidget) -> None:
-    if widget.isMinimized():
+    if widget.windowState() & Qt.WindowState.WindowMinimized:
+        widget.setWindowState(widget.windowState() & ~Qt.WindowState.WindowMinimized)
+    if widget.windowState() & Qt.WindowState.WindowMaximized:
+        widget.showMaximized()
+    else:
         widget.showNormal()
-    widget.show()
     widget.raise_()
     widget.activateWindow()
     if sys.platform == "win32":

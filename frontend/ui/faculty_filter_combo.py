@@ -1,41 +1,43 @@
-"""Searchable student picker for filters."""
+"""Searchable faculty picker for filters and delete flows."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QStringListModel
 from PySide6.QtWidgets import QComboBox, QCompleter
 
-from backend.services.student_service import StudentService
+from backend.services.expense_service import ExpenseService
 from frontend.ui import theme
 
 
-def _student_label(student) -> str:
-    cls = (getattr(student, "class_name", None) or "").strip()
-    class_part = f" — Class {cls}" if cls else ""
-    return f"{student.full_name} ({student.student_id}){class_part}"
+def _faculty_label(row) -> str:
+    name = (getattr(row, "faculty_name", None) or "").strip()
+    eid = (getattr(row, "employee_id", None) or "").strip()
+    ftype = (getattr(row, "faculty_type", None) or "").strip()
+    type_part = f" — {ftype}" if ftype else ""
+    return f"{name} ({eid}){type_part}"
 
 
-class StudentFilterComboBox(QComboBox):
-    """Editable combo listing all students; search by name or ID."""
+class FacultyFilterComboBox(QComboBox):
+    """Editable combo listing faculty; search by name or employee ID."""
 
     def __init__(
         self,
-        student_service: StudentService,
+        expense_service: ExpenseService,
         *,
-        all_label: str = "All students",
-        prompt_as_placeholder: bool = False,
+        prompt_label: str = "Select a faculty member…",
+        prompt_as_placeholder: bool = True,
         parent=None,
     ):
         super().__init__(parent)
-        self._student_service = student_service
-        self._all_label = all_label
+        self._expense_service = expense_service
+        self._prompt_label = prompt_label
         self._prompt_as_placeholder = prompt_as_placeholder
         self.setEditable(True)
         self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.setMinimumHeight(36)
         line = self.lineEdit()
         if line is not None:
-            placeholder = all_label if prompt_as_placeholder else "Search student name or ID…"
+            placeholder = prompt_label if prompt_as_placeholder else "Search faculty name or employee ID…"
             line.setPlaceholderText(placeholder)
             line.setClearButtonEnabled(True)
             line.textChanged.connect(self._on_line_text_changed)
@@ -75,12 +77,15 @@ class StudentFilterComboBox(QComboBox):
 
     def _reload_items(self, *, preserve_selection: bool = True) -> None:
         self.blockSignals(True)
-        current = self.selected_student_id() if preserve_selection else None
+        current = self.selected_employee_id() if preserve_selection else None
         self.clear()
-        empty_label = "" if self._prompt_as_placeholder else self._all_label
+        empty_label = "" if self._prompt_as_placeholder else self._prompt_label
         self.addItem(empty_label, "")
-        for student in self._student_service.list_students():
-            self.addItem(_student_label(student), student.student_id)
+        for row in self._expense_service.list_faculty_salaries(active_only=False):
+            eid = (getattr(row, "employee_id", None) or "").strip()
+            if not eid:
+                continue
+            self.addItem(_faculty_label(row), eid)
         if preserve_selection and current:
             idx = self.findData(current)
             if idx >= 0:
@@ -116,10 +121,10 @@ class StudentFilterComboBox(QComboBox):
                 self.setCurrentIndex(0)
                 self.blockSignals(False)
             return
-        sid = self.selected_student_id()
-        if not sid:
+        eid = self.selected_employee_id()
+        if not eid:
             return
-        idx = self.findData(sid)
+        idx = self.findData(eid)
         if idx >= 0 and self.currentIndex() != idx:
             self.blockSignals(True)
             self.setCurrentIndex(idx)
@@ -129,7 +134,16 @@ class StudentFilterComboBox(QComboBox):
         if hasattr(self, "_completer"):
             theme.style_completer_popup(self._completer)
 
-    def selected_student_id(self) -> str | None:
+    def reload(self, *, preserve_selection: bool = True) -> None:
+        self._reload_items(preserve_selection=preserve_selection)
+
+    def reset(self) -> None:
+        """Reload the faculty list and restore the default empty search state."""
+        if hasattr(self, "_completer"):
+            self._completer.popup().hide()
+        self._reload_items(preserve_selection=False)
+
+    def selected_employee_id(self) -> str | None:
         text = self._line_text()
         if not text:
             return None
@@ -140,35 +154,29 @@ class StudentFilterComboBox(QComboBox):
             if data is not None and str(data).strip():
                 return str(data).strip()
 
-        if not self._prompt_as_placeholder and text.lower() == self._all_label.lower():
+        if not self._prompt_as_placeholder and text.lower() == self._prompt_label.lower():
             return None
 
         needle = text.lower()
         exact: str | None = None
         partial: str | None = None
         for i in range(self.count()):
-            sid = self.itemData(i)
-            if sid is None or not str(sid).strip():
+            eid = self.itemData(i)
+            if eid is None or not str(eid).strip():
                 continue
-            sid_s = str(sid)
+            eid_s = str(eid)
             label = self.itemText(i).lower()
-            if needle == sid_s.lower() or needle == label:
-                exact = sid_s
+            if needle == eid_s.lower() or needle == label:
+                exact = eid_s
                 break
-            if partial is None and (needle in label or needle in sid_s.lower()):
-                partial = sid_s
+            if partial is None and (needle in label or needle in eid_s.lower()):
+                partial = eid_s
         return exact or partial
 
     def clear_selection(self) -> None:
         self.blockSignals(True)
         self._reset_empty_display()
         self.blockSignals(False)
-
-    def reset(self) -> None:
-        """Reload the student list and restore the default empty search state."""
-        if hasattr(self, "_completer"):
-            self._completer.popup().hide()
-        self._reload_items(preserve_selection=False)
 
     def _reset_empty_display(self) -> None:
         self.setCurrentIndex(0)
@@ -178,6 +186,6 @@ class StudentFilterComboBox(QComboBox):
             line.clear()
             line.blockSignals(False)
             if self._prompt_as_placeholder:
-                line.setPlaceholderText(self._all_label)
+                line.setPlaceholderText(self._prompt_label)
         if hasattr(self, "_completer"):
             self._completer.setCompletionPrefix("")

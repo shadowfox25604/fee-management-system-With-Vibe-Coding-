@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from backend.core.app_roles import can_modify_ledger_entries, operator_name_for_role
 from backend.services.misc_income_service import MiscIncomeService
 from frontend.ui import theme
 from frontend.ui.edudash_widgets import CardTitleBar, SurfaceCard, wrap_page
@@ -47,6 +48,10 @@ from frontend.ui.table_style import (
 _EDIT_COLUMN_WIDTH = 132
 _STATUS_COLUMN_WIDTH = 120
 _DELETE_COLUMN_WIDTH = 160
+_OPERATOR_COLUMN_WIDTH = 100
+_COL_OPERATOR = 5
+_COL_EDIT = 6
+_COL_DELETE = 7
 
 
 class _IncomeDialog(QDialog):
@@ -512,10 +517,12 @@ class _ExportFilterDialog(QDialog):
 class IncomeManagementPage(QWidget):
     PAGE_SIZE = 50
 
-    def __init__(self, service: MiscIncomeService, parent=None, *, on_data_changed=None):
+    def __init__(self, service: MiscIncomeService, parent=None, *, on_data_changed=None, user_role: str):
         super().__init__(parent)
         self._service = service
         self._on_data_changed = on_data_changed
+        self._user_role = user_role
+        self._can_modify_entries = can_modify_ledger_entries(user_role)
         self._page = 0
         self._cache: list[dict] = []
 
@@ -557,10 +564,12 @@ class IncomeManagementPage(QWidget):
 
         card = SurfaceCard()
         card.body.addWidget(CardTitleBar("Income entry history"))
-        self._table = QTableWidget(0, 7)
-        self._table.setHorizontalHeaderLabels(
-            ["Date", "Head", "Particular", "Amount (₹)", "Status", "Edit", "Delete"]
-        )
+        table_cols = 8 if self._can_modify_entries else 6
+        headers = ["Date", "Head", "Particular", "Amount (₹)", "Status", "Operator"]
+        if self._can_modify_entries:
+            headers.extend(["Edit", "Delete"])
+        self._table = QTableWidget(0, table_cols)
+        self._table.setHorizontalHeaderLabels(headers)
         configure_scrollable_data_table(self._table)
         self._table.setProperty("table_variant", "scrollable")
         card.body.addWidget(self._table, 1)
@@ -639,44 +648,50 @@ class IncomeManagementPage(QWidget):
                 status_item.setForeground(QColor(tokens.text_muted))
             tbl.setItem(i, 3, amount_item)
             tbl.setItem(i, 4, status_item)
-            entry_id = int(row.get("entry_id") or 0)
-            edit_btn = QPushButton("Edit")
-            style_fee_action_button(
-                edit_btn,
-                width=fee_action_button_width(edit_btn, min_width=76),
-            )
-            if is_reverted:
-                edit_btn.setEnabled(False)
-            else:
-                edit_btn.clicked.connect(lambda _=False, eid=entry_id: self._on_edit_entry(eid))
-            tbl.setCellWidget(i, 5, edit_btn)
-            delete_btn = QPushButton("Delete")
-            style_fee_action_button(
-                delete_btn,
-                width=fee_action_button_width(delete_btn, min_width=92),
-            )
-            if is_reverted:
-                delete_btn.setEnabled(False)
-            else:
-                delete_btn.clicked.connect(lambda _=False, eid=entry_id: self._on_delete_entry(eid))
-            tbl.setCellWidget(i, 6, delete_btn)
+            tbl.setItem(i, _COL_OPERATOR, table_item(str(row.get("operator") or "")))
+            if self._can_modify_entries:
+                entry_id = int(row.get("entry_id") or 0)
+                edit_btn = QPushButton("Edit")
+                style_fee_action_button(
+                    edit_btn,
+                    width=fee_action_button_width(edit_btn, min_width=76),
+                )
+                if is_reverted:
+                    edit_btn.setEnabled(False)
+                else:
+                    edit_btn.clicked.connect(lambda _=False, eid=entry_id: self._on_edit_entry(eid))
+                tbl.setCellWidget(i, _COL_EDIT, edit_btn)
+                delete_btn = QPushButton("Delete")
+                style_fee_action_button(
+                    delete_btn,
+                    width=fee_action_button_width(delete_btn, min_width=92),
+                )
+                if is_reverted:
+                    delete_btn.setEnabled(False)
+                else:
+                    delete_btn.clicked.connect(lambda _=False, eid=entry_id: self._on_delete_entry(eid))
+                tbl.setCellWidget(i, _COL_DELETE, delete_btn)
         for col in range(5):
             tbl.resizeColumnToContents(col)
         tbl.resizeColumnsToContents()
         header = tbl.horizontalHeader()
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
-        tbl.setColumnWidth(5, max(tbl.columnWidth(5), _EDIT_COLUMN_WIDTH))
-        tbl.setColumnWidth(6, max(tbl.columnWidth(6), _DELETE_COLUMN_WIDTH))
+        if self._can_modify_entries:
+            header.setSectionResizeMode(_COL_EDIT, QHeaderView.ResizeMode.Fixed)
+            header.setSectionResizeMode(_COL_DELETE, QHeaderView.ResizeMode.Fixed)
+            tbl.setColumnWidth(_COL_EDIT, max(tbl.columnWidth(_COL_EDIT), _EDIT_COLUMN_WIDTH))
+            tbl.setColumnWidth(_COL_DELETE, max(tbl.columnWidth(_COL_DELETE), _DELETE_COLUMN_WIDTH))
         tbl.setColumnWidth(4, max(tbl.columnWidth(4), _STATUS_COLUMN_WIDTH))
+        tbl.setColumnWidth(_COL_OPERATOR, max(tbl.columnWidth(_COL_OPERATOR), _OPERATOR_COLUMN_WIDTH))
         fitted = getattr(tbl, "_fitted_column_widths", None)
         if fitted is None:
             fitted = [tbl.columnWidth(c) for c in range(tbl.columnCount())]
         while len(fitted) < tbl.columnCount():
             fitted.append(72)
         fitted[4] = tbl.columnWidth(4)
-        fitted[5] = tbl.columnWidth(5)
-        fitted[6] = tbl.columnWidth(6)
+        fitted[_COL_OPERATOR] = tbl.columnWidth(_COL_OPERATOR)
+        if self._can_modify_entries:
+            fitted[_COL_EDIT] = tbl.columnWidth(_COL_EDIT)
+            fitted[_COL_DELETE] = tbl.columnWidth(_COL_DELETE)
         tbl._fitted_column_widths = fitted
         self._pagination.update_state(self._page, len(self._cache), page_size=self.PAGE_SIZE)
 
@@ -722,6 +737,7 @@ class IncomeManagementPage(QWidget):
                 payload["particular"],
                 payload["amount"],
                 entry_date=payload["entry_date"],
+                operator_name=operator_name_for_role(self._user_role),
             )
         except ValueError as exc:
             theme.message_warning(self._window(), "Invalid entry", str(exc))
@@ -734,6 +750,13 @@ class IncomeManagementPage(QWidget):
         self._notify_data_changed()
 
     def _on_edit_entry(self, entry_id: int) -> None:
+        if not self._can_modify_entries:
+            theme.message_warning(
+                self._window(),
+                "Not permitted",
+                "Only an administrator can modify recorded entries.",
+            )
+            return
         entry = self._service.repo.get_entry(entry_id)
         if entry is None:
             theme.message_warning(self._window(), "Not found", "This entry no longer exists.")
@@ -753,12 +776,13 @@ class IncomeManagementPage(QWidget):
         payload = dialog.payload()
         try:
             if int(payload["income_id"]) != int(entry.income_id):
-                self._service.delete_entry(entry_id)
+                self._service.delete_entry(entry_id, actor_role=self._user_role)
                 self._service.add_entry(
                     payload["income_id"],
                     payload["particular"],
                     payload["amount"],
                     entry_date=payload["entry_date"],
+                    operator_name=operator_name_for_role(self._user_role),
                 )
             else:
                 self._service.update_entry(
@@ -766,6 +790,7 @@ class IncomeManagementPage(QWidget):
                     particular=payload["particular"],
                     amount=payload["amount"],
                     entry_date=payload["entry_date"],
+                    actor_role=self._user_role,
                 )
         except ValueError as exc:
             theme.message_warning(self._window(), "Invalid entry", str(exc))
@@ -777,6 +802,13 @@ class IncomeManagementPage(QWidget):
         self._notify_data_changed()
 
     def _on_delete_entry(self, entry_id: int) -> None:
+        if not self._can_modify_entries:
+            theme.message_warning(
+                self._window(),
+                "Not permitted",
+                "Only an administrator can delete recorded entries.",
+            )
+            return
         reply = theme.message_question(
             self._window(),
             "Confirm delete entry",
@@ -788,7 +820,7 @@ class IncomeManagementPage(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
         try:
-            self._service.delete_entry(entry_id)
+            self._service.delete_entry(entry_id, actor_role=self._user_role)
         except ValueError as exc:
             theme.message_warning(self._window(), "Delete failed", str(exc))
             return

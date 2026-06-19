@@ -69,6 +69,24 @@ class AcademicYearRepository:
             ).all()
         )
 
+    def get_predecessor(self, year: AcademicYear) -> AcademicYear | None:
+        """Return the academic year immediately before *year* in the school calendar."""
+        all_years = self.list_all()
+        for idx, row in enumerate(all_years):
+            if row.id == year.id and idx > 0:
+                return all_years[idx - 1]
+        return self.session.scalars(
+            select(AcademicYear)
+            .where(AcademicYear.start_date < year.start_date)
+            .order_by(AcademicYear.start_date.desc())
+            .limit(1)
+        ).first()
+
+    def find_by_start_date(self, start: date) -> AcademicYear | None:
+        return self.session.scalars(
+            select(AcademicYear).where(AcademicYear.start_date == start).limit(1)
+        ).first()
+
     def _overlaps(self, start: date, end: date, exclude_id: int | None = None) -> bool:
         if is_standard_academic_year_bounds(start, end):
             stmt = select(AcademicYear.id).where(AcademicYear.start_date == start)

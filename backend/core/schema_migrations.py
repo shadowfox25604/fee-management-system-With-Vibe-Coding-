@@ -367,12 +367,16 @@ def apply_sqlite_column_migrations(engine) -> None:
     _dedupe_misc_expenses_by_head(engine)
     _backfill_misc_expense_entry_dates(engine)
     _migrate_misc_expense_entry_revert_columns(engine)
+    _migrate_ledger_entry_operator_columns(engine)
     _ensure_payments_remark_column(engine)
     _backfill_payment_split_amounts(engine)
     _migrate_class_school_fees_per_year(engine)
+    _migrate_village_van_fees_per_year(engine)
     _migrate_academic_years_may_june_v2(engine)
-    _seed_misc_income_sample_v1(engine)
     _seed_app_login_users_v1(engine)
+    from backend.core.fee_head_bootstrap import ensure_default_fee_heads
+
+    ensure_default_fee_heads(engine)
     _ensure_payments_remark_column(engine)
     _ensure_payment_invoice_indexes(engine)
 
@@ -570,6 +574,80 @@ def _migrate_class_school_fees_per_year(engine) -> None:
 
         conn.execute(text("DROP TABLE class_school_fees_backup_mig"))
         conn.execute(text("INSERT INTO app_migrations (name) VALUES ('class_school_fees_per_year_v1')"))
+
+
+def _migrate_village_van_fees_per_year(engine) -> None:
+    """Scope village_van_fees by academic_year_id (one tariff matrix per year)."""
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("village_van_fees"):
+        return
+    cols = {c["name"] for c in insp.get_columns("village_van_fees")}
+    if "academic_year_id" in cols:
+        return
+
+    from backend.core.fee_control_constants import FIXED_VILLAGE_KEYS
+
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        if conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "village_van_fees_per_year_v1"},
+        ).fetchone():
+            return
+
+        conn.execute(
+            text("CREATE TABLE IF NOT EXISTS village_van_fees_backup_mig AS SELECT * FROM village_van_fees")
+        )
+        old_rows = conn.execute(text("SELECT village_key, amount FROM village_van_fees_backup_mig")).fetchall()
+        old_map = {str(k): float(a) for k, a in old_rows}
+
+        conn.execute(text("DROP TABLE village_van_fees"))
+        conn.execute(
+            text(
+                """
+                CREATE TABLE village_van_fees (
+                    village_key VARCHAR(80) NOT NULL,
+                    academic_year_id INTEGER NOT NULL REFERENCES academic_years(id),
+                    amount REAL NOT NULL,
+                    PRIMARY KEY (village_key, academic_year_id)
+                )
+                """
+            )
+        )
+
+        year_ids = [
+            int(r[0])
+            for r in conn.execute(text("SELECT id FROM academic_years ORDER BY start_date ASC")).fetchall()
+        ]
+        if not year_ids:
+            from datetime import date
+
+            start, end = _default_academic_year_bounds(date.today())
+            conn.execute(
+                text(
+                    "INSERT INTO academic_years (start_date, end_date, label) "
+                    "VALUES (:s, :e, :l)"
+                ),
+                {"s": start.isoformat(), "e": end.isoformat(), "l": ""},
+            )
+            year_ids = [int(conn.execute(text("SELECT last_insert_rowid()")).scalar())]
+
+        for year_id in year_ids:
+            keys = set(FIXED_VILLAGE_KEYS) | set(old_map.keys())
+            for village_key in sorted(keys, key=lambda x: str(x).lower()):
+                amount = old_map.get(village_key, 0.0)
+                conn.execute(
+                    text(
+                        "INSERT INTO village_van_fees (village_key, academic_year_id, amount) "
+                        "VALUES (:k, :y, :a)"
+                    ),
+                    {"k": village_key, "y": year_id, "a": amount},
+                )
+
+        conn.execute(text("DROP TABLE village_van_fees_backup_mig"))
+        conn.execute(text("INSERT INTO app_migrations (name) VALUES ('village_van_fees_per_year_v1')"))
 
 
 def _default_academic_year_bounds(as_of):
@@ -1703,6 +1781,33 @@ def _migrate_misc_expense_entry_revert_columns(engine) -> None:
             conn.execute(text("ALTER TABLE misc_expense_entries ADD COLUMN reverted_at DATETIME"))
 
 
+def _migrate_ledger_entry_operator_columns(engine) -> None:
+    from sqlalchemy import inspect
+
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        if insp.has_table("misc_expense_entries"):
+            entry_cols = {c["name"] for c in insp.get_columns("misc_expense_entries")}
+            if "operator_name" not in entry_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE misc_expense_entries "
+                        "ADD COLUMN operator_name VARCHAR(20) NOT NULL DEFAULT ''"
+                    )
+                )
+        if insp.has_table("misc_income_entries"):
+            entry_cols = {c["name"] for c in insp.get_columns("misc_income_entries")}
+            if "operator_name" not in entry_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE misc_income_entries "
+                        "ADD COLUMN operator_name VARCHAR(20) NOT NULL DEFAULT ''"
+                    )
+                )
+
+
 def _backfill_payment_split_amounts(engine) -> None:
     """Populate school_amount/van_amount on payments saved before split columns existed."""
     from sqlalchemy import inspect
@@ -1788,82 +1893,4 @@ def _seed_app_login_users_v1(engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text("INSERT INTO app_migrations (name) VALUES ('seed_app_login_users_v1')")
-        )
-
-
-def _seed_misc_income_sample_v1(engine) -> None:
-    """Seed sample miscellaneous income sources and entries for dashboard testing."""
-    import os
-
-    if os.environ.get("FEE_MANAGEMENT_TESTING") == "1":
-        return
-    if engine.dialect.name != "sqlite":
-        return
-    insp = inspect(engine)
-    if not insp.has_table("misc_incomes"):
-        return
-
-    with engine.begin() as conn:
-        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
-        if conn.execute(
-            text("SELECT 1 FROM app_migrations WHERE name = :n"),
-            {"n": "seed_misc_income_sample_v1"},
-        ).fetchone():
-            return
-
-    from datetime import date
-
-    from sqlalchemy.orm import sessionmaker
-
-    from backend.services.misc_income_service import MiscIncomeService
-
-    today = date.today()
-    month_start = date(today.year, today.month, 1)
-    samples: list[tuple[str, date, list[tuple[str, float, date]]]] = [
-        (
-            "Books",
-            month_start,
-            [
-                ("Grade 1 textbooks", 12500.0, today),
-                ("Library reference set", 3500.0, today),
-            ],
-        ),
-        (
-            "Uniform",
-            month_start,
-            [
-                ("Summer batch sales", 18000.0, today),
-            ],
-        ),
-        (
-            "Stationary",
-            month_start,
-            [
-                ("Notebooks and pens", 4200.0, today),
-                ("Art supplies", 2100.0, today),
-            ],
-        ),
-        (
-            "Donations",
-            month_start,
-            [
-                ("Alumni contribution", 5000.0, today),
-            ],
-        ),
-    ]
-
-    session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
-    try:
-        svc = MiscIncomeService(session)
-        if not svc.list_incomes():
-            for head, income_date, entries in samples:
-                income = svc.add_new_income(head, income_date, notes=f"Sample {head.lower()} income")
-                for particular, amount, entry_date in entries:
-                    svc.add_entry(income.id, particular, amount, entry_date=entry_date)
-    finally:
-        session.close()
-
-    with engine.begin() as conn:
-        conn.execute(
-            text("INSERT INTO app_migrations (name) VALUES ('seed_misc_income_sample_v1')")
         )

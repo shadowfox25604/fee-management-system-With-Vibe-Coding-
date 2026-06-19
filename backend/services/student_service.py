@@ -1,5 +1,10 @@
 from datetime import date, datetime
 
+from backend.core.student_roll_number import (
+    parse_roll_number,
+    validate_roll_number_for_create,
+    validate_roll_number_suffix_change,
+)
 from backend.repositories.student_repository import StudentRepository
 
 
@@ -12,6 +17,20 @@ class StudentService:
 
     def list_students(self):
         return self.repo.list_students()
+
+    def get_student(self, student_id: str):
+        return self.repo.get_by_id(student_id)
+
+    def suggest_next_roll_number(self, *, is_old: bool) -> str:
+        return self.repo.suggest_next_roll_number(is_old=is_old)
+
+    def delete_student(self, student_id: str) -> str:
+        student = self.repo.get_by_id(student_id)
+        if student is None:
+            raise ValueError(f"Student not found: {(student_id or '').strip()}")
+        name = str(student.full_name or student_id)
+        self.repo.delete_student_cascade(student.student_id)
+        return name
 
     def count_active_inactive(self) -> tuple[int, int]:
         return self.repo.count_active_inactive()
@@ -112,9 +131,17 @@ class StudentService:
         date_of_birth=None,
         caste="",
         aadhaar="",
+        initial_pending_fees: float | None = None,
+        *,
+        is_old_student: bool = False,
     ):
         if not (student_id or "").strip():
             raise ValueError("Student ID is required")
+        student_id = validate_roll_number_for_create(
+            self.repo.session,
+            student_id,
+            is_old=is_old_student,
+        )
         if not (full_name or "").strip():
             raise ValueError("Name is required")
         if not (class_name or "").strip():
@@ -151,7 +178,10 @@ class StudentService:
             sf = class_fee_service.school_fees_for_class_name(class_name)
         else:
             sf = 20000.0
-        return self.repo.create_student(
+        pending_amount = None
+        if initial_pending_fees is not None:
+            pending_amount = self._parse_fee_amount(initial_pending_fees, "Pending fees")
+        student = self.repo.create_student(
             student_id,
             full_name,
             class_name,
@@ -172,6 +202,63 @@ class StudentService:
             caste=caste_value,
             aadhaar=aadhaar_value,
         )
+        if pending_amount is not None and pending_amount > 0:
+            self._seed_import_pending_fees(student, pending_amount)
+        return student
+
+    def _seed_import_pending_fees(self, student, amount: float) -> None:
+        from backend.core.academic_year_dates import (
+            academic_year_bounds_for_start_year,
+            academic_year_start_year_for_date,
+        )
+        from backend.repositories.academic_year_repository import AcademicYearRepository
+        from backend.repositories.student_year_fee_repository import StudentYearFeeRepository
+
+        session = self.repo.session
+        year_repo = AcademicYearRepository(session)
+        current = year_repo.get_current()
+        if current is None:
+            years = year_repo.list_all()
+            if not years:
+                raise ValueError("No current academic year is configured.")
+            current = years[-1]
+
+        prior = year_repo.get_predecessor(current)
+        if prior is None:
+            prior_start_year = academic_year_start_year_for_date(current.start_date) - 1
+            start, end = academic_year_bounds_for_start_year(prior_start_year)
+            prior = year_repo.find_by_start_date(start)
+            if prior is None:
+                prior = year_repo.create(start, end)
+                session.commit()
+
+        student.created_at = datetime(
+            prior.start_date.year,
+            prior.start_date.month,
+            prior.start_date.day,
+            10,
+            0,
+            0,
+        )
+        sy = StudentYearFeeRepository(session)
+        prior_row = sy.get_or_create(student, prior.id, school_fees=float(amount), van_fees=0.0)
+        prior_row.opening_pending_fees = 0.0
+        current_row = sy.get(student.student_id, current.id)
+        if current_row is None:
+            current_row = sy.get_or_create(
+                student,
+                current.id,
+                school_fees=float(student.school_fees or 0.0),
+                van_fees=float(student.van_fees or 0.0),
+            )
+        else:
+            current_row.school_fees = float(student.school_fees or 0.0)
+            current_row.van_fees = float(student.van_fees or 0.0)
+        current_row.opening_pending_fees = 0.0
+        session.add(student)
+        session.add(prior_row)
+        session.add(current_row)
+        session.commit()
 
     def update_student(
         self,
@@ -201,6 +288,19 @@ class StudentService:
             raise ValueError("Student is required")
         if not (student_id or "").strip():
             raise ValueError("Student ID is required")
+        old_id = str(getattr(student, "student_id", "") or "").strip()
+        new_id = (student_id or "").strip()
+        if old_id.lower() != new_id.lower():
+            if parse_roll_number(old_id) is not None:
+                new_id = validate_roll_number_suffix_change(old_id, new_id)
+                if self.repo.get_by_id(new_id) is not None and new_id.lower() != old_id.lower():
+                    raise ValueError("Student ID already exists.")
+            else:
+                self.repo._ensure_unique_student_values(
+                    student_id=new_id,
+                    aadhaar=(aadhaar or "").strip(),
+                    exclude_student_id=old_id,
+                )
         if not (full_name or "").strip():
             raise ValueError("Name is required")
         if not (class_name or "").strip():
@@ -243,7 +343,7 @@ class StudentService:
             sf = float(getattr(student, "school_fees", 0) or 0.0)
         return self.repo.update_student(
             student,
-            student_id,
+            new_id,
             full_name,
             class_name,
             section,

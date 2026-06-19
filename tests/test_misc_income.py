@@ -2,6 +2,7 @@ from datetime import date
 
 import pytest
 
+from backend.core.app_roles import ROLE_ADMIN
 from backend.services.misc_income_service import MiscIncomeService
 
 
@@ -49,12 +50,17 @@ def test_update_and_delete_entry(db_session):
     income = svc.add_new_income("Uniform", date(2026, 3, 10))
     entry = svc.add_entry(income.id, "Summer batch", 4500.0)
 
-    svc.update_entry(entry.id, particular="Summer batch (updated)", amount=4800.0)
+    svc.update_entry(
+        entry.id,
+        particular="Summer batch (updated)",
+        amount=4800.0,
+        actor_role=ROLE_ADMIN,
+    )
     rows = svc.list_entry_history()
     assert rows[0]["particular"] == "Summer batch (updated)"
     assert rows[0]["amount"] == pytest.approx(4800.0, abs=0.01)
 
-    svc.delete_entry(entry.id)
+    svc.delete_entry(entry.id, actor_role=ROLE_ADMIN)
     rows = svc.list_entry_history()
     assert len(rows) == 1
     assert rows[0]["particular"] == "Summer batch (updated)"

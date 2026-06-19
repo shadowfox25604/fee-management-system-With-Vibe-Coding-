@@ -56,16 +56,18 @@ def test_create_student_own_transport_zeros_van_fee():
     apply_sqlite_data_migrations(db.engine)
     s = db.SessionLocal()
     try:
+        from backend.repositories.academic_year_repository import AcademicYearRepository
         from backend.repositories.village_van_fee_repository import VillageVanFeeRepository
         from backend.services.student_service import StudentService
         from backend.services.village_van_fee_service import VillageVanFeeService
 
-        VillageVanFeeRepository(s).upsert_stored_amount("Nagaram", 4500.0)
+        ay = AcademicYearRepository(s).ensure_bootstrap_year()
+        VillageVanFeeRepository(s).upsert_stored_amount("Nagaram", ay.id, 4500.0)
         s.commit()
 
         ss = StudentService(s)
         vfs = VillageVanFeeService(s)
-        sid = f"OWN{uuid.uuid4().hex[:8].upper()}"
+        sid = ss.suggest_next_roll_number(is_old=False)
         st = ss.create_student(
             sid,
             "Own Transport Test",
@@ -84,7 +86,7 @@ def test_create_student_own_transport_zeros_van_fee():
         assert st.transport_mode == "own"
         assert float(st.van_fees) == 0.0
 
-        sid2 = f"VAN{uuid.uuid4().hex[:8].upper()}"
+        sid2 = ss.suggest_next_roll_number(is_old=False)
         st2 = ss.create_student(
             sid2,
             "Van Transport Test",
@@ -827,6 +829,7 @@ def test_village_van_fee_apply_updates_students_scales_transport_leaves_tuition_
 
     from backend.core.database import Base
     from backend.models import VillageVanFee
+    from backend.repositories.academic_year_repository import AcademicYearRepository
     from backend.repositories.village_van_fee_repository import VillageVanFeeRepository
 
     mem = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
@@ -845,6 +848,8 @@ def test_village_van_fee_apply_updates_students_scales_transport_leaves_tuition_
             tr = FeeHead(head_name="Transport", frequency="monthly", default_amount=500.0)
             s.add(tr)
         s.flush()
+
+        ay = AcademicYearRepository(s).ensure_bootstrap_year()
 
         sid = f"VF{uuid.uuid4().hex[:8].upper()}"
         st = Student(
@@ -884,7 +889,7 @@ def test_village_van_fee_apply_updates_students_scales_transport_leaves_tuition_
         s.commit()
 
         vfr = VillageVanFeeRepository(s)
-        n = vfr.apply_village_van_fee("Nagaram", 4500.0)
+        n = vfr.apply_village_van_fee("Nagaram", 4500.0, ay.id)
         assert n == 1
 
         st2 = s.get(Student, st.student_id)
@@ -896,7 +901,7 @@ def test_village_van_fee_apply_updates_students_scales_transport_leaves_tuition_
         assert float(inv_s.amount_due) == 10000.0
         assert float(inv_v.amount_due) == 750.0
 
-        row = s.get(VillageVanFee, "Nagaram")
+        row = s.get(VillageVanFee, ("Nagaram", ay.id))
         assert row is not None
         assert float(row.amount) == 4500.0
 

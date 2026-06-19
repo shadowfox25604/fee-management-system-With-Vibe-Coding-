@@ -1,8 +1,9 @@
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select, text, update
 
 from backend.core.fee_control_constants import PASSED_OUT_CLASS_KEY, normalize_class_name
 from backend.core.student_enrollment import student_skips_academic_year_fee_provisioning
-from backend.models import Student
+from backend.core.student_roll_number import suggest_next_roll_number as _suggest_next_roll_number
+from backend.models import FeePlan, Invoice, Payment, PaymentAllocation, Student, StudentAcademicYearFee
 
 
 class StudentRepository:
@@ -13,14 +14,10 @@ class StudentRepository:
         self,
         *,
         student_id: str,
-        mobile_number_1: str,
-        mobile_number_2: str,
         aadhaar: str,
         exclude_student_id: str | None = None,
     ) -> None:
         sid = (student_id or "").strip()
-        m1 = (mobile_number_1 or "").strip()
-        m2 = (mobile_number_2 or "").strip()
         aadhaar_text = (aadhaar or "").strip()
 
         def _exists(stmt):
@@ -31,32 +28,6 @@ class StudentRepository:
             sid_stmt = sid_stmt.where(func.lower(Student.student_id) != exclude_student_id.lower())
         if _exists(sid_stmt):
             raise ValueError("Student ID already exists.")
-
-        if m1:
-            m1_stmt = select(Student).where(
-                or_(
-                    Student.mobile_number_1 == m1,
-                    Student.mobile_number_2 == m1,
-                    Student.phone == m1,
-                )
-            )
-            if exclude_student_id is not None:
-                m1_stmt = m1_stmt.where(func.lower(Student.student_id) != exclude_student_id.lower())
-            if _exists(m1_stmt):
-                raise ValueError("Mobile number 1 already exists.")
-
-        if m2:
-            m2_stmt = select(Student).where(
-                or_(
-                    Student.mobile_number_1 == m2,
-                    Student.mobile_number_2 == m2,
-                    Student.phone == m2,
-                )
-            )
-            if exclude_student_id is not None:
-                m2_stmt = m2_stmt.where(func.lower(Student.student_id) != exclude_student_id.lower())
-            if _exists(m2_stmt):
-                raise ValueError("Mobile number 2 already exists.")
 
         if aadhaar_text:
             aadhaar_stmt = select(Student).where(Student.aadhaar == aadhaar_text)
@@ -112,8 +83,6 @@ class StudentRepository:
         father = (father_name or guardian_name or "").strip()
         self._ensure_unique_student_values(
             student_id=student_id,
-            mobile_number_1=primary_mobile,
-            mobile_number_2=mobile_number_2,
             aadhaar=aadhaar,
         )
         student = Student(
@@ -174,12 +143,16 @@ class StudentRepository:
         father = (father_name or guardian_name or "").strip()
         self._ensure_unique_student_values(
             student_id=student_id,
-            mobile_number_1=primary_mobile,
-            mobile_number_2=mobile_number_2,
             aadhaar=aadhaar,
             exclude_student_id=str(getattr(student, "student_id", "") or ""),
         )
-        student.student_id = (student_id or "").strip()
+        old_id = str(getattr(student, "student_id", "") or "").strip()
+        new_id = (student_id or "").strip()
+        if old_id.lower() != new_id.lower():
+            self.rename_student_id(old_id, new_id)
+            student = self.get_by_id(new_id)
+            if student is None:
+                raise ValueError(f"Student not found after rename: {new_id}")
         student.full_name = (full_name or "").strip()
         student.gender = (gender or "").strip()
         student.father_name = father
@@ -348,3 +321,72 @@ class StudentRepository:
         if promoted:
             self.session.flush()
         return promoted
+
+    def delete_student_cascade(self, student_id: str) -> None:
+        """Remove student and all related payment, invoice, and fee rows."""
+        sid = (student_id or "").strip()
+        if not sid:
+            raise ValueError("Student ID is required.")
+        exists = self.session.scalar(select(Student.student_id).where(Student.student_id == sid))
+        if exists is None:
+            raise ValueError(f"Student not found: {sid}")
+
+        pay_ids = list(
+            self.session.scalars(select(Payment.id).where(Payment.student_id_fk == sid)).all()
+        )
+        if pay_ids:
+            self.session.execute(
+                delete(PaymentAllocation).where(PaymentAllocation.payment_id.in_(pay_ids))
+            )
+        self.session.execute(delete(Payment).where(Payment.student_id_fk == sid))
+        self.session.execute(delete(Invoice).where(Invoice.student_id_fk == sid))
+        self.session.execute(delete(FeePlan).where(FeePlan.student_id_fk == sid))
+        self.session.execute(
+            delete(StudentAcademicYearFee).where(StudentAcademicYearFee.student_id_fk == sid)
+        )
+        self.session.execute(delete(Student).where(Student.student_id == sid))
+        self.session.commit()
+
+    def get_by_id(self, student_id: str) -> Student | None:
+        sid = (student_id or "").strip()
+        if not sid:
+            return None
+        return self.session.get(Student, sid)
+
+    def suggest_next_roll_number(self, *, is_old: bool) -> str:
+        return _suggest_next_roll_number(self.session, is_old=is_old)
+
+    def rename_student_id(self, old_id: str, new_id: str) -> None:
+        old = (old_id or "").strip()
+        new = (new_id or "").strip()
+        if not old or not new:
+            raise ValueError("Student ID is required.")
+        if old.lower() == new.lower():
+            return
+        if self.get_by_id(old) is None:
+            raise ValueError(f"Student not found: {old}")
+        self._ensure_unique_student_values(student_id=new, aadhaar="", exclude_student_id=old)
+
+        bind = self.session.get_bind()
+        if bind is not None and bind.dialect.name == "sqlite":
+            self.session.execute(text("PRAGMA foreign_keys=OFF"))
+
+        self.session.execute(update(Student).where(Student.student_id == old).values(student_id=new))
+        self.session.execute(
+            update(StudentAcademicYearFee)
+            .where(StudentAcademicYearFee.student_id_fk == old)
+            .values(student_id_fk=new)
+        )
+        self.session.execute(
+            update(FeePlan).where(FeePlan.student_id_fk == old).values(student_id_fk=new)
+        )
+        self.session.execute(
+            update(Invoice).where(Invoice.student_id_fk == old).values(student_id_fk=new)
+        )
+        self.session.execute(
+            update(Payment).where(Payment.student_id_fk == old).values(student_id_fk=new)
+        )
+
+        if bind is not None and bind.dialect.name == "sqlite":
+            self.session.execute(text("PRAGMA foreign_keys=ON"))
+        self.session.flush()

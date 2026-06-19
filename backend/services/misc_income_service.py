@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
+from backend.core.app_roles import require_ledger_entry_modify_permission
 from backend.repositories.misc_income_repository import MiscIncomeRepository
 
 
@@ -33,7 +34,9 @@ class MiscIncomeService:
         head: str,
         income_date: date,
         notes: str = "",
+        actor_role: str,
     ):
+        require_ledger_entry_modify_permission(actor_role)
         return self.repo.update_income(
             income_id,
             head=head,
@@ -41,7 +44,8 @@ class MiscIncomeService:
             notes=notes,
         )
 
-    def delete_income(self, income_id: int) -> None:
+    def delete_income(self, income_id: int, *, actor_role: str) -> None:
+        require_ledger_entry_modify_permission(actor_role)
         self.repo.delete_income(income_id)
 
     def add_entry(
@@ -51,12 +55,14 @@ class MiscIncomeService:
         amount: float,
         *,
         entry_date: date | None = None,
+        operator_name: str = "",
     ):
         return self.repo.create_entry(
             income_id=income_id,
             particular=particular,
             amount=amount,
             entry_date=entry_date,
+            operator_name=operator_name,
         )
 
     def update_entry(
@@ -66,7 +72,9 @@ class MiscIncomeService:
         particular: str,
         amount: float,
         entry_date: date | None = None,
+        actor_role: str,
     ):
+        require_ledger_entry_modify_permission(actor_role)
         return self.repo.update_entry(
             entry_id,
             particular=particular,
@@ -74,7 +82,8 @@ class MiscIncomeService:
             entry_date=entry_date,
         )
 
-    def delete_entry(self, entry_id: int) -> None:
+    def delete_entry(self, entry_id: int, *, actor_role: str) -> None:
+        require_ledger_entry_modify_permission(actor_role)
         self.repo.delete_entry(entry_id)
 
     def list_entry_history(self, *, limit: int = 50000, search: str | None = None):

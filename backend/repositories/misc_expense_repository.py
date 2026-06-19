@@ -5,6 +5,7 @@ from datetime import date, datetime
 
 from sqlalchemy import func, or_, select
 
+from backend.core.app_roles import format_operator_display
 from backend.models import MiscExpense, MiscExpenseEntry
 
 
@@ -28,6 +29,7 @@ class MiscExpenseRepository:
             "amount": float(entry.amount or 0.0),
             "is_reverted": reverted,
             "status": "Expense reverted" if reverted else "Recorded",
+            "operator": format_operator_display(getattr(entry, "operator_name", "") or ""),
         }
 
     @staticmethod
@@ -135,6 +137,7 @@ class MiscExpenseRepository:
         particular: str,
         amount: float,
         entry_date: date | None = None,
+        operator_name: str = "",
     ) -> MiscExpenseEntry:
         expense = self.get_expense(expense_id)
         if expense is None:
@@ -150,6 +153,7 @@ class MiscExpenseRepository:
             entry_date=entry_date or date.today(),
             particular=text,
             amount=value,
+            operator_name=(operator_name or "").strip(),
         )
         self.session.add(row)
         self.session.commit()

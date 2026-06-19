@@ -98,6 +98,7 @@ class ClassSchoolFee(Base):
 class VillageVanFee(Base):
     __tablename__ = "village_van_fees"
     village_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    academic_year_id: Mapped[int] = mapped_column(ForeignKey("academic_years.id"), primary_key=True)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
 
 
@@ -176,6 +177,7 @@ class MiscExpenseEntry(Base):
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     is_reverted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     reverted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    operator_name: Mapped[str] = mapped_column(String(20), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
@@ -202,6 +204,7 @@ class MiscIncomeEntry(Base):
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     is_reverted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     reverted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    operator_name: Mapped[str] = mapped_column(String(20), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow

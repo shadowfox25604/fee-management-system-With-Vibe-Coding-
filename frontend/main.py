@@ -1,7 +1,6 @@
 import sys
 
 from PySide6.QtCore import QEventLoop, Qt
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QDialog
 from backend.core.database import Base, SessionLocal, engine
 from backend.core.master_key import ensure_master_key_file
@@ -13,8 +12,9 @@ from backend.models import entities  # noqa: F401
 from backend.services.backup_service import BackupService
 from frontend.ui.login_page import LoginDialog
 from frontend.ui.main_window import MainWindow
-from frontend.ui.school_branding import resolve_logo_path
+from frontend.ui.school_branding import app_window_icon
 from frontend.ui.theme import apply_app_theme
+from frontend.ui.window_utils import show_maximized_on_screen
 from frontend.single_instance import acquire_single_instance
 
 _APP_ID = "ACE.SchoolManagement.1"
@@ -39,9 +39,9 @@ def run():
     app.setApplicationDisplayName(_APP_NAME)
     app.setOrganizationName("ACE High School")
     app.setQuitOnLastWindowClosed(False)
-    logo_path = resolve_logo_path()
-    if logo_path is not None:
-        app.setWindowIcon(QIcon(str(logo_path)))
+    window_icon = app_window_icon()
+    if window_icon is not None:
+        app.setWindowIcon(window_icon)
     apply_app_theme(app)
 
     if not acquire_single_instance(app):
@@ -74,7 +74,7 @@ def run():
 
         window.logout_requested.connect(on_logout)
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        window.show()
+        show_maximized_on_screen(window)
 
         loop = QEventLoop()
         window.destroyed.connect(loop.quit)

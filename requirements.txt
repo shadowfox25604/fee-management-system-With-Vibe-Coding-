@@ -1,9 +1,153 @@
-pyside6
-sqlalchemy
-alembic
-pandas
-xlsxwriter
-reportlab
-pytest
-pyinstaller
-bcrypt
+# =============================================================================
+# ACE School Management — System & Software Requirements
+# =============================================================================
+#
+# Offline Windows desktop app for school fee management (PySide6 GUI + SQLite).
+#
+# ---------------------------------------------------------------------------
+# DO I NEED PYTHON INSTALLED?
+# ---------------------------------------------------------------------------
+#
+#   Deployment mode              Python required?
+#   --------------------------   ----------------
+#   Packaged .exe (school use)   NO  — Python is bundled inside the executable
+#   Run from source (dev / IT)   YES — Python 3.12 or newer must be installed
+#   Build the .exe               YES — Python 3.12+ plus build tools (see below)
+#
+# End users should use:  dist\ACE School Management.exe
+# Developers / IT use:   Python source setup (Section "Install from source" below)
+#
+# ---------------------------------------------------------------------------
+# MINIMUM SYSTEM REQUIREMENTS (packaged .exe — typical school PC)
+# ---------------------------------------------------------------------------
+#
+#   Operating system   Windows 10 (64-bit) or Windows 11
+#   Processor          Intel Core i3 / AMD equivalent (2 cores)
+#   Memory (RAM)       4 GB
+#   Storage            500 MB free disk space (app ~80 MB + database & backups)
+#   Display            1360 × 860 resolution
+#   Internet           Not required for daily use (only for initial install / updates)
+#   Other software     None — no Python, database server, or browser needed
+#
+# ---------------------------------------------------------------------------
+# RECOMMENDED SYSTEM REQUIREMENTS
+# ---------------------------------------------------------------------------
+#
+#   Operating system   Windows 11 (64-bit)
+#   Processor          Intel Core i5 / AMD Ryzen 5 (4 cores) or better
+#   Memory (RAM)       8 GB or more
+#   Storage            2 GB free on SSD (room for years of backups & exports)
+#   Display            1920 × 1080 (Full HD) or larger
+#   Internet           Optional — used only when downloading updates or dev setup
+#   Other software     Microsoft Visual C++ 2015–2022 Redistributable (x64)
+#                      — usually already present on Windows; install if the app
+#                        fails to start with a missing DLL error
+#
+# ---------------------------------------------------------------------------
+# MINIMUM REQUIREMENTS (run from source / development)
+# ---------------------------------------------------------------------------
+#
+#   Python             3.12+  (see pyproject.toml: requires-python = ">=3.12")
+#   Package manager    pip (built into Python) OR uv (recommended — see README)
+#   Disk space         ~1.5 GB (virtual environment + dependencies)
+#   PYTHONPATH         Must include project root when launching (see README §15)
+#
+# ---------------------------------------------------------------------------
+# RECOMMENDED REQUIREMENTS (development & building)
+# ---------------------------------------------------------------------------
+#
+#   Python             3.12.x (matches project lockfile; 3.13 also works)
+#   Package manager    uv  — faster, reproducible installs via uv.lock
+#   Git                For cloning and version control
+#   PowerShell         For scripts\build_ace_school_management.ps1
+#
+# ---------------------------------------------------------------------------
+# DATABASE & DATA STORAGE
+# ---------------------------------------------------------------------------
+#
+#   Database engine    SQLite 3 (embedded — ships with Python / bundled in .exe)
+#   External DB        NOT required (no PostgreSQL, MySQL, or Docker needed)
+#
+#   Packaged app data: %LOCALAPPDATA%\ACE School Management\
+#     - fee_management.db
+#     - backups\
+#     - master_key.txt
+#
+#   Source / dev data: <project>\data\
+#
+# ---------------------------------------------------------------------------
+# PYTHON LIBRARIES — WHAT TO INSTALL
+# ---------------------------------------------------------------------------
+#
+# A) RUNTIME (required to run the app from source)
+#
+#   Package       Purpose
+#   ---------     -------
+#   pyside6       Desktop GUI (Qt widgets, charts, dialogs)
+#   sqlalchemy    ORM and database access (SQLite)
+#   bcrypt        Password hashing for login accounts
+#   pandas        Data handling for Excel export helpers
+#   xlsxwriter    Excel (.xlsx) report exports
+#   reportlab     PDF receipts and PDF report exports
+#   alembic       Declared dependency (schema changes use custom SQLite migrations)
+#
+#   Transitive (installed automatically): numpy (via pandas), shiboken6, etc.
+#
+# B) DEVELOPMENT & TESTING (optional — not needed to run the app)
+#
+#   pytest        Automated test suite (tests\)
+#
+# C) BUILD TOOLS (optional — only when creating ACE School Management.exe)
+#
+#   pyinstaller   Bundles Python + libraries into a single Windows executable
+#
+# ---------------------------------------------------------------------------
+# INSTALL FROM SOURCE (quick reference)
+# ---------------------------------------------------------------------------
+#
+#   Option 1 — uv (recommended):
+#     cd "c:\Users\Acer\Desktop\fee management"
+#     uv venv
+#     .venv\Scripts\activate
+#     uv sync
+#     set PYTHONPATH=. && uv run python -m frontend.main
+#
+#   Option 2 — pip:
+#     cd "c:\Users\Acer\Desktop\fee management"
+#     python -m venv .venv
+#     .venv\Scripts\activate
+#     pip install -r requirements.txt
+#     set PYTHONPATH=. && python -m frontend.main
+#
+#   Build executable:
+#     powershell -ExecutionPolicy Bypass -File scripts\build_ace_school_management.ps1
+#
+#   Run tests:
+#     set PYTHONPATH=. && pytest -q
+#
+# =============================================================================
+# PIP PACKAGES (pinned to versions tested in uv.lock)
+# =============================================================================
+# Install runtime only:
+#   pip install pyside6 sqlalchemy bcrypt pandas xlsxwriter reportlab alembic
+#
+# Install everything (runtime + tests + build):
+#   pip install -r requirements.txt
+#
+# --- Runtime (required to run from source) ---
+
+pyside6==6.11.0
+sqlalchemy==2.0.49
+bcrypt==5.0.0
+pandas==3.0.2
+xlsxwriter==3.2.9
+reportlab==4.5.0
+alembic==1.18.4
+
+# --- Development & testing (optional) ---
+
+pytest==9.0.3
+
+# --- Build tools (optional — only for creating the .exe) ---
+
+pyinstaller==6.20.0

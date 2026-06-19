@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 )
 from sqlalchemy.exc import IntegrityError
 from backend.core.config import DB_PATH
+from backend.core.student_roll_number import parse_roll_number
 from backend.core.database import engine
 from backend.core.fee_control_constants import (
     FIXED_CLASS_KEYS,
@@ -43,7 +44,7 @@ from backend.core.fee_control_constants import (
     canonical_class_for_student_class,
     class_section_matches_query,
 )
-from backend.core.app_roles import ROLE_ACCOUNTANT, allowed_page_keys, default_page_key, role_display_name
+from backend.core.app_roles import ROLE_ACCOUNTANT, allowed_page_keys, default_page_key, format_operator_display, operator_name_for_role, role_display_name
 from backend.models import Student
 from backend.models.entities import User
 from backend.services.academic_year_service import AcademicYearService
@@ -77,6 +78,7 @@ from frontend.single_instance import release_single_instance_lock
 from frontend.ui.academic_year_dialog import AcademicYearDialog
 from frontend.ui.add_faculty_page import AddFacultyPage
 from frontend.ui.add_student_page import AddStudentPage
+from frontend.ui.delete_member_page import DeleteMemberPage
 from frontend.ui.app_shell import AppShell, navigation_for_role
 from frontend.ui.backup_page import BackupPage
 from frontend.ui.school_branding import (
@@ -84,7 +86,7 @@ from frontend.ui.school_branding import (
     APP_WINDOW_WIDTH,
     breadcrumb_trail,
     load_logo_pixmap,
-    resolve_logo_path,
+    app_window_icon,
     school_window_title,
 )
 from frontend.ui.edudash_widgets import CardTitleBar, GradientProfileCard, SurfaceCard, wrap_page
@@ -236,9 +238,9 @@ class MainWindow(QMainWindow):
         self._student_details_tab: StudentDetailsTab | None = None
         self._ui_animations: list[QPropertyAnimation] = []
         self.setWindowTitle(school_window_title())
-        logo_path = resolve_logo_path()
-        if logo_path is not None:
-            self.setWindowIcon(QIcon(str(logo_path)))
+        window_icon = app_window_icon()
+        if window_icon is not None:
+            self.setWindowIcon(window_icon)
         self.resize(APP_WINDOW_WIDTH, APP_WINDOW_HEIGHT)
         self._shell = AppShell(nav=navigation_for_role(current_user.role))
         self._tab_names = [
@@ -254,6 +256,7 @@ class MainWindow(QMainWindow):
             "Income Management",
             "Add Faculty",
             "Add Student",
+            "Delete Member",
             "Reports",
             "Backup",
             "Fee Control",
@@ -272,6 +275,7 @@ class MainWindow(QMainWindow):
             self._build_income_management_tab,
             self._build_add_faculty_tab,
             self._build_add_student_tab,
+            self._build_delete_member_tab,
             self._build_reports_tab,
             self._build_backup_tab,
             self._build_fee_control_tab,
@@ -403,7 +407,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, _do_reload)
 
     def _navigate_to_tab(self, tab_name: str) -> None:
-        aliases = {"Student List": "Student Search", "Add New Student": "Add Student"}
+        aliases = {"Student List": "Student Search"}
         target = aliases.get(tab_name, tab_name)
         if target not in self._allowed_pages:
             return
@@ -423,6 +427,9 @@ class MainWindow(QMainWindow):
         add_page = getattr(self, "_add_student_page", None)
         if add_page is not None:
             add_page.refresh_theme()
+        delete_page = getattr(self, "_delete_member_page", None)
+        if delete_page is not None:
+            delete_page.refresh_theme()
         add_faculty_page = getattr(self, "_add_faculty_page", None)
         if add_faculty_page is not None:
             add_faculty_page.refresh_theme()
@@ -1240,6 +1247,7 @@ class MainWindow(QMainWindow):
             self.misc_expense_service,
             parent=self,
             on_data_changed=self._refresh_dashboard,
+            user_role=self._current_user.role,
         )
         self._misc_expenses_page = page
         self._misc_add_new_expense_btn = page._add_new_expense_btn
@@ -1253,6 +1261,7 @@ class MainWindow(QMainWindow):
             self.misc_income_service,
             parent=self,
             on_data_changed=self._refresh_dashboard,
+            user_role=self._current_user.role,
         )
         self._income_management_page = page
         self._income_add_new_income_btn = page._add_new_income_btn
@@ -1280,6 +1289,32 @@ class MainWindow(QMainWindow):
         self.add_student_transport = page.transport
         self.add_student_status = page.status
         page.submit_btn.clicked.connect(self.add_student)
+        page.roll_refresh_requested.connect(self._refresh_add_student_roll_number)
+        self._refresh_add_student_roll_number(force=True)
+        return page
+
+    def _refresh_add_student_roll_number(self, *, force: bool = False) -> None:
+        page = getattr(self, "_add_student_page", None)
+        if page is None:
+            return
+        try:
+            suggested = self.student_service.suggest_next_roll_number(
+                is_old=page.is_old_student_mode(),
+            )
+        except ValueError:
+            return
+        page.sync_suggested_roll_number(suggested, force=force)
+
+    def _build_delete_member_tab(self):
+        page = DeleteMemberPage(
+            self.student_service,
+            self.expense_service,
+            self.payment_service,
+            parent=self,
+        )
+        self._delete_member_page = page
+        page.delete_student_btn.clicked.connect(self.delete_member_student)
+        page.delete_faculty_btn.clicked.connect(self.delete_member_faculty)
         return page
 
     def _populate_village_combo(self, combo: QComboBox) -> None:
@@ -1635,7 +1670,11 @@ class MainWindow(QMainWindow):
             theme.message_warning(self, "Invalid amount", "Enter a valid number for the van fee.")
             return
         try:
-            stored = self.village_van_fee_service.register_new_village(name_edit.text(), fee)
+            page = getattr(self, "_fee_control_page", None)
+            year_id = page.selected_van_academic_year_id if page is not None else None
+            stored = self.village_van_fee_service.register_new_village(
+                name_edit.text(), fee, academic_year_id=year_id
+            )
         except Exception as e:
             theme.message_critical(self, "Add village failed", str(e))
             return
@@ -1658,6 +1697,11 @@ class MainWindow(QMainWindow):
             return
         if tab_name == "Add Student":
             self._populate_village_combo(self.add_student_village)
+            self._refresh_add_student_roll_number(force=True)
+        if tab_name == "Delete Member":
+            delete_page = getattr(self, "_delete_member_page", None)
+            if delete_page is not None:
+                delete_page.reload_pickers()
         if index == getattr(self, "_add_faculty_tab_index", -1):
             page = getattr(self, "_add_faculty_page", None)
             if page is not None:
@@ -1823,7 +1867,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._salary_history_tab_filter, 1)
         layout.addLayout(toolbar)
         card = SurfaceCard()
-        self._salary_history_tab_table = QTableWidget(0, 11)
+        self._salary_history_tab_table = QTableWidget(0, 12)
         self._salary_history_tab_table.setHorizontalHeaderLabels(
             [
                 "Date",
@@ -1835,6 +1879,7 @@ class MainWindow(QMainWindow):
                 "Base (₹)",
                 "Paid (₹)",
                 "Notes",
+                "Operator",
                 "Status",
                 "Undo",
             ]
@@ -1954,7 +1999,8 @@ class MainWindow(QMainWindow):
             tbl.setItem(i, 6, QTableWidgetItem(f"{float(r.get('base_amount', 0) or 0):.2f}"))
             tbl.setItem(i, 7, QTableWidgetItem(f"{float(r.get('amount', 0) or 0):.2f}"))
             tbl.setItem(i, 8, QTableWidgetItem(str(r.get("notes") or "")))
-            tbl.setItem(i, 9, QTableWidgetItem(str(r.get("status") or "Paid")))
+            tbl.setItem(i, 9, QTableWidgetItem(format_operator_display(str(r.get("operator") or ""))))
+            tbl.setItem(i, 10, QTableWidgetItem(str(r.get("status") or "Paid")))
             undo_btn = QPushButton("Undo")
             style_fee_action_button(undo_btn, width=fee_action_button_width(undo_btn, min_width=92))
             if bool(r.get("is_reverted", False)):
@@ -1964,9 +2010,9 @@ class MainWindow(QMainWindow):
                 undo_btn.clicked.connect(
                     lambda _=False, payment_row=dict(r): self._on_salary_history_tab_undo(payment_row)
                 )
-            tbl.setCellWidget(i, 10, undo_btn)
+            tbl.setCellWidget(i, 11, undo_btn)
         tbl.resizeColumnsToContents()
-        tbl.setColumnWidth(10, max(tbl.columnWidth(10), 116))
+        tbl.setColumnWidth(11, max(tbl.columnWidth(11), 116))
         if hasattr(self, "_salary_history_tab_pagination"):
             self._salary_history_tab_pagination.update_state(
                 self._salary_history_tab_page, len(self._salary_history_tab_cache)
@@ -3606,6 +3652,7 @@ class MainWindow(QMainWindow):
                     month_label=str(payload["month_label"]),
                     expense_date=payload["payment_date"],
                     notes=str(payload["notes"]),
+                    operator_name=operator_name_for_role(self._current_user.role),
                 )
             except ValueError as e:
                 theme.message_warning(dialog, "Salary save error", str(e))
@@ -3758,7 +3805,7 @@ class MainWindow(QMainWindow):
             tbl.setItem(i, 4, QTableWidgetItem(f"{float(r['amount']):.2f}"))
             tbl.setItem(i, 5, QTableWidgetItem(f"{float(r['discount']):.2f}"))
             tbl.setItem(i, 6, QTableWidgetItem(str(r["mode"])))
-            tbl.setItem(i, 7, QTableWidgetItem(str(r["operator"])))
+            tbl.setItem(i, 7, QTableWidgetItem(format_operator_display(str(r["operator"]))))
             tbl.setItem(i, 8, QTableWidgetItem(str(r.get("remark") or "")))
             tbl.setItem(i, 9, QTableWidgetItem(str(r.get("status") or "Paid")))
             print_btn = QPushButton("Print Receipt")
@@ -3908,7 +3955,9 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_van_fee_control_amount_edits"):
             return
         for village_key, edit in self._van_fee_control_amount_edits.items():
-            amt = self.village_van_fee_service.display_amount_for_village(village_key)
+            page = getattr(self, "_fee_control_page", None)
+            year_id = page.selected_van_academic_year_id if page is not None else None
+            amt = self.village_van_fee_service.display_amount_for_village(village_key, year_id)
             edit.setText(f"{amt:.2f}")
 
     def _on_fee_control_apply_clicked(self, class_key: str):
@@ -3972,6 +4021,18 @@ class MainWindow(QMainWindow):
             theme.message_critical(self, "Fee update failed", str(e))
 
     def _on_van_fee_control_apply_clicked(self, village_key: str):
+        page = getattr(self, "_fee_control_page", None)
+        year_id = page.selected_van_academic_year_id if page is not None else None
+        if year_id is None:
+            theme.message_warning(self, "Academic year required", "Select an academic year before applying village van fees.")
+            return
+        if page is not None and not page.selected_van_year_editable:
+            theme.message_warning(
+                self,
+                "Academic year locked",
+                "Village van fees cannot be changed for an academic year that has already ended.",
+            )
+            return
         edit = self._van_fee_control_amount_edits.get(village_key)
         if edit is None:
             return
@@ -4000,7 +4061,7 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
         try:
-            updated = self.village_van_fee_service.apply_village_van_fee(village_key, new_amt)
+            updated = self.village_van_fee_service.apply_village_van_fee(village_key, new_amt, year_id)
             theme.message_information(
                 self,
                 "Fee updated",
@@ -4386,7 +4447,22 @@ class MainWindow(QMainWindow):
         details_box = QGroupBox("Student Information")
         details_layout = QFormLayout(details_box)
         lbl_created = QLabel(str(student.created_at or "-"))
+        roll_parts = parse_roll_number(str(student.student_id or ""))
         edit_student_id = QLineEdit(str(student.student_id or ""))
+        edit_roll_suffix = None
+        roll_edit_row = None
+        if roll_parts is not None:
+            roll_edit_row = QWidget()
+            roll_edit_layout = QHBoxLayout(roll_edit_row)
+            roll_edit_layout.setContentsMargins(0, 0, 0, 0)
+            roll_edit_layout.setSpacing(8)
+            lbl_roll_prefix = QLabel(roll_parts.compose()[:-4])
+            lbl_roll_prefix.setProperty("role", "muted")
+            edit_roll_suffix = QLineEdit(f"{roll_parts.sequence:04d}")
+            edit_roll_suffix.setMaxLength(4)
+            edit_roll_suffix.setFixedWidth(72)
+            roll_edit_layout.addWidget(lbl_roll_prefix)
+            roll_edit_layout.addWidget(edit_roll_suffix, 1)
         edit_name = QLineEdit(str(student.full_name or ""))
         edit_class = QComboBox()
         self._populate_class_combo(edit_class)
@@ -4456,7 +4532,10 @@ class MainWindow(QMainWindow):
         if status_index >= 0:
             edit_status.setCurrentIndex(status_index)
         details_layout.addRow("Created At", lbl_created)
-        details_layout.addRow("Student ID", edit_student_id)
+        if roll_edit_row is not None:
+            details_layout.addRow("Student ID", roll_edit_row)
+        else:
+            details_layout.addRow("Student ID", edit_student_id)
         details_layout.addRow("Name", edit_name)
         details_layout.addRow("Gender", edit_gender)
         details_layout.addRow("Father Name", edit_father_name)
@@ -4499,9 +4578,27 @@ class MainWindow(QMainWindow):
         layout.addWidget(buttons)
         buttons.rejected.connect(dialog.reject)
 
+        def _student_id_for_save() -> str:
+            if roll_parts is not None and edit_roll_suffix is not None:
+                suffix_text = (edit_roll_suffix.text() or "").strip()
+                if not suffix_text:
+                    raise ValueError("Roll Number sequence is required.")
+                if not suffix_text.isdigit():
+                    raise ValueError("Roll Number sequence must contain digits only.")
+                suffix_value = int(suffix_text)
+                if suffix_value < 1 or suffix_value > 9999:
+                    raise ValueError("Roll Number sequence must be between 0001 and 9999.")
+                return f"{roll_parts.compose()[:-4]}{suffix_value:04d}"
+            text = (edit_student_id.text() or "").strip()
+            if not text:
+                raise ValueError("Student ID is required.")
+            return text
+
         def on_save():
-            if not edit_student_id.text().strip():
-                theme.message_warning(dialog, "Validation", "Student ID is required.")
+            try:
+                student_id_value = _student_id_for_save()
+            except ValueError as exc:
+                theme.message_warning(dialog, "Validation", str(exc))
                 return
             if not edit_name.text().strip():
                 theme.message_warning(dialog, "Validation", "Name is required.")
@@ -4549,7 +4646,7 @@ class MainWindow(QMainWindow):
             try:
                 updated = self.student_service.update_student(
                     student,
-                    edit_student_id.text(),
+                    student_id_value,
                     edit_name.text(),
                     edit_class.currentText(),
                     edit_section.currentText(),
@@ -4591,7 +4688,7 @@ class MainWindow(QMainWindow):
                 theme.message_warning(
                     dialog,
                     "Duplicate value",
-                    "Student ID, mobile number 1, mobile number 2, or aadhaar already exists. Please use unique values.",
+                    "Student ID or aadhaar already exists. Please use unique values.",
                 )
             except Exception as e:
                 self.session.rollback()
@@ -4918,7 +5015,7 @@ class MainWindow(QMainWindow):
                     van_amt,
                     school_amt,
                     popup_mode.text() or "cash",
-                    "desktop_user",
+                    operator_name_for_role(self._current_user.role),
                     disc_amt,
                     pay_date,
                     remark=remark,
@@ -4936,7 +5033,7 @@ class MainWindow(QMainWindow):
                     van_amt,
                     school_amt,
                     popup_mode.text() or "cash",
-                    "desktop_user",
+                    operator_name_for_role(self._current_user.role),
                     disc_amt,
                     pay_date,
                     remark=remark,
@@ -5356,8 +5453,9 @@ class MainWindow(QMainWindow):
                 return
         try:
             optional = page.optional_fields_for_submit() if page is not None else {}
+            initial_pending = page.pending_fees_value() if page is not None and page.is_old_student_mode() else None
             st = self.student_service.create_student(
-                self.add_student_id.text(),
+                page.composed_roll_number(),
                 self.add_student_name.text(),
                 self.add_student_class.currentText(),
                 self.add_student_section.currentText(),
@@ -5376,8 +5474,13 @@ class MainWindow(QMainWindow):
                 date_of_birth=optional.get("date_of_birth", page.date_of_birth_value() if page is not None else None),
                 caste=optional.get("caste", self.add_student_caste.text()),
                 aadhaar=optional.get("aadhaar", self.add_student_aadhaar.text()),
+                initial_pending_fees=initial_pending,
+                is_old_student=page.is_old_student_mode() if page is not None else False,
             )
-            self.add_student_id.clear()
+            if page is not None:
+                page.clear_roll_suffix()
+            else:
+                self.add_student_id.clear()
             self.add_student_name.clear()
             self.add_student_gender.setCurrentIndex(0)
             self.add_student_father_name.clear()
@@ -5392,6 +5495,9 @@ class MainWindow(QMainWindow):
             self.add_student_village.setCurrentIndex(0)
             self.add_student_transport.setCurrentIndex(0)
             self.add_student_status.setCurrentIndex(0)
+            if page is not None:
+                page.reset_student_mode()
+            self._refresh_add_student_roll_number(force=True)
             self._load_report_filter_values()
             self._invalidate_payment_student_cache()
             self.perform_search(reset_page=True)
@@ -5403,11 +5509,116 @@ class MainWindow(QMainWindow):
             theme.message_warning(
                 self,
                 "Duplicate value",
-                "Student ID, mobile number 1, mobile number 2, or aadhaar already exists. Please use unique values.",
+                "Student ID or aadhaar already exists. Please use unique values.",
             )
         except Exception as e:
             self.session.rollback()
             theme.message_critical(self, "Add student error", str(e))
+
+    def delete_member_student(self):
+        from backend.core.member_delete_policy import (
+            student_delete_requires_extended_warnings,
+            student_delete_summary_lines,
+        )
+        from backend.core.fee_due_display import pending_fees
+
+        page = getattr(self, "_delete_member_page", None)
+        sid = page.selected_student_id() if page is not None else None
+        if not sid:
+            theme.message_warning(self, "Validation", "Please select a student to delete.")
+            return
+        student = self.student_service.get_student(sid)
+        if student is None:
+            theme.message_warning(self, "Not found", "The selected student could not be found.")
+            return
+        due = self.payment_service.get_student_due_breakdown(sid)
+        pending = pending_fees(due)
+        if student_delete_requires_extended_warnings(student, pending):
+            warn_text = "\n".join(student_delete_summary_lines(student, due))
+            proceed = theme.message_question(
+                self,
+                "Cannot undo — review before deleting",
+                warn_text + "\n\nDo you want to continue?",
+                default_button=QMessageBox.StandardButton.No,
+            )
+            if proceed != QMessageBox.StandardButton.Yes:
+                return
+            confirm = theme.message_question(
+                self,
+                "Permanently delete student",
+                f"Permanently delete {student.full_name} ({student.student_id})? "
+                "This cannot be undone.",
+                default_button=QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+        else:
+            confirm = theme.message_question(
+                self,
+                "Delete student",
+                f"Delete {student.full_name} ({student.student_id})? "
+                "This permanently removes the student and all related fee records.",
+                default_button=QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            name = self.student_service.delete_student(sid)
+            if page is not None:
+                page.reload_pickers()
+            self._load_report_filter_values()
+            self._invalidate_payment_student_cache()
+            self.perform_search(reset_page=True)
+            theme.message_information(
+                self,
+                "Student deleted",
+                f"Student {name} ({sid}) was permanently removed.",
+            )
+        except ValueError as e:
+            theme.message_warning(self, "Validation", str(e))
+        except Exception as e:
+            self.session.rollback()
+            theme.message_critical(self, "Delete student error", str(e))
+
+    def delete_member_faculty(self):
+        page = getattr(self, "_delete_member_page", None)
+        eid = page.selected_employee_id() if page is not None else None
+        if not eid:
+            theme.message_warning(self, "Validation", "Please select a faculty member to delete.")
+            return
+        faculty_name = ""
+        for row in self.expense_service.list_faculty_salaries(active_only=False):
+            if (getattr(row, "employee_id", None) or "").strip().lower() == eid.lower():
+                faculty_name = str(row.faculty_name or "")
+                break
+        if not faculty_name:
+            theme.message_warning(self, "Not found", "The selected faculty member could not be found.")
+            return
+        confirm = theme.message_question(
+            self,
+            "Delete faculty",
+            f"Delete {faculty_name} ({eid})?\n\n"
+            "This removes the faculty profile, attendance records, "
+            "and all salary payment history. This cannot be undone.",
+            default_button=QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.expense_service.purge_faculty_by_employee_id(eid)
+            if page is not None:
+                page.reload_pickers()
+            theme.message_information(
+                self,
+                "Faculty deleted",
+                f"Faculty {faculty_name} ({eid}) was permanently removed.",
+            )
+        except ValueError as e:
+            theme.message_warning(self, "Validation", str(e))
+        except Exception as e:
+            self.session.rollback()
+            theme.message_critical(self, "Delete faculty error", str(e))
+
     def load_defaulters(self, reset_page: bool = True):
         selected_class = self.report_class.currentData()
         selected_section = self.report_section.currentData()

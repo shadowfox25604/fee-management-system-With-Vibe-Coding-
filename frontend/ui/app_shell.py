@@ -68,7 +68,8 @@ DEFAULT_NAV: list[NavGroup] = [
         "Admin Control",
         "🛡",
         children=[
-            NavLeaf("Add New Student", "Add Student"),
+            NavLeaf("Add Student", "Add Student"),
+            NavLeaf("Delete Member", "Delete Member"),
             NavLeaf("Add Faculty", "Add Faculty"),
             NavLeaf("Salary Control", "Salary Control"),
             NavLeaf("Fee Control", "Fee Control"),
@@ -81,6 +82,7 @@ DEFAULT_NAV: list[NavGroup] = [
 
 ACCOUNTANT_NAV: list[NavGroup] = [
     NavGroup("Collect Payment", "₹", page_key="Collect Payment"),
+    NavGroup("Miscellaneous", "💸", page_key="Miscellaneous"),
     NavGroup("Income Management", "📥", page_key="Income Management"),
 ]
 

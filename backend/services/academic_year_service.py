@@ -93,6 +93,13 @@ class AcademicYearService:
             except Exception as exc:
                 self.session.rollback()
                 raise AcademicYearProvisionError(year, exc) from exc
+        if village_fee_service is not None:
+            try:
+                village_fee_service.copy_tariffs_to_new_year(year.id)
+                self.session.commit()
+            except Exception as exc:
+                self.session.rollback()
+                raise AcademicYearProvisionError(year, exc) from exc
         if provision_students and class_fee_service and village_fee_service:
             try:
                 rollover = FeeRolloverService(self.session)
@@ -156,7 +163,7 @@ class AcademicYearService:
             return class_fee_service.school_fees_for_class_name(class_name, year.id)
 
         def van_for_village(village):
-            return village_fee_service.van_fees_for_village_name(village or "")
+            return village_fee_service.van_fees_for_village_name(village or "", year.id)
 
         self.year_fee_repo.provision_all_students_for_year(
             year.id, school_for_class, van_for_village

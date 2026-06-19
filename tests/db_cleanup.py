@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import re
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.models import FeePlan, Invoice, Payment, PaymentAllocation, Student, StudentAcademicYearFee
+from backend.models import Student
 
 # Roll numbers created by tests/test_core.py and tests/test_academic_years.py
 _TEST_ROLL_PREFIXES = (
@@ -72,18 +72,12 @@ def delete_student_and_related(session: Session, student_pk: str | None) -> None
     """Remove one student row and payments, allocations, invoices, fee plans, year fees."""
     if student_pk is None:
         return
-    exists = session.scalar(select(Student.student_id).where(Student.student_id == student_pk))
-    if exists is None:
+    from backend.repositories.student_repository import StudentRepository
+
+    repo = StudentRepository(session)
+    if repo.get_by_id(str(student_pk)) is None:
         return
-    pay_ids = list(session.scalars(select(Payment.id).where(Payment.student_id_fk == student_pk)).all())
-    if pay_ids:
-        session.execute(delete(PaymentAllocation).where(PaymentAllocation.payment_id.in_(pay_ids)))
-    session.execute(delete(Payment).where(Payment.student_id_fk == student_pk))
-    session.execute(delete(Invoice).where(Invoice.student_id_fk == student_pk))
-    session.execute(delete(FeePlan).where(FeePlan.student_id_fk == student_pk))
-    session.execute(delete(StudentAcademicYearFee).where(StudentAcademicYearFee.student_id_fk == student_pk))
-    session.execute(delete(Student).where(Student.student_id == student_pk))
-    session.commit()
+    repo.delete_student_cascade(str(student_pk))
 
 
 def cleanup_test_students(session: Session, student_pks: list[str | None]) -> None:

@@ -474,3 +474,7 @@ class ExpenseService:
     def purge_faculty_by_name(self, faculty_name: str) -> dict[str, int]:
         """Delete faculty (if present), attendance, and salary history rows for this name."""
         return self.repo.purge_faculty_by_name(faculty_name)
+
+    def purge_faculty_by_employee_id(self, employee_id: str) -> dict[str, int]:
+        """Delete faculty profile, attendance, and salary history by employee ID."""
+        return self.repo.purge_faculty_by_employee_id(employee_id)
