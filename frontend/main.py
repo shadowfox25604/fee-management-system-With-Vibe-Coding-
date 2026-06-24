@@ -34,6 +34,9 @@ def _configure_windows_taskbar() -> None:
 
 def run():
     _configure_windows_taskbar()
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     app = QApplication(sys.argv)
     app.setApplicationName(_APP_NAME)
     app.setApplicationDisplayName(_APP_NAME)

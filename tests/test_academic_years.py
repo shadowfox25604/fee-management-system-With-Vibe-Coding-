@@ -432,7 +432,7 @@ def test_next_class_key_progression():
     assert next_class_key(PASSED_OUT_CLASS_KEY) is None
     assert next_class_key("passed out") is None
     assert next_class_key("11") is None
-    assert next_class_key("Nursery") is None
+    assert next_class_key("Nursery") == "LKG"
     assert next_class_key("unknown") is None
 
     for idx, key in enumerate(FIXED_CLASS_KEYS[:-1]):
@@ -441,7 +441,7 @@ def test_next_class_key_progression():
 
 
 def test_create_year_promotes_students(db_session):
-    from backend.core.fee_control_constants import next_class_key
+    from backend.core.fee_control_constants import FIXED_CLASS_KEYS, next_class_key
     from backend.services.class_fee_service import ClassFeeService
     from backend.services.village_van_fee_service import VillageVanFeeService
 
@@ -452,7 +452,7 @@ def test_create_year_promotes_students(db_session):
     db_session.commit()
     class_svc = ClassFeeService(db_session)
     year_2024 = ay_repo.list_all()[0]
-    for class_key in ("LKG", "UKG", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
+    for class_key in FIXED_CLASS_KEYS:
         class_svc.repo.upsert_stored_amount(class_key, year_2024.id, 20000.0)
     db_session.commit()
 
@@ -490,8 +490,8 @@ def test_create_year_promotes_students(db_session):
     )
 
 
-def test_create_year_passes_out_class_10_students(db_session):
-    from backend.core.fee_control_constants import PASSED_OUT_CLASS_KEY
+def test_create_year_promotes_nursery_to_lkg(db_session):
+    from backend.core.fee_control_constants import FIXED_CLASS_KEYS, next_class_key
     from backend.services.class_fee_service import ClassFeeService
     from backend.services.village_van_fee_service import VillageVanFeeService
 
@@ -502,7 +502,57 @@ def test_create_year_passes_out_class_10_students(db_session):
     db_session.commit()
     class_svc = ClassFeeService(db_session)
     year_2024 = ay_repo.list_all()[0]
-    for class_key in ("LKG", "UKG", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
+    for class_key in FIXED_CLASS_KEYS:
+        class_svc.repo.upsert_stored_amount(class_key, year_2024.id, 20000.0)
+    db_session.commit()
+
+    st = Student(
+        student_id=f"NURS-{uuid.uuid4().hex[:8]}",
+        full_name="Nursery Student",
+        class_name="Nursery",
+        section="A",
+        phone="9876543213",
+        guardian_name="G",
+        status="active",
+        school_fees=10000.0,
+        van_fees=500.0,
+    )
+    db_session.add(st)
+    db_session.commit()
+
+    village_svc = VillageVanFeeService(db_session)
+    ay_svc = AcademicYearService(db_session)
+    ay_svc.create_year(
+        date(2025, 5, 17),
+        date(2026, 4, 18),
+        "2025-26",
+        class_fee_service=class_svc,
+        village_fee_service=village_svc,
+    )
+    db_session.refresh(st)
+
+    assert st.class_name == next_class_key("Nursery")
+    new_year = ay_repo.list_all()[-1]
+    year_row = StudentYearFeeRepository(db_session).get(st.student_id, new_year.id)
+    assert year_row is not None
+    assert year_row.school_fees == pytest.approx(
+        class_svc.school_fees_for_class_name("LKG", new_year.id), abs=0.01
+    )
+
+
+def test_create_year_passes_out_class_10_students(db_session):
+    from backend.core.fee_control_constants import FIXED_CLASS_KEYS, PASSED_OUT_CLASS_KEY
+    from backend.services.class_fee_service import ClassFeeService
+    from backend.services.village_van_fee_service import VillageVanFeeService
+
+    ay_repo = AcademicYearRepository(db_session)
+    clear_all_academic_years(db_session)
+
+    ay_repo.create(date(2024, 5, 17), date(2025, 4, 18), "2024-25")
+    db_session.commit()
+    class_svc = ClassFeeService(db_session)
+    year_2024 = ay_repo.list_all()[0]
+    for class_key in FIXED_CLASS_KEYS:
         class_svc.repo.upsert_stored_amount(class_key, year_2024.id, 20000.0)
     db_session.commit()
 
@@ -540,6 +590,7 @@ def test_create_year_passes_out_class_10_students(db_session):
 
 
 def test_create_year_skips_inactive_students(db_session):
+    from backend.core.fee_control_constants import FIXED_CLASS_KEYS
     from backend.services.class_fee_service import ClassFeeService
     from backend.services.village_van_fee_service import VillageVanFeeService
 
@@ -550,7 +601,7 @@ def test_create_year_skips_inactive_students(db_session):
     db_session.commit()
     class_svc = ClassFeeService(db_session)
     year_2024 = ay_repo.list_all()[0]
-    for class_key in ("LKG", "UKG", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
+    for class_key in FIXED_CLASS_KEYS:
         class_svc.repo.upsert_stored_amount(class_key, year_2024.id, 20000.0)
     db_session.commit()
 

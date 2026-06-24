@@ -34,7 +34,7 @@ _PAD = 12
 
 
 def _class_label(key: str) -> str:
-    return key if key in ("LKG", "UKG") else f"Class {key}"
+    return key if key in ("Nursery", "LKG", "UKG") else f"Class {key}"
 
 
 def _apply_w() -> int:
@@ -598,7 +598,7 @@ class FeeControlPage(QWidget):
     def reload_stats(self) -> None:
         self._reload_school_year_combo()
         n_v = len(self._van_svc.list_village_keys_for_fee_control(self.selected_van_academic_year_id))
-        self._m_classes.update_metric(str(len(FIXED_CLASS_KEYS)), "LKG → Class 10")
+        self._m_classes.update_metric(str(len(FIXED_CLASS_KEYS)), "Nursery → Class 10")
         self._m_villages.update_metric(str(n_v), "Van transport routes")
         cur = self._year_svc.get_current()
         if cur is not None:

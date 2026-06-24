@@ -8,8 +8,8 @@ from sqlalchemy.orm import sessionmaker
 from backend.models.entities import FeeHead
 
 _DEFAULT_FEE_HEADS: tuple[tuple[str, str, float], ...] = (
-    ("Tuition", "monthly", 2000.0),
-    ("Transport", "monthly", 500.0),
+    ("Tuition", "monthly", 0.0),
+    ("Transport", "monthly", 0.0),
 )
 
 

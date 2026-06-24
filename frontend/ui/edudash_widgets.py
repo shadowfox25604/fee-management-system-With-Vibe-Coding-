@@ -4,13 +4,24 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Property, QEasingCurve, QPointF, QRectF, QSize, Qt, QPropertyAnimation
+from PySide6.QtCore import (
+    Property,
+    QEasingCurve,
+    QPoint,
+    QPointF,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QPropertyAnimation,
+)
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -1443,7 +1454,13 @@ class FormField(QWidget):
 
 
 class FormGrid(QWidget):
-  """Responsive N-column form grid."""
+  """Responsive N-column form grid that reflows columns to fit the width.
+
+  ``columns`` is the maximum (used on wide displays); on narrower or scaled
+  screens the grid steps down toward a single column so fields are never
+  clipped or pushed off-screen."""
+
+  _MIN_FIELD_WIDTH = 230
 
   def __init__(self, columns: int = 4, parent=None):
     super().__init__(parent)
@@ -1451,20 +1468,158 @@ class FormGrid(QWidget):
     self._grid.setContentsMargins(0, 0, 0, 0)
     self._grid.setHorizontalSpacing(16)
     self._grid.setVerticalSpacing(16)
-    self._cols = columns
-    self._row = 0
-    self._col = 0
+    self._max_cols = max(1, columns)
+    self._cols = self._max_cols
+    self._fields: list[tuple[QWidget, int]] = []
 
   def add_field(self, field: QWidget, colspan: int = 1) -> None:
-    self._grid.addWidget(field, self._row, self._col, 1, colspan)
-    self._col += colspan
-    if self._col >= self._cols:
-      self._col = 0
-      self._row += 1
+    self._fields.append((field, max(1, colspan)))
+    self._relayout()
 
   def next_row(self) -> None:
-    self._col = 0
-    self._row += 1
+    # Retained for backwards compatibility; reflow ignores manual row breaks.
+    pass
+
+  def _columns_for_width(self, width: int) -> int:
+    if width <= 0:
+      return self._max_cols
+    spacing = self._grid.horizontalSpacing()
+    fit = (width + spacing) // (self._MIN_FIELD_WIDTH + spacing)
+    return max(1, min(self._max_cols, int(fit)))
+
+  def minimumSizeHint(self) -> QSize:
+    # Report a single-column minimum width so the grid is allowed to shrink and
+    # reflow to fewer columns instead of forcing horizontal scrolling.
+    height = self._grid.minimumSize().height()
+    return QSize(self._MIN_FIELD_WIDTH, height)
+
+  def _relayout(self) -> None:
+    while self._grid.count():
+      self._grid.takeAt(0)
+    cols = max(1, self._cols)
+    row = col = 0
+    for field, colspan in self._fields:
+      span = max(1, min(colspan, cols))
+      if col + span > cols:
+        col = 0
+        row += 1
+      self._grid.addWidget(field, row, col, 1, span)
+      col += span
+      if col >= cols:
+        col = 0
+        row += 1
+    for c in range(self._max_cols):
+      self._grid.setColumnStretch(c, 1 if c < cols else 0)
+
+  def resizeEvent(self, event) -> None:
+    super().resizeEvent(event)
+    cols = self._columns_for_width(self.width())
+    if cols != self._cols:
+      self._cols = cols
+      self._relayout()
+
+
+class FlowLayout(QLayout):
+  """Left-to-right layout that wraps items onto new rows when width runs out."""
+
+  def __init__(self, parent=None, *, margin: int = 0, spacing: int = 10):
+    super().__init__(parent)
+    if parent is not None:
+      self.setContentsMargins(margin, margin, margin, margin)
+    self.setSpacing(spacing)
+    self._items: list = []
+
+  def __del__(self):
+    while self.count():
+      self.takeAt(0)
+
+  def addItem(self, item) -> None:
+    self._items.append(item)
+
+  def count(self) -> int:
+    return len(self._items)
+
+  def itemAt(self, index: int):
+    if 0 <= index < len(self._items):
+      return self._items[index]
+    return None
+
+  def takeAt(self, index: int):
+    if 0 <= index < len(self._items):
+      return self._items.pop(index)
+    return None
+
+  def expandingDirections(self):
+    return Qt.Orientation(0)
+
+  def hasHeightForWidth(self) -> bool:
+    return True
+
+  def heightForWidth(self, width: int) -> int:
+    return self._do_layout(QRect(0, 0, width, 0), True)
+
+  def setGeometry(self, rect: QRect) -> None:
+    super().setGeometry(rect)
+    self._do_layout(rect, False)
+
+  def sizeHint(self) -> QSize:
+    return self.minimumSize()
+
+  def minimumSize(self) -> QSize:
+    size = QSize()
+    for item in self._items:
+      size = size.expandedTo(item.minimumSize())
+    margins = self.contentsMargins()
+    size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+    return size
+
+  def _do_layout(self, rect: QRect, test_only: bool) -> int:
+    x = rect.x()
+    y = rect.y()
+    line_height = 0
+    spacing = self.spacing()
+    for item in self._items:
+      hint = item.sizeHint()
+      next_x = x + hint.width() + spacing
+      if next_x - spacing > rect.right() and line_height > 0:
+        x = rect.x()
+        y = y + line_height + spacing
+        next_x = x + hint.width() + spacing
+        line_height = 0
+      if not test_only:
+        item.setGeometry(QRect(QPoint(x, y), hint))
+      x = next_x
+      line_height = max(line_height, hint.height())
+    return y + line_height - rect.y()
+
+
+class FlowToolbar(QWidget):
+  """Filter/action bar whose controls wrap to new rows on narrow widths,
+  so buttons are never pushed off-screen."""
+
+  def __init__(self, parent=None, *, spacing: int = 10):
+    super().__init__(parent)
+    self._flow = FlowLayout(self, margin=0, spacing=spacing)
+    policy = self.sizePolicy()
+    policy.setHorizontalPolicy(QSizePolicy.Policy.Preferred)
+    policy.setVerticalPolicy(QSizePolicy.Policy.Minimum)
+    policy.setHeightForWidth(True)
+    self.setSizePolicy(policy)
+
+  def add_widget(self, widget: QWidget) -> None:
+    self._flow.addWidget(widget)
+
+  def hasHeightForWidth(self) -> bool:
+    return True
+
+  def heightForWidth(self, width: int) -> int:
+    return self._flow.heightForWidth(width)
+
+  def sizeHint(self) -> QSize:
+    return self._flow.sizeHint()
+
+  def minimumSizeHint(self) -> QSize:
+    return self._flow.minimumSize()
 
 
 class UploadPlaceholder(QFrame):

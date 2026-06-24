@@ -35,7 +35,7 @@ class AcademicYearDialog(QDialog):
             "(for example, 2025-2026 is 31 May 2025 - 1 June 2026). "
             "Use “Add next year” to create the next sequential year with the correct dates and label. "
             "The year that contains today’s date is the current year for new fees and payments. "
-            "Adding a new forward year promotes every active student one class (e.g. LKG→UKG→1→2→…→10→Passed Out). "
+            "Adding a new forward year promotes every active student one class (e.g. Nursery→LKG→UKG→1→2→…→10→Passed Out). "
             "Pending fees for the new year become: existing pending + previous current-year school due + previous current-year van due. "
             "Class 10 students are marked Passed Out and set to inactive."
         )

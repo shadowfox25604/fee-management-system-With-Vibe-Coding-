@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -69,8 +70,8 @@ DEFAULT_NAV: list[NavGroup] = [
         "🛡",
         children=[
             NavLeaf("Add Student", "Add Student"),
-            NavLeaf("Delete Member", "Delete Member"),
             NavLeaf("Add Faculty", "Add Faculty"),
+            NavLeaf("Delete Member", "Delete Member"),
             NavLeaf("Salary Control", "Salary Control"),
             NavLeaf("Fee Control", "Fee Control"),
             NavLeaf("Login Access", "Login Access"),
@@ -181,7 +182,7 @@ class AppShell(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
 
         self._sidebar = QFrame()
-        self._sidebar.setFixedWidth(272)
+        self._sidebar.setFixedWidth(self._adaptive_sidebar_width())
         side_outer = QVBoxLayout(self._sidebar)
         side_outer.setContentsMargins(0, 0, 0, 0)
         side_outer.setSpacing(0)
@@ -376,8 +377,22 @@ class AppShell(QWidget):
         for hdr in self._group_headers.values():
             hdr.refresh_theme()
 
+    _SIDEBAR_MIN = 200
+    _SIDEBAR_MAX = 272
+
+    def _adaptive_sidebar_width(self) -> int:
+        available = self.width()
+        if available <= 0:
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            available = screen.availableGeometry().width() if screen is not None else 1280
+        target = int(available * 0.22)
+        return max(self._SIDEBAR_MIN, min(self._SIDEBAR_MAX, target))
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        width = self._adaptive_sidebar_width()
+        if width != self._sidebar.width():
+            self._sidebar.setFixedWidth(width)
         m = self._main.geometry()
         self._fab.move(m.right() - 64, m.bottom() - 64)
 
@@ -422,10 +437,26 @@ class AppShell(QWidget):
             header.set_expanded(True)
 
     def register_page(self, page_key: str, widget: QWidget) -> int:
-        idx = self._stack.addWidget(widget)
+        host = self._wrap_scrollable(widget)
+        idx = self._stack.addWidget(host)
         self._page_keys.append(page_key)
         self._key_to_index[page_key] = idx
         return idx
+
+    @staticmethod
+    def _wrap_scrollable(widget: QWidget) -> QWidget:
+        """Wrap a page in a vertical scroll area so it is never clipped on small
+        or scaled displays. Pages that already manage their own full-page scroll
+        opt out via the ``page_scrolls`` property."""
+        if widget.property("page_scrolls"):
+            return widget
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(widget)
+        return scroll
 
     def go(self, page_key: str) -> None:
         idx = self._key_to_index.get(page_key)

@@ -68,10 +68,10 @@ def seed(target_students=200):
         t = s.query(FeeHead).filter(FeeHead.head_name == "Tuition").first()
         tr = s.query(FeeHead).filter(FeeHead.head_name == "Transport").first()
         if not t:
-            t = FeeHead(head_name="Tuition", frequency="monthly", default_amount=2000)
+            t = FeeHead(head_name="Tuition", frequency="monthly", default_amount=0)
             s.add(t)
         if not tr:
-            tr = FeeHead(head_name="Transport", frequency="monthly", default_amount=500)
+            tr = FeeHead(head_name="Transport", frequency="monthly", default_amount=0)
             s.add(tr)
         s.flush()
 

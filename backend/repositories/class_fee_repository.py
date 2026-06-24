@@ -55,9 +55,7 @@ class ClassFeeRepository:
             self.upsert_stored_amount(row.class_key, to_year_id, float(row.amount))
             count += 1
         if count == 0:
-            for class_key in FIXED_CLASS_KEYS:
-                self.upsert_stored_amount(class_key, to_year_id, 20000.0)
-                count += 1
+            return 0
         self.session.flush()
         return count
 

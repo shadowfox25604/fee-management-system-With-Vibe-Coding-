@@ -1,0 +1,58 @@
+=============================================================================
+ ACE School Management — System Requirements
+=============================================================================
+
+ Offline Windows desktop application for school fee management.
+
+ This is the ready-to-run packaged application. Everything the app needs
+ (the program code, all libraries, and the SQLite database engine) is bundled
+ inside "ACE School Management.exe".
+
+ NO additional software is required:
+   - No Python installation needed
+   - No virtual environment, UV, or pip needed
+   - No database server, browser, or internet connection needed
+
+ To use the app: copy "ACE School Management.exe" to the computer and
+ double-click it. See README.md for full instructions.
+
+-----------------------------------------------------------------------------
+ MINIMUM SYSTEM REQUIREMENTS
+-----------------------------------------------------------------------------
+
+   Operating system   Windows 10 (64-bit) or Windows 11
+   Processor          Intel Core i3 / AMD equivalent (2 cores)
+   Memory (RAM)       4 GB
+   Storage            500 MB free disk space (app ~85 MB + database & backups)
+   Display            1360 x 860 resolution
+   Internet           Not required for daily use
+   Other software     None
+
+-----------------------------------------------------------------------------
+ RECOMMENDED SYSTEM REQUIREMENTS
+-----------------------------------------------------------------------------
+
+   Operating system   Windows 11 (64-bit)
+   Processor          Intel Core i5 / AMD Ryzen 5 (4 cores) or better
+   Memory (RAM)       8 GB or more
+   Storage            2 GB free on SSD (room for years of backups & exports)
+   Display            1920 x 1080 (Full HD) or larger
+   Other software     Microsoft Visual C++ 2015-2022 Redistributable (x64)
+                      - usually already present on Windows; install it only if
+                        the app fails to start with a missing DLL error
+
+-----------------------------------------------------------------------------
+ WHERE YOUR DATA IS STORED
+-----------------------------------------------------------------------------
+
+   The app creates and manages this folder automatically on first launch:
+
+     %LOCALAPPDATA%\ACE School Management\
+       - fee_management.db      (the live database)
+       - backups\               (automatic and manual backups)
+       - master_key.txt         (password recovery key)
+
+   Database engine: SQLite 3 (embedded — bundled inside the .exe)
+   No external database (PostgreSQL, MySQL, Docker, etc.) is required.
+
+=============================================================================

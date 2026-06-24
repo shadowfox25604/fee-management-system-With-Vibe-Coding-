@@ -17,6 +17,7 @@ from backend.repositories.payment_repository import PaymentRepository
 from tests.academic_year_helpers import clear_all_academic_years
 def test_class_name_matches_query_exact_not_substring():
     from backend.core.fee_control_constants import (
+        canonical_class_for_student_class,
         class_name_matches_query,
         class_section_matches_query,
     )
@@ -26,6 +27,8 @@ def test_class_name_matches_query_exact_not_substring():
     assert not class_name_matches_query("11", "1")
     assert class_name_matches_query("10", "10")
     assert class_name_matches_query("LKG", "lkg")
+    assert canonical_class_for_student_class("nursery") == "Nursery"
+    assert class_name_matches_query("Nursery", "nursery")
 
     assert class_section_matches_query("1", "A", "1")
     assert not class_section_matches_query("10", "A", "1")
@@ -43,7 +46,7 @@ def test_schema_and_student_creation():
         st=Student(student_id=sid, full_name="Test User", class_name="8", section="A", phone=f"9{uuid.uuid4().int % 10**9:09d}", guardian_name="Guardian")
         s.add(st); s.commit(); assert st.student_id is not None
         assert float(st.van_fees) == 0.0
-        assert float(st.school_fees) == 20000.0
+        assert float(st.school_fees) == 0.0
         assert getattr(st, "village", None) == ""
         assert (getattr(st, "transport_mode", None) or "van") == "van"
     finally:

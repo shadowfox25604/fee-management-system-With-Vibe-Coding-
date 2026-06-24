@@ -17,10 +17,10 @@ def _ensure_fee_heads(session) -> tuple[FeeHead, FeeHead]:
     transport = session.query(FeeHead).filter(FeeHead.head_name.ilike("transport")).first()
 
     if tuition is None:
-        tuition = FeeHead(head_name="Tuition", frequency="monthly", default_amount=2000.0)
+        tuition = FeeHead(head_name="Tuition", frequency="monthly", default_amount=0.0)
         session.add(tuition)
     if transport is None:
-        transport = FeeHead(head_name="Transport", frequency="monthly", default_amount=500.0)
+        transport = FeeHead(head_name="Transport", frequency="monthly", default_amount=0.0)
         session.add(transport)
 
     session.flush()

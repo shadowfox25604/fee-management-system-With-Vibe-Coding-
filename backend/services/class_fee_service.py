@@ -50,7 +50,7 @@ class ClassFeeService:
         avg = self.repo.average_school_fees_for_class(class_key)
         if avg is not None:
             return float(avg)
-        return 20000.0
+        return 0.0
 
     def apply_class_school_fee(
         self, class_key: str, new_amount: float, academic_year_id: int | None = None
@@ -84,9 +84,10 @@ class ClassFeeService:
             return self.repo.copy_tariffs_from_year(source.id, year.id)
         count = 0
         for class_key in FIXED_CLASS_KEYS:
-            amount = self.repo.average_school_fees_for_class(class_key) or 20000.0
-            self.repo.upsert_stored_amount(class_key, year.id, float(amount))
-            count += 1
+            avg = self.repo.average_school_fees_for_class(class_key)
+            if avg is not None:
+                self.repo.upsert_stored_amount(class_key, year.id, float(avg))
+                count += 1
         self.session.flush()
         return count
 
@@ -98,7 +99,7 @@ class ClassFeeService:
             return 0.0
         key = canonical_class_for_student_class(class_name)
         if key is None:
-            return 20000.0
+            return 0.0
         year_id = self.resolve_academic_year_id(academic_year_id)
         stored = self.repo.get_stored_amount(key, year_id)
         if stored is not None:
@@ -106,7 +107,7 @@ class ClassFeeService:
         avg = self.repo.average_school_fees_for_class(key)
         if avg is not None:
             return float(avg)
-        return 20000.0
+        return 0.0
 
     def school_fees_for_student_update(self, student, new_class_name: str) -> float:
         """Keep existing school_fees if class unchanged (case-insensitive); otherwise resolve from class."""

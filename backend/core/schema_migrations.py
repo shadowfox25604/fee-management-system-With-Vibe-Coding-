@@ -160,7 +160,7 @@ def apply_sqlite_column_migrations(engine) -> None:
             )
         if "school_fees" not in col_names:
             conn.execute(
-                text("ALTER TABLE students ADD COLUMN school_fees REAL NOT NULL DEFAULT 20000.0")
+                text("ALTER TABLE students ADD COLUMN school_fees REAL NOT NULL DEFAULT 0.0")
             )
         if "village" not in col_names:
             conn.execute(
@@ -373,6 +373,9 @@ def apply_sqlite_column_migrations(engine) -> None:
     _migrate_class_school_fees_per_year(engine)
     _migrate_village_van_fees_per_year(engine)
     _migrate_academic_years_may_june_v2(engine)
+    _backfill_nursery_class_tariffs(engine)
+    _remove_auto_default_fees_v1(engine)
+    _seed_client_faculty_v1(engine)
     _seed_app_login_users_v1(engine)
     from backend.core.fee_head_bootstrap import ensure_default_fee_heads
 
@@ -467,16 +470,6 @@ def _migrate_academic_years_may_june_v2(engine) -> None:
         )
         year_id = int(conn.execute(text("SELECT last_insert_rowid()")).scalar())
 
-        if insp.has_table("class_school_fees"):
-            for class_key in FIXED_CLASS_KEYS:
-                conn.execute(
-                    text(
-                        "INSERT INTO class_school_fees (class_key, academic_year_id, amount) "
-                        "VALUES (:k, :y, :a)"
-                    ),
-                    {"k": class_key, "y": year_id, "a": 20000.0},
-                )
-
         if insp.has_table("students") and insp.has_table("student_academic_year_fees"):
             students = conn.execute(
                 text("SELECT student_id, school_fees, van_fees FROM students")
@@ -503,6 +496,63 @@ def _migrate_academic_years_may_june_v2(engine) -> None:
             )
 
         conn.execute(text("INSERT INTO app_migrations (name) VALUES ('academic_years_may_june_v2')"))
+
+
+def _backfill_nursery_class_tariffs(engine) -> None:
+    """Add Nursery class fee rows for each academic year (amount copied from LKG)."""
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("class_school_fees"):
+        return
+
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        if conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "nursery_class_tariff_v1"},
+        ).fetchone():
+            return
+
+        year_ids = [
+            int(row[0])
+            for row in conn.execute(
+                text("SELECT DISTINCT academic_year_id FROM class_school_fees")
+            ).fetchall()
+        ]
+        if not year_ids and insp.has_table("academic_years"):
+            year_ids = [
+                int(row[0])
+                for row in conn.execute(text("SELECT id FROM academic_years")).fetchall()
+            ]
+
+        for year_id in year_ids:
+            has_nursery = conn.execute(
+                text(
+                    "SELECT 1 FROM class_school_fees "
+                    "WHERE class_key = 'Nursery' AND academic_year_id = :yid LIMIT 1"
+                ),
+                {"yid": year_id},
+            ).fetchone()
+            if has_nursery:
+                continue
+            lkg_row = conn.execute(
+                text(
+                    "SELECT amount FROM class_school_fees "
+                    "WHERE class_key = 'LKG' AND academic_year_id = :yid LIMIT 1"
+                ),
+                {"yid": year_id},
+            ).fetchone()
+            amount = float(lkg_row[0]) if lkg_row else 0.0
+            conn.execute(
+                text(
+                    "INSERT INTO class_school_fees (class_key, academic_year_id, amount) "
+                    "VALUES ('Nursery', :yid, :amt)"
+                ),
+                {"yid": year_id, "amt": amount},
+            )
+
+        conn.execute(text("INSERT INTO app_migrations (name) VALUES ('nursery_class_tariff_v1')"))
 
 
 def _migrate_class_school_fees_per_year(engine) -> None:
@@ -563,7 +613,9 @@ def _migrate_class_school_fees_per_year(engine) -> None:
 
         for year_id in year_ids:
             for class_key in FIXED_CLASS_KEYS:
-                amount = old_map.get(class_key, 20000.0)
+                if class_key not in old_map:
+                    continue
+                amount = old_map[class_key]
                 conn.execute(
                     text(
                         "INSERT INTO class_school_fees (class_key, academic_year_id, amount) "
@@ -635,9 +687,9 @@ def _migrate_village_van_fees_per_year(engine) -> None:
             year_ids = [int(conn.execute(text("SELECT last_insert_rowid()")).scalar())]
 
         for year_id in year_ids:
-            keys = set(FIXED_VILLAGE_KEYS) | set(old_map.keys())
+            keys = set(FIXED_VILLAGE_KEYS) & set(old_map.keys())
             for village_key in sorted(keys, key=lambda x: str(x).lower()):
-                amount = old_map.get(village_key, 0.0)
+                amount = old_map[village_key]
                 conn.execute(
                     text(
                         "INSERT INTO village_van_fees (village_key, academic_year_id, amount) "
@@ -676,12 +728,8 @@ def apply_sqlite_data_migrations(engine) -> None:
             if not row:
                 conn.execute(
                     text(
-                        "UPDATE students SET school_fees = 20000.0 "
-                        "WHERE school_fees IS NULL OR ABS(COALESCE(school_fees, 0)) < 1e-6"
+                        "INSERT INTO app_migrations (name) VALUES ('backfill_school_fees_zero_to_20000_v1')"
                     )
-                )
-                conn.execute(
-                    text("INSERT INTO app_migrations (name) VALUES ('backfill_school_fees_zero_to_20000_v1')")
                 )
 
             col_now = {c["name"] for c in inspect(engine).get_columns("students")}
@@ -851,7 +899,7 @@ def _migrate_students_student_id_primary_sqlite(conn) -> None:
                 status VARCHAR(20) DEFAULT 'active',
                 transport_mode VARCHAR(20) NOT NULL DEFAULT 'van',
                 van_fees REAL NOT NULL DEFAULT 0.0,
-                school_fees REAL NOT NULL DEFAULT 20000.0,
+                school_fees REAL NOT NULL DEFAULT 0.0,
                 created_at DATETIME
             )
             """
@@ -885,7 +933,7 @@ def _migrate_students_student_id_primary_sqlite(conn) -> None:
                 COALESCE(status, 'active'),
                 COALESCE(transport_mode, 'van'),
                 COALESCE(van_fees, 0.0),
-                COALESCE(school_fees, 20000.0),
+                COALESCE(school_fees, 0.0),
                 created_at
             FROM students_backup_mig
             """
@@ -1842,6 +1890,97 @@ def _backfill_payment_split_amounts(engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text("INSERT INTO app_migrations (name) VALUES ('backfill_payment_split_amounts_v1')")
+        )
+
+
+def _remove_auto_default_fees_v1(engine) -> None:
+    """Clear legacy auto-seeded fee amounts so tariffs must be set manually in Fee Control."""
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        if conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "remove_auto_default_fees_v1"},
+        ).fetchone():
+            return
+
+        if inspect(engine).has_table("fee_heads"):
+            conn.execute(
+                text(
+                    "UPDATE fee_heads SET default_amount = 0.0 "
+                    "WHERE lower(trim(head_name)) IN ('tuition', 'transport') "
+                    "AND (ABS(default_amount - 2000.0) < 1e-6 OR ABS(default_amount - 500.0) < 1e-6)"
+                )
+            )
+
+        if inspect(engine).has_table("class_school_fees"):
+            conn.execute(
+                text("DELETE FROM class_school_fees WHERE ABS(amount - 20000.0) < 1e-6")
+            )
+
+        if inspect(engine).has_table("students"):
+            conn.execute(
+                text(
+                    "UPDATE students SET school_fees = 0.0 "
+                    "WHERE ABS(COALESCE(school_fees, 0) - 20000.0) < 1e-6"
+                )
+            )
+
+        if inspect(engine).has_table("student_academic_year_fees"):
+            conn.execute(
+                text(
+                    "UPDATE student_academic_year_fees SET school_fees = 0.0 "
+                    "WHERE ABS(COALESCE(school_fees, 0) - 20000.0) < 1e-6"
+                )
+            )
+
+        conn.execute(
+            text("INSERT INTO app_migrations (name) VALUES ('remove_auto_default_fees_v1')")
+        )
+
+
+def _seed_client_faculty_v1(engine) -> None:
+    """Seed the full ACE faculty roster on first launch (client-ready deployments)."""
+    if engine.dialect.name != "sqlite":
+        return
+    insp = inspect(engine)
+    if not insp.has_table("faculty_salaries"):
+        return
+
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"))
+        if conn.execute(
+            text("SELECT 1 FROM app_migrations WHERE name = :n"),
+            {"n": "seed_client_faculty_v1"},
+        ).fetchone():
+            return
+
+    from backend.core.client_faculty_data import CLIENT_FACULTY_ROWS
+    from backend.services.expense_service import ExpenseService
+    from sqlalchemy.orm import sessionmaker
+
+    session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
+    try:
+        service = ExpenseService(session)
+        for employee_id, faculty_name, monthly_salary, faculty_type, role in CLIENT_FACULTY_ROWS:
+            service.assign_faculty_salary(
+                faculty_name,
+                monthly_salary,
+                employee_id=employee_id,
+                faculty_type=faculty_type,
+                role=role,
+                default_working_days=26,
+                is_active=True,
+            )
+        session.commit()
+    finally:
+        session.close()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO app_migrations (name) VALUES ('seed_client_faculty_v1')")
         )
 
 

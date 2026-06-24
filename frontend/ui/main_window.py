@@ -89,7 +89,13 @@ from frontend.ui.school_branding import (
     app_window_icon,
     school_window_title,
 )
-from frontend.ui.edudash_widgets import CardTitleBar, GradientProfileCard, SurfaceCard, wrap_page
+from frontend.ui.edudash_widgets import (
+    CardTitleBar,
+    FlowToolbar,
+    GradientProfileCard,
+    SurfaceCard,
+    wrap_page,
+)
 from frontend.ui.fee_control_page import FeeControlPage
 from frontend.ui.home_page import HomePageTab
 from frontend.ui.misc_expenses_page import MiscExpensesPage
@@ -254,8 +260,8 @@ class MainWindow(QMainWindow):
             "Salary History",
             "Miscellaneous",
             "Income Management",
-            "Add Faculty",
             "Add Student",
+            "Add Faculty",
             "Delete Member",
             "Reports",
             "Backup",
@@ -273,8 +279,8 @@ class MainWindow(QMainWindow):
             self._build_salary_history_tab,
             self._build_miscellaneous_tab,
             self._build_income_management_tab,
-            self._build_add_faculty_tab,
             self._build_add_student_tab,
+            self._build_add_faculty_tab,
             self._build_delete_member_tab,
             self._build_reports_tab,
             self._build_backup_tab,
@@ -347,6 +353,7 @@ class MainWindow(QMainWindow):
             on_chart_month_bounds=self._home_page_chart_month_bounds,
             parent=self,
         )
+        self._home_page.setProperty("page_scrolls", True)
         return self._home_page
 
     def _home_page_chart_data(self, year: int, month: int) -> dict:
@@ -1001,11 +1008,13 @@ class MainWindow(QMainWindow):
         tab.student_results.itemClicked.connect(self._on_details_student_clicked)
         tab.btn_edit.clicked.connect(self._on_details_edit_clicked)
         self._on_details_search_basis_changed()
-        return wrap_page(
+        host = wrap_page(
             "Student Details",
             breadcrumb_trail("Student", "Student Details"),
             tab,
         )
+        host.setProperty("page_scrolls", True)
+        return host
 
     def _build_payment_tab(self):
         body = self._create_payment_like_tab("payment")
@@ -1240,6 +1249,7 @@ class MainWindow(QMainWindow):
         self._add_faculty_submit_btn = page.submit_btn
         page.submit_btn.clicked.connect(self.add_faculty)
         page.sync_suggested_employee_id(self.expense_service.suggest_next_faculty_employee_id(), force=True)
+        page.setProperty("page_scrolls", True)
         return page
 
     def _build_miscellaneous_tab(self):
@@ -1499,13 +1509,14 @@ class MainWindow(QMainWindow):
         body = QWidget()
         layout = QVBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
-        toolbar = QHBoxLayout()
+        toolbar = FlowToolbar()
         self.report_search_by = QComboBox()
         self.report_search_by.addItems(["Roll Number", "Name", "Village"])
         self.report_search_by.setCurrentIndex(1)
         self.report_search_by.currentIndexChanged.connect(self._on_report_search_basis_changed)
         self.report_student_input = QLineEdit()
         self.report_student_input.setPlaceholderText("Enter student name")
+        self.report_student_input.setMinimumWidth(220)
         self.report_student_input.textChanged.connect(lambda _: self.load_defaulters(reset_page=True))
         self.report_class = QComboBox()
         self.report_class.addItem("All Classes", None)
@@ -1532,17 +1543,17 @@ class MainWindow(QMainWindow):
         self._export_excel_btn = b
         self._export_pdf_btn = c
         self._report_refresh_btn = report_refresh_btn
-        toolbar.addWidget(report_refresh_btn)
-        toolbar.addWidget(QLabel("Search by"))
-        toolbar.addWidget(self.report_search_by)
-        toolbar.addWidget(self.report_student_input, 1)
-        toolbar.addWidget(self.report_class)
-        toolbar.addWidget(self.report_section)
-        toolbar.addWidget(self.report_fee_filter)
-        toolbar.addWidget(a)
-        toolbar.addWidget(b)
-        toolbar.addWidget(c)
-        layout.addLayout(toolbar)
+        toolbar.add_widget(report_refresh_btn)
+        toolbar.add_widget(QLabel("Search by"))
+        toolbar.add_widget(self.report_search_by)
+        toolbar.add_widget(self.report_student_input)
+        toolbar.add_widget(self.report_class)
+        toolbar.add_widget(self.report_section)
+        toolbar.add_widget(self.report_fee_filter)
+        toolbar.add_widget(a)
+        toolbar.add_widget(b)
+        toolbar.add_widget(c)
+        layout.addWidget(toolbar)
         card = SurfaceCard()
         self.report_table = QTableWidget(0, 5)
         self.report_table.setHorizontalHeaderLabels(
@@ -1610,7 +1621,9 @@ class MainWindow(QMainWindow):
         self._van_fee_control_table = self._fee_control_page.van_fee_control_table
         self._add_village_btn = self._fee_control_page.add_village_btn
         self._manage_years_btn = self._fee_control_page.manage_years_btn
-        return wrap_page("Fee Control", breadcrumb_trail("Admin Control", "Fee Control"), self._fee_control_page)
+        host = wrap_page("Fee Control", breadcrumb_trail("Admin Control", "Fee Control"), self._fee_control_page)
+        host.setProperty("page_scrolls", True)
+        return host
 
     def _build_login_access_tab(self):
         self._login_access_page = LoginAccessPage(self.session, parent=self)
@@ -1770,7 +1783,7 @@ class MainWindow(QMainWindow):
         hint.setWordWrap(True)
         hint.setProperty("role", "hint")
         layout.addWidget(hint)
-        toolbar = QHBoxLayout()
+        toolbar = FlowToolbar()
         refresh_btn = QPushButton("Refresh")
         style_fee_action_button(refresh_btn)
         refresh_btn.clicked.connect(self._on_payment_history_refresh_clicked)
@@ -1778,10 +1791,11 @@ class MainWindow(QMainWindow):
         export_btn = QPushButton("Export Excel")
         style_fee_action_button(export_btn)
         export_btn.clicked.connect(self._on_payment_history_export_excel)
-        toolbar.addWidget(refresh_btn)
-        toolbar.addWidget(export_btn)
-        toolbar.addWidget(QLabel("Student"))
+        toolbar.add_widget(refresh_btn)
+        toolbar.add_widget(export_btn)
+        toolbar.add_widget(QLabel("Student"))
         self._payment_history_student = StudentFilterComboBox(self.student_service)
+        self._payment_history_student.setMinimumWidth(240)
         self._payment_history_student.currentIndexChanged.connect(
             lambda _: self._refresh_payment_history_table(reset_page=True)
         )
@@ -1790,15 +1804,16 @@ class MainWindow(QMainWindow):
             payment_history_student_line.textChanged.connect(
                 lambda _: self._refresh_payment_history_table(reset_page=True)
             )
-        toolbar.addWidget(self._payment_history_student, 2)
-        toolbar.addWidget(QLabel("Search"))
+        toolbar.add_widget(self._payment_history_student)
+        toolbar.add_widget(QLabel("Search"))
         self._payment_history_filter = QLineEdit()
         self._payment_history_filter.setPlaceholderText("Reference or quick text…")
+        self._payment_history_filter.setMinimumWidth(200)
         self._payment_history_filter.textChanged.connect(
             lambda _: self._refresh_payment_history_table(reset_page=True)
         )
-        toolbar.addWidget(self._payment_history_filter, 1)
-        layout.addLayout(toolbar)
+        toolbar.add_widget(self._payment_history_filter)
+        layout.addWidget(toolbar)
         card = SurfaceCard()
         self._payment_history_table = QTableWidget(0, 12)
         self._payment_history_table.setHorizontalHeaderLabels(
@@ -1848,7 +1863,7 @@ class MainWindow(QMainWindow):
         hint.setWordWrap(True)
         hint.setProperty("role", "hint")
         layout.addWidget(hint)
-        toolbar = QHBoxLayout()
+        toolbar = FlowToolbar()
         refresh_btn = QPushButton("Refresh")
         style_fee_action_button(refresh_btn)
         refresh_btn.clicked.connect(self._on_salary_history_tab_refresh_clicked)
@@ -1856,16 +1871,17 @@ class MainWindow(QMainWindow):
         export_btn = QPushButton("Export Excel")
         style_fee_action_button(export_btn)
         export_btn.clicked.connect(self._on_salary_history_export_excel)
-        toolbar.addWidget(refresh_btn)
-        toolbar.addWidget(export_btn)
-        toolbar.addWidget(QLabel("Filter"))
+        toolbar.add_widget(refresh_btn)
+        toolbar.add_widget(export_btn)
+        toolbar.add_widget(QLabel("Filter"))
         self._salary_history_tab_filter = QLineEdit()
         self._salary_history_tab_filter.setPlaceholderText("Reference, faculty, month, role, notes…")
+        self._salary_history_tab_filter.setMinimumWidth(240)
         self._salary_history_tab_filter.textChanged.connect(
             lambda _: self._refresh_salary_history_tab_table(reset_page=True)
         )
-        toolbar.addWidget(self._salary_history_tab_filter, 1)
-        layout.addLayout(toolbar)
+        toolbar.add_widget(self._salary_history_tab_filter)
+        layout.addWidget(toolbar)
         card = SurfaceCard()
         self._salary_history_tab_table = QTableWidget(0, 12)
         self._salary_history_tab_table.setHorizontalHeaderLabels(

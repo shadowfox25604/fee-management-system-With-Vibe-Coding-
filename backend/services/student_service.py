@@ -177,7 +177,7 @@ class StudentService:
         if class_fee_service is not None:
             sf = class_fee_service.school_fees_for_class_name(class_name)
         else:
-            sf = 20000.0
+            sf = 0.0
         pending_amount = None
         if initial_pending_fees is not None:
             pending_amount = self._parse_fee_amount(initial_pending_fees, "Pending fees")
@@ -241,7 +241,13 @@ class StudentService:
             0,
         )
         sy = StudentYearFeeRepository(session)
-        prior_row = sy.get_or_create(student, prior.id, school_fees=float(amount), van_fees=0.0)
+        prior_row = sy.get_or_create(
+            student,
+            prior.id,
+            school_fees=float(amount),
+            van_fees=0.0,
+            allow_inactive=True,
+        )
         prior_row.opening_pending_fees = 0.0
         current_row = sy.get(student.student_id, current.id)
         if current_row is None:
@@ -250,6 +256,7 @@ class StudentService:
                 current.id,
                 school_fees=float(student.school_fees or 0.0),
                 van_fees=float(student.van_fees or 0.0),
+                allow_inactive=True,
             )
         else:
             current_row.school_fees = float(student.school_fees or 0.0)

@@ -60,9 +60,37 @@ def _collect_legacy_database_candidates() -> list[Path]:
     return candidates
 
 
+def _bundled_client_database() -> Path | None:
+    """Preloaded client database shipped beside the .exe (Deployment/data/)."""
+    if not getattr(sys, "frozen", False):
+        return None
+    bundled = Path(sys.executable).resolve().parent / "data" / "fee_management.db"
+    return bundled if bundled.is_file() else None
+
+
 def _migrate_legacy_data_if_needed(data_dir: Path) -> None:
     target_db = data_dir / "fee_management.db"
     if target_db.is_file():
+        return
+
+    bundled = _bundled_client_database()
+    if bundled is not None:
+        source_dir = bundled.parent
+        data_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(bundled, target_db)
+        source_backups = source_dir / "backups"
+        target_backups = data_dir / "backups"
+        if source_backups.is_dir():
+            target_backups.mkdir(parents=True, exist_ok=True)
+            for backup in source_backups.glob("*.db"):
+                dest = target_backups / backup.name
+                if not dest.exists():
+                    shutil.copy2(backup, dest)
+        for name in ("master_key.txt", "school_name.txt"):
+            source_file = source_dir / name
+            target_file = data_dir / name
+            if source_file.is_file() and not target_file.exists():
+                shutil.copy2(source_file, target_file)
         return
 
     legacy_dbs = _collect_legacy_database_candidates()

@@ -1,6 +1,7 @@
 """Canonical class labels for Fee Control (case-insensitive match to students.class_name)."""
 
 FIXED_CLASS_KEYS: tuple[str, ...] = (
+    "Nursery",
     "LKG",
     "UKG",
     "1",
@@ -19,7 +20,7 @@ FIXED_CLASS_KEYS: tuple[str, ...] = (
 PASSED_OUT_CLASS_KEY = "Passed Out"
 
 # Standard division / section letters for data entry (Add Student, etc.)
-FIXED_SECTION_KEYS: tuple[str, ...] = ("A", "B", "C", "D", "E", "F", "G", "H")
+FIXED_SECTION_KEYS: tuple[str, ...] = ("A", "B", "C", "D")
 
 
 def normalize_class_name(value: str | None) -> str:
@@ -78,7 +79,7 @@ def class_section_matches_query(
 
 
 def next_class_key(class_name: str | None) -> str | None:
-    """Next class in the fixed progression (LKG→UKG→1→…→10→Passed Out). None at Passed Out or unknown."""
+    """Next class in the fixed progression (Nursery→LKG→UKG→1→…→10→Passed Out). None at Passed Out or unknown."""
     key = canonical_class_for_student_class(class_name)
     if key is None or key == PASSED_OUT_CLASS_KEY:
         return None

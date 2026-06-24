@@ -67,7 +67,7 @@ class StudentRepository:
         guardian_name: str,
         status: str = "active",
         van_fees: float = 0.0,
-        school_fees: float = 20000.0,
+        school_fees: float = 0.0,
         transport_mode: str = "van",
         *,
         gender: str = "",
@@ -127,7 +127,7 @@ class StudentRepository:
         guardian_name: str,
         status: str = "active",
         van_fees: float = 0.0,
-        school_fees: float = 20000.0,
+        school_fees: float = 0.0,
         transport_mode: str = "van",
         *,
         gender: str = "",
@@ -292,7 +292,7 @@ class StudentRepository:
         return int(active), int(inactive)
 
     def promote_all_student_classes(self, class_fee_lookup) -> int:
-        """Advance each student one class (LKG→UKG→1→…→10→Passed Out). Returns count promoted."""
+        """Advance each student one class (Nursery→LKG→UKG→1→…→10→Passed Out). Returns count promoted."""
         from backend.core.fee_control_constants import (
             PASSED_OUT_CLASS_KEY,
             canonical_class_for_student_class,

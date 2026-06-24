@@ -55,9 +55,7 @@ class VillageVanFeeRepository:
             self.upsert_stored_amount(row.village_key, to_year_id, float(row.amount))
             count += 1
         if count == 0:
-            for village_key in FIXED_VILLAGE_KEYS:
-                self.upsert_stored_amount(village_key, to_year_id, 0.0)
-                count += 1
+            return 0
         self.session.flush()
         return count
 

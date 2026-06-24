@@ -22,7 +22,6 @@ This document is the main reference for school staff and administrators. Use it 
 12. [Reports and exports](#12-reports-and-exports)
 13. [Troubleshooting](#13-troubleshooting)
 14. [Frequently asked questions](#14-frequently-asked-questions)
-15. [For technical staff (installation from source)](#15-for-technical-staff-installation-from-source)
 
 ---
 
@@ -44,6 +43,7 @@ This document is the main reference for school staff and administrators. Use it 
 ### Important facts
 
 - **Works fully offline** — no internet is required after installation.
+- **No installation needed** — the app is a single program file. There is nothing to install, and no Python or other software is required.
 - **Single computer database** — all records are stored locally on the PC where the app runs.
 - **One instance at a time** — if you open the app twice, the second window brings the first one to the front instead of opening a duplicate.
 - **Automatic updates to the database** — the app applies any needed database updates each time it starts.
@@ -57,14 +57,14 @@ This document is the main reference for school staff and administrators. Use it 
 | **Operating system** | Windows 10 or Windows 11 (64-bit recommended) |
 | **Disk space** | At least 500 MB free (more if you keep many backups) |
 | **Screen** | 1360×860 or larger recommended |
-| **Internet** | Only needed for initial installation or developer setup — not for daily use |
-| **Other software** | None required when using the packaged `.exe` |
+| **Internet** | Not required for daily use |
+| **Other software** | None — no Python, database server, or browser needed |
+
+See `requirements.txt` for the full minimum and recommended hardware specifications.
 
 ---
 
 ## 3. Installing and opening the app
-
-### Option A — Using the packaged application (recommended for school staff)
 
 1. Copy **`ACE School Management.exe`** to a folder on the school computer (for example `C:\ACE School Management\` or the Desktop).
 2. Double-click **`ACE School Management.exe`** to start.
@@ -72,10 +72,6 @@ This document is the main reference for school staff and administrators. Use it 
 4. On first launch, the app creates its data folder automatically (see [Section 4](#4-where-your-data-is-stored)).
 
 > **Tip:** Keep the `.exe` in a stable location. Moving it later is fine — your data is stored separately and will be found automatically.
-
-### Option B — Running from source (for developers / IT only)
-
-See [Section 15](#15-for-technical-staff-installation-from-source).
 
 ### First launch checklist
 
@@ -89,9 +85,7 @@ See [Section 15](#15-for-technical-staff-installation-from-source).
 
 ## 4. Where your data is stored
 
-All school records live in a single database file on the computer. Backups and configuration files are kept alongside it.
-
-### When using `ACE School Management.exe` (installed app)
+All school records live in a single database file on the computer. Backups and configuration files are kept alongside it. The app creates and manages this folder for you automatically.
 
 | Item | Location |
 |------|----------|
@@ -106,21 +100,9 @@ To open the data folder quickly:
 2. Type: `%LOCALAPPDATA%\ACE School Management`
 3. Press **Enter**
 
-### When running from source (development)
-
-| Item | Location |
-|------|----------|
-| **Live database** | `data\fee_management.db` (inside the project folder) |
-| **Backups** | `data\backups\` |
-| **Master key** | `data\master_key.txt` |
-
 ### Custom school name
 
 To display a different name in the app window and login screen, create a text file named **`school_name.txt`** in the data folder with the school name on a single line.
-
-### Legacy data migration
-
-If you previously used an older copy of the app that stored data next to the `.exe` (for example `dist\data\`), the app automatically copies that database into the standard data folder the first time you run the new version.
 
 ---
 
@@ -381,7 +363,7 @@ Configure fee amounts for the school.
 **School fees (per class, per academic year):**
 
 1. Select the academic year.
-2. Enter or update the annual school fee for each class (Nursery through Class 10).
+2. Enter or update the annual school fee for each class (LKG through Class 10).
 3. Click **Apply** next to each class to save.
 
 **Van fees (per village):**
@@ -445,7 +427,7 @@ The page shows the live database path, backup count, last backup time, and total
 
 | Event | Result |
 |-------|--------|
-| **Class promotion** | Every active student moves up one class (Nursery→LKG→UKG→1→2→…→10) |
+| **Class promotion** | Every active student moves up one class (LKG→UKG→1→2→…→10) |
 | **Class 10 students** | Marked **Passed Out** and set to inactive |
 | **Pending fees** | New opening pending = existing pending + previous year school due + previous year van due |
 | **Fee tariffs** | Copied from the previous year’s class fees (you can adjust before the year starts) |
@@ -478,21 +460,13 @@ The entire school database is one file. Backups protect against:
 
 ### Manual backup
 
-**From the app:** Backup → **Create backup now**
-
-**From command line (technical staff):**
-
-```cmd
-set PYTHONPATH=. && uv run python backend/scripts/backup_now.py
-```
+In the app: Backup → **Create backup now**
 
 ### Protected backups
 
 The **4 most recent** backup files cannot be deleted from the app. This prevents accidental removal of your only recent safety copies. Older backups can be deleted to save space.
 
 ### Restoring a backup
-
-**From the app (recommended):**
 
 1. Go to **Backup**.
 2. Select a backup from the list (or use **Restore from file** to pick an external copy).
@@ -501,14 +475,6 @@ The **4 most recent** backup files cannot be deleted from the app. This prevents
 5. Click **Proceed** when prompted — the app closes and reopens with the restored data.
 
 **Before every restore**, the app automatically saves your current database as `fee_management_pre_restore_YYYYMMDD_HHMMSS.db` in the backups folder.
-
-**From command line (app must be fully closed):**
-
-```cmd
-set PYTHONPATH=. && uv run python backend/scripts/restore_backup.py data\backups\fee_management_YYYYMMDD_HHMMSS.db
-```
-
-Then reopen the app manually.
 
 ### Copying backups to external storage
 
@@ -571,7 +537,7 @@ Exported files are saved where you choose in the standard Windows **Save** dialo
 |-------|--------|
 | Already running? | Look for the app on the taskbar. Opening it again should bring the window forward. |
 | Blocked by antivirus | Add `ACE School Management.exe` to your antivirus allow list. |
-| Corrupt install | Re-copy the `.exe` from the original distribution. Your data folder is separate and will not be deleted. |
+| Corrupt copy | Re-copy the `.exe` from the original distribution. Your data folder is separate and will not be deleted. |
 
 ### “Second instance” behaviour
 
@@ -635,7 +601,7 @@ The **4 newest** backups are protected and cannot be deleted. Choose an older ba
 ### School name or logo wrong
 
 - **Name:** Create or edit `school_name.txt` in the data folder (one line, school name only). Restart the app.
-- **Logo:** Contact your software provider — the logo is bundled with the application build.
+- **Logo:** Contact your software provider — the logo is bundled with the application.
 
 ### Error messages mentioning “integrity” or “damaged backup”
 
@@ -647,6 +613,9 @@ The selected backup file is corrupt or incomplete. Choose a different (older) ba
 
 **Q: Do I need internet to use the app?**  
 A: No. After installation, everything runs offline.
+
+**Q: Do I need to install Python or any other software?**  
+A: No. Everything the app needs is bundled inside `ACE School Management.exe`. Just copy it and double-click.
 
 **Q: Can multiple staff use the app at the same time on different computers?**  
 A: Each installation has its own local database. This version does not sync between PCs. Use one primary computer for live operations, or establish a manual process to restore backups on a second machine (not recommended for concurrent use).
@@ -666,82 +635,8 @@ A: Only the principal, office head, or trusted senior admin staff. Day-to-day fe
 **Q: What is the master key for?**  
 A: Emergency password recovery when everyone has forgotten the Admin or Accountant password. Guard it like a physical key to the office.
 
-**Q: Does uninstalling the app delete my data?**  
+**Q: Does deleting the app delete my data?**  
 A: The data in `%LOCALAPPDATA%\ACE School Management` is not automatically removed when you delete the `.exe`. Keep that folder safe until you intentionally migrate or archive it.
-
----
-
-## 15. For technical staff (installation from source)
-
-This section is for developers or IT staff setting up the project from the repository — not required for normal school use with the packaged `.exe`.
-
-### Prerequisites
-
-- Windows 10/11
-- Python 3.12+
-- [uv](https://github.com/astral-sh/uv) package manager
-
-```cmd
-python --version
-uv --version
-```
-
-### Setup
-
-```cmd
-cd "c:\Users\Acer\Desktop\fee management"
-uv venv
-.venv\Scripts\activate
-uv sync
-set PYTHONPATH=. && uv run python backend/scripts/init_db.py
-```
-
-### Run the application
-
-```cmd
-set PYTHONPATH=. && uv run python -m frontend.main
-```
-
-Or:
-
-```cmd
-set PYTHONPATH=. && uv run python run.py
-```
-
-### Seed demo data (testing only)
-
-```cmd
-set PYTHONPATH=. && uv run python backend/scripts/seed_data.py
-```
-
-Creates sample students and resets login users to default passwords.
-
-### Build the Windows executable
-
-```cmd
-powershell -ExecutionPolicy Bypass -File scripts\build_ace_school_management.ps1
-```
-
-Output: `dist\ACE School Management.exe`
-
-### Run tests
-
-```cmd
-set PYTHONPATH=. && uv run pytest -q
-```
-
-Tests use isolated temporary databases — they never touch `data\fee_management.db`.
-
-### Project structure
-
-| Folder | Purpose |
-|--------|---------|
-| `frontend/` | Desktop UI (PySide6) |
-| `backend/` | Business logic, database models, reports |
-| `backend/scripts/` | Database init, backup, restore, seed utilities |
-| `data/` | Local database and backups (development mode) |
-| `tests/` | Automated tests |
-| `scripts/` | Build and utility scripts |
 
 ---
 
@@ -759,7 +654,6 @@ For issues not covered in this guide, contact your software support provider wit
 - A description of what you were trying to do
 - The exact error message (screenshot helps)
 - The location of your data folder and most recent backup file
-- Whether you are using the `.exe` or a development install
 
 ---
 

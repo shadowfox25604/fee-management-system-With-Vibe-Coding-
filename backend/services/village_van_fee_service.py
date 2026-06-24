@@ -126,9 +126,10 @@ class VillageVanFeeService:
             return self.repo.copy_tariffs_from_year(source.id, year.id)
         count = 0
         for village_key in FIXED_VILLAGE_KEYS:
-            amount = self.repo.average_van_fees_for_village(village_key) or 0.0
-            self.repo.upsert_stored_amount(village_key, year.id, float(amount))
-            count += 1
+            avg = self.repo.average_van_fees_for_village(village_key)
+            if avg is not None:
+                self.repo.upsert_stored_amount(village_key, year.id, float(avg))
+                count += 1
         self.session.flush()
         return count
 

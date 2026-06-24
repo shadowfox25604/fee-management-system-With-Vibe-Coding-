@@ -40,10 +40,23 @@ Write-Host "Building ACE School Management.exe with PyInstaller..."
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $Exe = Join-Path $Root "dist\ACE School Management.exe"
-if (Test-Path $Exe) {
-    Write-Host ""
-    Write-Host "Success: $Exe"
-    Write-Host "Pin to taskbar: right-click the exe -> Pin to taskbar"
-} else {
+if (-not (Test-Path $Exe)) {
     throw "Build finished but exe was not found at $Exe"
 }
+
+Write-Host ""
+Write-Host "Building preloaded client database (faculty + inactive students)..."
+& $Python scripts\build_deployment_database.py
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$DeploymentDir = Join-Path $Root "Deployment"
+New-Item -ItemType Directory -Force -Path $DeploymentDir | Out-Null
+Copy-Item -Force $Exe (Join-Path $DeploymentDir "ACE School Management.exe")
+
+Write-Host ""
+Write-Host "Deployment folder ready:"
+Write-Host "  $(Join-Path $DeploymentDir 'ACE School Management.exe')"
+Write-Host "  $(Join-Path $DeploymentDir 'data\fee_management.db')"
+Write-Host "  $(Join-Path $DeploymentDir 'data\master_key.txt')"
+Write-Host ""
+Write-Host "On first client launch, the app copies data\ into %LOCALAPPDATA%\ACE School Management\"
